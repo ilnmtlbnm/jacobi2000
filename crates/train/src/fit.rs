@@ -25,6 +25,8 @@ pub struct FitConfig {
     /// injection makes it contractive on off-manifold states.
     pub noise: f32,
     pub log_every: usize,
+    /// Final learning rate as a fraction of `lr`: cosine decay after warmup.
+    pub lr_floor: f64,
     pub mask: Mask,
 }
 
@@ -39,6 +41,7 @@ impl Default for FitConfig {
             rollout_after: 500,
             noise: 0.0,
             log_every: 100,
+            lr_floor: 0.05,
             mask: Mask::Full,
         }
     }
@@ -104,7 +107,9 @@ pub fn fit<B: AutodiffBackend>(
         let lr = if step < cfg.warmup {
             cfg.lr * (step + 1) as f64 / cfg.warmup as f64
         } else {
-            cfg.lr
+            let t = (step - cfg.warmup) as f64 / (cfg.steps - cfg.warmup).max(1) as f64;
+            let cos = 0.5 * (1.0 + (std::f64::consts::PI * t).cos());
+            cfg.lr * (cfg.lr_floor + (1.0 - cfg.lr_floor) * cos)
         };
         model = opt.step(lr, model, grads);
 
