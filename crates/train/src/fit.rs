@@ -19,6 +19,11 @@ pub struct FitConfig {
     pub rollout: usize,
     /// Single-step only before this iteration (pushforward curriculum).
     pub rollout_after: usize,
+    /// Gaussian noise added to the input state at every rollout step, in
+    /// normalized units. Run 2026-09-18-1 was stable single-step and blew up
+    /// by 50 ticks: the model never saw its own error distribution. Noise
+    /// injection makes it contractive on off-manifold states.
+    pub noise: f32,
     pub log_every: usize,
     pub mask: Mask,
 }
@@ -32,6 +37,7 @@ impl Default for FitConfig {
             warmup: 100,
             rollout: 4,
             rollout_after: 500,
+            noise: 0.0,
             log_every: 100,
             mask: Mask::Full,
         }
@@ -80,6 +86,14 @@ pub fn fit<B: AutodiffBackend>(
         let mut x = to_field(&batch.states[0]);
         let mut loss = Tensor::<B, 1>::zeros([1], device);
         for step_k in 0..k {
+            if cfg.noise > 0.0 {
+                x = x.clone()
+                    + Tensor::<B, 4>::random(
+                        dims,
+                        burn::tensor::Distribution::Normal(0.0, cfg.noise as f64),
+                        device,
+                    );
+            }
             x = model.step(x, meta.clone(), mask.clone());
             let target = to_field(&batch.states[step_k + 1]);
             loss = loss + (x.clone() - target).powi_scalar(2).mean();

@@ -50,6 +50,8 @@ enum Cmd {
         rollout: usize,
         #[arg(long, default_value_t = 1000)]
         rollout_after: usize,
+        #[arg(long, default_value_t = 0.0)]
+        noise: f32,
         #[arg(long, default_value_t = 1e-3)]
         nu: f32,
         #[arg(long, default_value_t = 0)]
@@ -85,6 +87,7 @@ fn main() {
             batch,
             rollout,
             rollout_after,
+            noise,
             nu,
             seed,
             layers,
@@ -98,6 +101,7 @@ fn main() {
             batch,
             rollout,
             rollout_after,
+            noise,
             nu,
             seed,
             layers,
@@ -121,6 +125,7 @@ fn train_cmd(
     batch: usize,
     rollout: usize,
     rollout_after: usize,
+    noise: f32,
     nu: f32,
     seed: u64,
     layers: usize,
@@ -157,6 +162,7 @@ fn train_cmd(
         lr,
         rollout,
         rollout_after,
+        noise,
         mask: Mask::Full,
         ..Default::default()
     };
@@ -191,7 +197,7 @@ fn train_cmd(
     let errs = eval_model(&model, &meta, 4, seed + 1000, &device);
     print_errors(&errs);
     write_run_log(
-        log_dir, steps, lr, batch, rollout, rollout_after, nu, seed, layers, dim, &rows,
+        log_dir, steps, lr, batch, rollout, rollout_after, noise, nu, seed, layers, dim, &rows,
         train_secs, &errs, note, model.num_params(),
     );
 }
@@ -320,6 +326,7 @@ fn write_run_log(
     batch: usize,
     rollout: usize,
     rollout_after: usize,
+    noise: f32,
     nu: f32,
     seed: u64,
     layers: usize,
@@ -347,7 +354,7 @@ fn write_run_log(
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));

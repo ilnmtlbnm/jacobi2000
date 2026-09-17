@@ -4,3 +4,5 @@
 *.mpk
 /web/model
 /artifacts
+/target-check
+/target-wasm
