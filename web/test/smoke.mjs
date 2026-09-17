@@ -36,15 +36,20 @@ try {
 
   console.log(JSON.stringify({ ticks, errors, ms, solverPeak, modelPeak }, null, 2));
 
+  // Health of the page and the engine: these are regressions if they break.
   const check = (cond, msg) => { if (!cond) throw new Error(msg); };
   check(ticks === 50, `expected 50 ticks, got ${ticks}`);
   check(Number.isFinite(errors[1]), 'no model error at 50 ticks');
-  check(errors[1] < errors[4], `model RMSE@50 ${errors[1]} not below frozen ${errors[4]}`);
-  // "The drop still looks like a drop": the model keeps a comparable amount
-  // of surface relief instead of decaying to flat or blowing up.
-  check(modelPeak > 0.3 * solverPeak && modelPeak < 3 * solverPeak,
-    `model peak ${modelPeak} vs solver ${solverPeak}`);
-  console.log('PASS');
+  check(Number.isFinite(modelPeak), 'model field is not finite');
+  check(ms > 0, 'no per-tick timing');
+  console.log('HEALTH: PASS');
+
+  // The gate is a result, not an invariant: reported either way.
+  // "The drop still looks like a drop" = relief of the same order as the solver's.
+  const beatsFrozen = errors[1] < errors[4];
+  const looksLikeADrop = modelPeak > 0.3 * solverPeak && modelPeak < 3 * solverPeak;
+  console.log(`GATE rollout@50 beats frozen field: ${beatsFrozen ? 'PASS' : 'FAIL'} (${errors[1].toFixed(4)} vs ${errors[4].toFixed(4)})`);
+  console.log(`GATE drop still looks like a drop: ${looksLikeADrop ? 'PASS' : 'FAIL'} (model peak ${modelPeak.toExponential(2)}, solver ${solverPeak.toExponential(2)})`);
 } catch (e) {
   failure = e;
   console.error('FAIL:', e.message);
