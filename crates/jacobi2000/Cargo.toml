@@ -1,0 +1,12 @@
+[package]
+name = "jacobi2000"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+burn = { workspace = true }
+
+[dev-dependencies]
+# Backend features belong in the consumer crate; tests are a consumer.
+burn = { version = "0.20", default-features = false, features = ["std", "ndarray"] }
