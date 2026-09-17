@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jacobi2000 — shallow water</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #2a313c;
+    --fg: #e6edf3; --dim: #8b949e; --accent: #4fc3f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 16px; margin: 0 0 12px; font-weight: 600; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .panels { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  .panel h2 { font-size: 11px; letter-spacing: .12em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+  .canvases { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  figure { margin: 0; }
+  figcaption { font-size: 11px; color: var(--dim); margin-top: 4px; }
+  canvas { width: 256px; height: 256px; image-rendering: pixelated; background: #000; border: 1px solid var(--line); border-radius: 4px; display: block; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: right; padding: 2px 0; font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); }
+  .kv { display: flex; justify-content: space-between; gap: 8px; }
+  .kv span:last-child { color: var(--accent); font-variant-numeric: tabular-nums; }
+  button { font: inherit; background: #21262d; color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #status { color: var(--accent); }
+  #status.bad { color: #f85149; }
+</style>
+</head>
+<body>
+<h1>jacobi2000 <span>— shallow water: solver vs learned operator</span></h1>
+
+<div class="canvases">
+  <figure><canvas id="c-solver" width="64" height="64"></canvas><figcaption>solver (truth) — click to drop</figcaption></figure>
+  <figure><canvas id="c-model" width="64" height="64"></canvas><figcaption>model</figcaption></figure>
+  <figure><canvas id="c-div" width="64" height="64"></canvas><figcaption>divergence</figcaption></figure>
+</div>
+
+<div class="panels">
+  <section class="panel">
+    <h2>STATUS</h2>
+    <div class="kv"><span>state</span><span id="status">loading</span></div>
+    <div class="kv"><span>backend</span><span id="backend">—</span></div>
+    <div class="kv"><span>grid</span><span id="grid">—</span></div>
+    <div class="kv"><span>mask</span><span id="mask">—</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>INPUT</h2>
+    <div class="kv"><span>click the solver canvas</span><span>drop</span></div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button id="b-drop">drop</button>
+      <button id="b-run">run</button>
+      <button id="b-reset">reset</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>OUTPUT</h2>
+    <div class="kv"><span>ticks</span><span id="ticks">0</span></div>
+    <div class="kv"><span>peak |h'| solver</span><span id="peak">—</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>PERFORMANCE</h2>
+    <div class="kv"><span>ms / tick</span><span id="ms">—</span></div>
+    <table>
+      <tr><th>rollout RMSE</th><th>model</th><th>frozen</th></tr>
+      <tr><td>10 ticks</td><td id="e10">—</td><td id="p10">—</td></tr>
+      <tr><td>50 ticks</td><td id="e50">—</td><td id="p50">—</td></tr>
+      <tr><td>200 ticks</td><td id="e200">—</td><td id="p200">—</td></tr>
+    </table>
+  </section>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
