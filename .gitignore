@@ -2,3 +2,5 @@
 /web/node_modules
 /web/pkg
 *.mpk
+/web/model
+/artifacts
