@@ -14,6 +14,7 @@ use train::{
     data::GeneratorConfig,
     eval::rollout_errors,
     fit::{fit, FitConfig},
+    metrics::{sample_single_drop, score_rollout, Metrics, BANDS},
     Generator, Meta,
 };
 
@@ -88,6 +89,20 @@ enum Cmd {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         project: bool,
     },
+    /// Rung-1 metrics (GOAL-2026-09-18 sec. 1) on fresh single-drop
+    /// trajectories, scored only before the first wall reflection.
+    EvalMetrics {
+        #[arg(long, default_value = "artifacts/model")]
+        model: PathBuf,
+        #[arg(long, default_value = "10,25,50", value_delimiter = ',')]
+        horizons: Vec<usize>,
+        #[arg(long, default_value_t = 16)]
+        trajectories: usize,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        project: bool,
+    },
 }
 
 fn main() {
@@ -141,6 +156,13 @@ fn run(cmd: Cmd) {
             seed,
             project,
         } => eval_cmd(&model, trajectories, seed, project),
+        Cmd::EvalMetrics {
+            model,
+            horizons,
+            trajectories,
+            seed,
+            project,
+        } => eval_metrics_cmd(&model, &horizons, trajectories, seed, project),
     }
 }
 
@@ -363,6 +385,91 @@ fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool) {
     println!("backend: {BACKEND}, mass projection: {project}");
     let e = eval_model(&model, &meta, trajectories, seed, project, &device);
     print_errors(&e);
+}
+
+/// Mean of the per-trajectory metrics at one horizon.
+fn mean_metrics(rows: &[Metrics]) -> Metrics {
+    let n = rows.len() as f32;
+    let mut bands = [0.0f32; BANDS];
+    for (b, out) in bands.iter_mut().enumerate() {
+        *out = rows.iter().map(|r| r.bands[b]).sum::<f32>() / n;
+    }
+    Metrics {
+        corr: rows.iter().map(|r| r.corr).sum::<f32>() / n,
+        corr_h: rows.iter().map(|r| r.corr_h).sum::<f32>() / n,
+        active_rmse: rows.iter().map(|r| r.active_rmse).sum::<f32>() / n,
+        amplitude_ratio: rows.iter().map(|r| r.amplitude_ratio).sum::<f32>() / n,
+        radius_error: rows.iter().map(|r| r.radius_error).sum::<f32>() / n,
+        bands,
+        global_rmse: rows.iter().map(|r| r.global_rmse).sum::<f32>() / n,
+    }
+}
+
+fn metrics_row(label: &str, ticks: usize, m: &Metrics) -> String {
+    format!(
+        "| {label} | {ticks} | {:.4} | {:.4} | {:.5} | {:.4} | {:+.3} | {:.5} | {:.5} | {:.5} | {:.5} |",
+        m.corr,
+        m.corr_h,
+        m.active_rmse,
+        m.amplitude_ratio,
+        m.radius_error,
+        m.bands[0],
+        m.bands[1],
+        m.bands[2],
+        m.global_rmse
+    )
+}
+
+fn eval_metrics_cmd(
+    dir: &Path,
+    horizons: &[usize],
+    trajectories: usize,
+    seed: u64,
+    project: bool,
+) {
+    let device = Default::default();
+    let (model, meta) = load(dir, &device);
+    let params = meta.params();
+    let mut horizons = horizons.to_vec();
+    horizons.sort_unstable();
+    // Nothing is scored after the wave first touches a wall, and a trajectory
+    // whose horizon is under 50 ticks cannot answer the 50-tick question at
+    // all, so it is dropped rather than scored on reflections.
+    let need = (*horizons.last().unwrap()).max(50) as f32;
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let mut model_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+    let mut frozen_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+    let (mut used, mut skipped) = (0usize, 0usize);
+    while used < trajectories {
+        let (init, drop) = sample_single_drop(&params, &mut rng);
+        if params.horizon_ticks(drop.cx, drop.cy) < need {
+            skipped += 1;
+            continue;
+        }
+        let (m, f) = score_rollout(
+            &model, &params, &meta.norm, &init, &drop, &horizons, project, &device,
+        );
+        for i in 0..horizons.len() {
+            model_rows[i].push(m[i]);
+            frozen_rows[i].push(f[i]);
+        }
+        used += 1;
+    }
+
+    println!("backend: {BACKEND}, mass projection: {project}");
+    println!(
+        "{used} single-drop trajectories, {skipped} skipped (horizon < {need:.0} ticks)\n"
+    );
+    println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for (i, t) in horizons.iter().enumerate() {
+        println!("{}", metrics_row("model", *t, &mean_metrics(&model_rows[i])));
+        println!(
+            "{}",
+            metrics_row("frozen field", *t, &mean_metrics(&frozen_rows[i]))
+        );
+    }
 }
 
 fn git_commit() -> String {
