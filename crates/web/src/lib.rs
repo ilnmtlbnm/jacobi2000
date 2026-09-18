@@ -37,6 +37,8 @@ struct App {
     mass0: Tensor<B, 2>,
     /// Field frozen at the last reset: the persistence baseline.
     frozen: Vec<f32>,
+    mask_spec: Mask,
+    mask: Option<Tensor<B, 2>>,
     tick: usize,
     errors: Vec<f32>,
     persistence: Vec<f32>,
@@ -107,6 +109,7 @@ pub async fn init(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
         .load(weights, &device)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let model = cfg.init::<B>(&device).load_record(record);
+    let mask = meta.mask.to_tensor::<B>(&model.grid, &device);
 
     let params = meta.params();
     let truth = State::flat(&params);
@@ -126,6 +129,8 @@ pub async fn init(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
             mass0: jacobi2000::mass(&x),
             x,
             frozen,
+            mask_spec: meta.mask,
+            mask,
             tick: 0,
             errors: vec![f32::NAN; CHECKPOINTS.len()],
             persistence: vec![f32::NAN; CHECKPOINTS.len()],
@@ -218,7 +223,7 @@ pub async fn step(n: usize) {
             app.tick += 1;
             (
                 app.x.clone(),
-                None::<Tensor<B, 2>>,
+                app.mask.clone(),
                 app.meta.clone(),
                 app.mass0.clone(),
             )
@@ -345,9 +350,12 @@ pub fn grid_size() -> Vec<usize> {
     })
 }
 
-/// The mask the demo runs with. Full tonight; stencil is the next step and
-/// the engine already takes it as an argument.
+/// The mask the loaded checkpoint runs with (read from its meta.json).
 #[wasm_bindgen]
 pub fn mask_name() -> String {
-    format!("{:?}", Mask::Full)
+    APP.with(|a| {
+        let a = a.borrow();
+        let app = a.as_ref().unwrap();
+        format!("{:?}", app.mask_spec)
+    })
 }

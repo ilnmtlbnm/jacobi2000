@@ -280,12 +280,13 @@ pub fn score_rollout<B: Backend>(
     init: &State,
     drop: &Drop,
     horizons: &[usize],
+    mask: Mask,
     project: bool,
     device: &B::Device,
 ) -> (Vec<Metrics>, Vec<Metrics>) {
     let n = params.cells();
     let grid = model.grid;
-    let mask = Mask::Full.to_tensor::<B>(&grid, device);
+    let mask = mask.to_tensor::<B>(&grid, device);
     let meta =
         Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device).reshape([1, META_DIM]);
 

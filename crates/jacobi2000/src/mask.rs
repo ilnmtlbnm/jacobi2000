@@ -5,10 +5,11 @@
 //! shaped `[tokens, tokens]` and broadcast over batch and heads.
 
 use burn::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::grid::Grid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mask {
     /// Every token sees every token. Elliptic character: instantaneous
     /// global coupling.

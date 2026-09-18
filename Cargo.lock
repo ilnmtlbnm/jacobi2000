@@ -2505,6 +2505,7 @@ name = "jacobi2000"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "serde",
 ]
 
 [[package]]

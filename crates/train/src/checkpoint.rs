@@ -6,7 +6,7 @@ use std::path::Path;
 use burn::module::Module;
 use burn::record::{BinBytesRecorder, FullPrecisionSettings, Recorder};
 use burn::tensor::backend::Backend;
-use jacobi2000::{Jacobi2000, Jacobi2000Config};
+use jacobi2000::{Jacobi2000, Jacobi2000Config, Mask};
 use serde::{Deserialize, Serialize};
 use solvers::Params;
 
@@ -29,6 +29,7 @@ pub struct Meta {
     pub g: f32,
     pub depth: f32,
     pub nu: f32,
+    pub mask: Mask,
 }
 
 impl Meta {
@@ -105,7 +106,36 @@ mod tests {
             g: 9.81,
             depth: 1.0,
             nu: 1e-3,
+            mask: Mask::Full,
         }
+    }
+
+    #[test]
+    fn stencil_mask_round_trips() {
+        let device = Default::default();
+        let cfg = Jacobi2000Config::new().with_layers(1);
+        let model = cfg.init::<B>(&device);
+        let mut meta = test_meta(&cfg);
+        meta.mask = Mask::Stencil {
+            radius: 1,
+            dilation: 1,
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "jacobi2000-checkpoint-mask-test-{}",
+            std::process::id()
+        ));
+        save(&dir, &model, &meta);
+        let (_, loaded_meta): (Jacobi2000<B>, Meta) = load(&dir, &device);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            loaded_meta.mask,
+            Mask::Stencil {
+                radius: 1,
+                dilation: 1
+            }
+        );
     }
 
     #[test]

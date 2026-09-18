@@ -29,6 +29,30 @@ const BACKEND: &str = "wgpu (Metal)";
 #[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
 const BACKEND: &str = "ndarray (CPU)";
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum MaskKind {
+    Full,
+    Stencil,
+}
+
+impl MaskKind {
+    fn build(self, radius: usize, dilation: usize) -> Mask {
+        match self {
+            MaskKind::Full => Mask::Full,
+            MaskKind::Stencil => Mask::Stencil { radius, dilation },
+        }
+    }
+}
+
+fn mask_flags(m: Mask) -> String {
+    match m {
+        Mask::Full => "--mask full".to_string(),
+        Mask::Stencil { radius, dilation } => {
+            format!("--mask stencil --radius {radius} --dilation {dilation}")
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(about = "jacobi2000: shallow water, solver and learned operator")]
 struct Cli {
@@ -90,6 +114,12 @@ enum Cmd {
         /// config). Optimizer state and the LR schedule are fresh either way.
         #[arg(long)]
         init: Option<PathBuf>,
+        #[arg(long, default_value = "full")]
+        mask: MaskKind,
+        #[arg(long, default_value_t = 1)]
+        radius: usize,
+        #[arg(long, default_value_t = 1)]
+        dilation: usize,
     },
     /// Rollout error at 10/50/200 ticks against the solver, with the
     /// frozen-field baseline.
@@ -169,6 +199,9 @@ fn run(cmd: Cmd) {
             log_dir,
             note,
             init,
+            mask,
+            radius,
+            dilation,
         } => train_cmd(TrainArgs {
             steps,
             lr,
@@ -190,6 +223,7 @@ fn run(cmd: Cmd) {
             log_dir,
             note,
             init,
+            mask: mask.build(radius, dilation),
         }),
         Cmd::Eval {
             model,
@@ -236,6 +270,7 @@ struct TrainArgs {
     log_dir: PathBuf,
     note: Option<String>,
     init: Option<PathBuf>,
+    mask: Mask,
 }
 
 fn train_cmd(a: TrainArgs) {
@@ -260,6 +295,7 @@ fn train_cmd(a: TrainArgs) {
         log_dir,
         note,
         init,
+        mask,
     } = a;
     let (out, log_dir) = (out.as_path(), log_dir.as_path());
     let device = Default::default();
@@ -301,7 +337,11 @@ fn train_cmd(a: TrainArgs) {
         model = init_model;
         println!("warm start: {}", init_dir.display());
     }
-    println!("backend: {BACKEND}, params: {}", model.num_params());
+    println!(
+        "backend: {BACKEND}, params: {}, mask: {}",
+        model.num_params(),
+        mask_flags(mask)
+    );
 
     let fcfg = FitConfig {
         steps,
@@ -312,7 +352,7 @@ fn train_cmd(a: TrainArgs) {
         lr_floor,
         project,
         spectral,
-        mask: Mask::Full,
+        mask,
         ..Default::default()
     };
     let mut rows = Vec::new();
@@ -339,6 +379,7 @@ fn train_cmd(a: TrainArgs) {
         g: params.g,
         depth: params.depth,
         nu: params.nu,
+        mask,
     };
     save(out, &model, &meta);
     println!("wrote {}", out.display());
@@ -348,7 +389,7 @@ fn train_cmd(a: TrainArgs) {
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, rollout, rollout_after, noise,
         lr_floor, project, spectral, nu, seed, layers, dim, &rows, train_secs, &errs, note,
-        model.num_params(), init,
+        model.num_params(), init, mask,
     );
 }
 
@@ -380,7 +421,7 @@ fn eval_model(
             &meta.norm,
             &init,
             &ticks,
-            Mask::Full,
+            meta.mask,
             project,
             device,
         );
@@ -425,7 +466,10 @@ fn print_errors(e: &Errors) {
 fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
-    println!("backend: {BACKEND}, mass projection: {project}");
+    println!(
+        "backend: {BACKEND}, mass projection: {project}, mask: {}",
+        mask_flags(meta.mask)
+    );
     let e = eval_model(&model, &meta, trajectories, seed, project, &device);
     print_errors(&e);
 }
@@ -491,7 +535,7 @@ fn eval_metrics_cmd(
             continue;
         }
         let (m, f) = score_rollout(
-            &model, &params, &meta.norm, &init, &drop, &horizons, project, &device,
+            &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project, &device,
         );
         for i in 0..horizons.len() {
             model_rows[i].push(m[i]);
@@ -500,7 +544,10 @@ fn eval_metrics_cmd(
         used += 1;
     }
 
-    println!("backend: {BACKEND}, mass projection: {project}");
+    println!(
+        "backend: {BACKEND}, mass projection: {project}, mask: {}",
+        mask_flags(meta.mask)
+    );
     println!(
         "{used} single-drop trajectories, {skipped} skipped (horizon < {need:.0} ticks)\n"
     );
@@ -580,6 +627,7 @@ fn write_run_log(
     note: Option<String>,
     num_params: usize,
     init: Option<PathBuf>,
+    mask: Mask,
 ) {
     std::fs::create_dir_all(dir).unwrap();
     let date = std::process::Command::new("date")
@@ -597,12 +645,14 @@ fn write_run_log(
     s.push_str("Machine: Apple M2, 16 GB. Timings **provisional** (the GPU may be shared).\n\n");
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
+    s.push_str(&format!("- mask: {}\n", mask_flags(mask)));
     let init_flag = init
         .map(|p| format!(" --init {}", p.display()))
         .unwrap_or_default();
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}{init_flag}`\n",
-        if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
+        if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" },
+        mask_flags(mask)
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));
     s.push_str(&format!("- wall clock: {train_secs:.1} s\n"));
