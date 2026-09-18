@@ -59,6 +59,22 @@ impl Params {
     pub fn cells(&self) -> usize {
         self.nx * self.ny
     }
+
+    /// Gravity-wave speed in cells per tick: `sqrt(g * depth) * dt / dx`.
+    pub fn cells_per_tick(&self) -> f32 {
+        (self.g * self.depth).sqrt() * self.dt / self.dx
+    }
+
+    /// Ticks before a drop at `(cx, cy)` (cell coordinates) first meets its
+    /// own reflection off the nearest wall. Everything measured after this
+    /// is the model's handling of reflections, not of the drop.
+    pub fn horizon_ticks(&self, cx: f32, cy: f32) -> f32 {
+        let dist = cx
+            .min(cy)
+            .min(self.nx as f32 - cx)
+            .min(self.ny as f32 - cy);
+        dist / self.cells_per_tick()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
