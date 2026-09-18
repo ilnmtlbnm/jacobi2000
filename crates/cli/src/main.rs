@@ -114,6 +114,11 @@ enum Cmd {
         /// Project onto constant mass after every predicted step.
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         project: bool,
+        /// Also project onto the energy inequality (task 11): scale (u, v)
+        /// down when a predicted step's energy exceeds the viscosity-scaled
+        /// bound. Off by default, alongside the existing mass projection.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        project_energy: bool,
         /// Weight of the wavenumber-banded error term. 0 = plain MSE.
         #[arg(long, default_value_t = 0.0)]
         spectral: f32,
@@ -153,6 +158,9 @@ enum Cmd {
         seed: u64,
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         project: bool,
+        /// Also project onto the energy inequality (task 11).
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        project_energy: bool,
     },
     /// Rung-1 metrics (GOAL-2026-09-18 sec. 1) on fresh single-drop
     /// trajectories, scored only before the first wall reflection.
@@ -201,6 +209,14 @@ enum Cmd {
         seed: u64,
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         project: bool,
+        /// Also project onto the energy inequality (task 11).
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        project_energy: bool,
+        /// xr ensemble at inference (task 10, CONCEPT sec. 4): K jittered
+        /// patch-grid offsets, same weights, mean + per-cell spread. K <= 1
+        /// disables the ensemble section of the report.
+        #[arg(long, default_value_t = 1)]
+        xr: usize,
     },
 }
 
@@ -230,6 +246,7 @@ fn run(cmd: Cmd) {
             noise,
             lr_floor,
             project,
+            project_energy,
             spectral,
             nu,
             seed,
@@ -258,6 +275,7 @@ fn run(cmd: Cmd) {
             noise,
             lr_floor,
             project,
+            project_energy,
             spectral,
             nu,
             seed,
@@ -274,7 +292,8 @@ fn run(cmd: Cmd) {
             trajectories,
             seed,
             project,
-        } => eval_cmd(&model, trajectories, seed, project),
+            project_energy,
+        } => eval_cmd(&model, trajectories, seed, project, project_energy),
         Cmd::GenData {
             pool,
             batch,
@@ -296,11 +315,13 @@ fn run(cmd: Cmd) {
             trajectories,
             seed,
             project,
+            project_energy,
+            xr,
         } => {
             if stress {
-                eval_stress_cmd(&model, &horizons, project)
+                eval_stress_cmd(&model, &horizons, project, project_energy)
             } else {
-                eval_metrics_cmd(&model, &horizons, trajectories, seed, project)
+                eval_metrics_cmd(&model, &horizons, trajectories, seed, project, project_energy, xr)
             }
         }
     }
@@ -322,6 +343,7 @@ struct TrainArgs {
     noise: f32,
     lr_floor: f64,
     project: bool,
+    project_energy: bool,
     spectral: f32,
     nu: f32,
     seed: u64,
@@ -351,6 +373,7 @@ fn train_cmd(a: TrainArgs) {
         noise,
         lr_floor,
         project,
+        project_energy,
         spectral,
         nu,
         seed,
@@ -420,6 +443,7 @@ fn train_cmd(a: TrainArgs) {
         noise,
         lr_floor,
         project,
+        project_energy,
         spectral,
         mask,
         ..Default::default()
@@ -453,7 +477,7 @@ fn train_cmd(a: TrainArgs) {
     save(out, &model, &meta);
     println!("wrote {}", out.display());
 
-    let errs = eval_model(&model, &meta, 4, seed + 1000, project, &device);
+    let errs = eval_model(&model, &meta, 4, seed + 1000, project, project_energy, &device);
     print_errors(&errs);
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, amplitude_max,
@@ -476,6 +500,7 @@ fn eval_model(
     trajectories: usize,
     seed: u64,
     project: bool,
+    project_energy: bool,
     device: &<Back as burn::tensor::backend::Backend>::Device,
 ) -> Errors {
     let ticks = vec![10usize, 50, 200];
@@ -493,6 +518,7 @@ fn eval_model(
             &ticks,
             meta.mask,
             project,
+            project_energy,
             device,
         );
         for i in 0..ticks.len() {
@@ -533,14 +559,14 @@ fn print_errors(e: &Errors) {
     }
 }
 
-fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool) {
+fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool, project_energy: bool) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
     println!(
-        "backend: {BACKEND}, mass projection: {project}, mask: {}",
+        "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy}, mask: {}",
         mask_flags(meta.mask)
     );
-    let e = eval_model(&model, &meta, trajectories, seed, project, &device);
+    let e = eval_model(&model, &meta, trajectories, seed, project, project_energy, &device);
     print_errors(&e);
 }
 
@@ -592,12 +618,15 @@ fn sample_stats(xs: &[f32]) -> (f32, f32, f32, f32, usize) {
     (mean, var.sqrt(), min, max, over)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_metrics_cmd(
     dir: &Path,
     horizons: &[usize],
     trajectories: usize,
     seed: u64,
     project: bool,
+    project_energy: bool,
+    xr: usize,
 ) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
@@ -622,6 +651,9 @@ fn eval_metrics_cmd(
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut model_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
     let mut frozen_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+    // Kept so the xr ensemble (task 10) is scored on the same held-out set
+    // as the single-offset baseline above, not a fresh draw.
+    let mut trajs: Vec<(State, train::metrics::Drop)> = Vec::new();
     let (mut used, mut skipped) = (0usize, 0usize);
     while used < trajectories {
         let (init, drop) = sample_single_drop(&params, &mut rng);
@@ -630,7 +662,8 @@ fn eval_metrics_cmd(
             continue;
         }
         let (m, f) = score_rollout(
-            &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project, &device,
+            &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
+            project_energy, &device,
         );
         for i in 0..horizons.len() {
             model_rows[i].push(m[i]);
@@ -649,6 +682,7 @@ fn eval_metrics_cmd(
                 &device,
             ));
         }
+        trajs.push((init, drop));
         used += 1;
     }
 
@@ -692,11 +726,42 @@ fn eval_metrics_cmd(
             }
         }
     }
+
+    if xr > 1 {
+        println!("\n## xr ensemble (task 10, CONCEPT sec. 4): K={xr} jittered patch-grid offsets, same weights\n");
+        let mut xr_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+        let mut base_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+        let mut spread_sums = vec![0.0f64; horizons.len()];
+        for (init, drop) in &trajs {
+            let (xr_m, base_m, spread) = train::score_rollout_xr(
+                &model, &params, &meta.norm, init, drop, &horizons, meta.mask, project, xr,
+                &device,
+            );
+            for i in 0..horizons.len() {
+                xr_rows[i].push(xr_m[i]);
+                base_rows[i].push(base_m[i]);
+                spread_sums[i] += spread[i] as f64;
+            }
+        }
+        println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
+        println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        for (i, t) in horizons.iter().enumerate() {
+            println!("{}", metrics_row("xr ensemble mean", *t, &mean_metrics(&xr_rows[i])));
+            println!(
+                "{}",
+                metrics_row("single-offset baseline", *t, &mean_metrics(&base_rows[i]))
+            );
+        }
+        println!("\n| ticks | mean spread (physical h units) |\n|---:|---:|");
+        for (i, t) in horizons.iter().enumerate() {
+            println!("| {t} | {:.6} |", spread_sums[i] / trajs.len() as f64);
+        }
+    }
 }
 
 /// Task 8b stress set: single high-amplitude, stacked and corner drops, 8
 /// trajectories each, seed 0 fixed per category so the set is reproducible.
-fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool) {
+fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool, project_energy: bool) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
     let params = meta.params();
@@ -725,7 +790,8 @@ fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool) {
         for _ in 0..8 {
             let (init, drop) = sample_stress_drop(kind, &params, &mut rng);
             let (m, f) = score_rollout(
-                &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project, &device,
+                &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
+                project_energy, &device,
             );
             for i in 0..horizons.len() {
                 model_rows[i].push(m[i]);

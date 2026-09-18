@@ -311,6 +311,32 @@ pub async fn model_and_divergence() -> Vec<f32> {
     out
 }
 
+/// Per-cell xr ensemble spread of the surface height (task 10, CONCEPT sec.
+/// 4), `[ny * nx]`, physical units, for `k` jittered patch-grid offsets on
+/// the *current* model state (does not advance the tick). TODO(demo): wire
+/// into the divergence panel as a fourth `paint()` call, e.g.
+/// `paint(ctx.spread, await engine.spread_field(4), 0.01)` next to the
+/// existing `model_and_divergence()` call in `web/app.js`'s `render()`.
+#[wasm_bindgen]
+pub async fn spread_field(k: usize) -> Vec<f32> {
+    let (model, x, meta, mask, norm) = APP.with(|a| {
+        let a = a.borrow();
+        let app = a.as_ref().unwrap();
+        (
+            app.model.clone(),
+            app.x.clone(),
+            app.meta.clone(),
+            app.mask.clone(),
+            app.norm,
+        )
+    });
+    let (_, spread) = train::xr_step(&model, x, meta, mask, k);
+    let data = spread.into_data_async().await.unwrap();
+    let v = data.as_slice::<f32>().unwrap();
+    let n = APP.with(|a| a.borrow().as_ref().unwrap().params.cells());
+    v[..n].iter().map(|&s| s * norm.std[0]).collect()
+}
+
 #[wasm_bindgen]
 pub fn ticks() -> usize {
     APP.with(|a| a.borrow().as_ref().unwrap().tick)

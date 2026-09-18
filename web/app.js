@@ -104,6 +104,11 @@ function paint(context, field, scale) {
   context.putImageData(img, 0, 0);
 }
 
+// TODO(task 10, xr ensemble spread): add a fourth panel and call
+//   const spread = await engine.spread_field(4);
+// then paint(ctx.spread, spread, 0.01) alongside the calls below. Left as a
+// TODO per the stay-true-for-longer queue: the JS/UI wiring (new canvas,
+// STATUS row) is frontend-browser-audio's scope, not this task's.
 async function render() {
   const s = engine.solver_field();
   const md = await engine.model_and_divergence();
