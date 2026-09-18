@@ -49,6 +49,14 @@ enum Cmd {
         /// Live trajectories held at once. 0 = same as the batch size.
         #[arg(long, default_value_t = 0)]
         pool: usize,
+        /// Draw the pool from the rung-2 single-drop generator: one drop, no
+        /// velocity field, most trajectories short enough to stay
+        /// pre-reflection for their whole life.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        single_drop: bool,
+        /// Share of single-drop trajectories drawn at the long life.
+        #[arg(long, default_value_t = 0.2)]
+        long_fraction: f32,
         #[arg(long, default_value_t = 4)]
         rollout: usize,
         #[arg(long, default_value_t = 1000)]
@@ -141,6 +149,8 @@ fn run(cmd: Cmd) {
             lr,
             batch,
             pool,
+            single_drop,
+            long_fraction,
             rollout,
             rollout_after,
             noise,
@@ -159,6 +169,8 @@ fn run(cmd: Cmd) {
             lr,
             batch,
             pool,
+            single_drop,
+            long_fraction,
             rollout,
             rollout_after,
             noise,
@@ -202,6 +214,8 @@ struct TrainArgs {
     lr: f64,
     batch: usize,
     pool: usize,
+    single_drop: bool,
+    long_fraction: f32,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -223,6 +237,8 @@ fn train_cmd(a: TrainArgs) {
         lr,
         batch,
         pool,
+        single_drop,
+        long_fraction,
         rollout,
         rollout_after,
         noise,
@@ -244,6 +260,8 @@ fn train_cmd(a: TrainArgs) {
         params,
         pool: if pool == 0 { batch } else { pool },
         batch,
+        single_drop,
+        long_fraction,
         seed,
         ..Default::default()
     };
@@ -305,8 +323,9 @@ fn train_cmd(a: TrainArgs) {
     let errs = eval_model(&model, &meta, 4, seed + 1000, project, &device);
     print_errors(&errs);
     write_run_log(
-        log_dir, steps, lr, batch, pool, rollout, rollout_after, noise, lr_floor, project, spectral, nu,
-        seed, layers, dim, &rows, train_secs, &errs, note, model.num_params(),
+        log_dir, steps, lr, batch, pool, single_drop, long_fraction, rollout, rollout_after, noise,
+        lr_floor, project, spectral, nu, seed, layers, dim, &rows, train_secs, &errs, note,
+        model.num_params(),
     );
 }
 
@@ -553,6 +572,8 @@ fn write_run_log(
     lr: f64,
     batch: usize,
     pool: usize,
+    single_drop: bool,
+    long_fraction: f32,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -586,7 +607,7 @@ fn write_run_log(
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));
