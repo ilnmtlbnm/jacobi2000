@@ -89,6 +89,8 @@ $('c-solver').addEventListener('click', async (ev) => {
 $('b-drop').addEventListener('click', async () => { engine.drop_at(nx / 2, ny / 2, 0.05, 4.0); await render(); });
 $('b-reset').addEventListener('click', async () => { engine.reset(); await render(); });
 $('b-run').addEventListener('click', () => { running = !running; $('b-run').textContent = running ? 'pause' : 'run'; if (running) loop(); });
+$('b-step').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(1); });
+$('b-step10').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(10); });
 
 // Drive the page from the headless test through this, not through DOM clicks.
 window.__app = {
