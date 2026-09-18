@@ -44,9 +44,11 @@ enum Cmd {
         steps: usize,
         #[arg(long, default_value_t = 3e-4)]
         lr: f64,
-        /// Live trajectories in the pool = batch size.
         #[arg(long, default_value_t = 16)]
         batch: usize,
+        /// Live trajectories held at once. 0 = same as the batch size.
+        #[arg(long, default_value_t = 0)]
+        pool: usize,
         #[arg(long, default_value_t = 4)]
         rollout: usize,
         #[arg(long, default_value_t = 1000)]
@@ -91,6 +93,25 @@ enum Cmd {
     },
     /// Rung-1 metrics (GOAL-2026-09-18 sec. 1) on fresh single-drop
     /// trajectories, scored only before the first wall reflection.
+    /// Generate a pool of fresh single-drop trajectories on the CPU and dump
+    /// one record per trajectory.
+    GenData {
+        /// Trajectories to generate.
+        #[arg(long, default_value_t = 2000)]
+        pool: usize,
+        /// Training batch size the pool will be drawn from. Does not change
+        /// how many trajectories are generated.
+        #[arg(long, default_value_t = 16)]
+        batch: usize,
+        #[arg(long, default_value_t = 0.2)]
+        long_fraction: f32,
+        #[arg(long, default_value_t = 1e-3)]
+        nu: f32,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        #[arg(long)]
+        dump: Option<PathBuf>,
+    },
     EvalMetrics {
         #[arg(long, default_value = "artifacts/model")]
         model: PathBuf,
@@ -119,6 +140,7 @@ fn run(cmd: Cmd) {
             steps,
             lr,
             batch,
+            pool,
             rollout,
             rollout_after,
             noise,
@@ -136,6 +158,7 @@ fn run(cmd: Cmd) {
             steps,
             lr,
             batch,
+            pool,
             rollout,
             rollout_after,
             noise,
@@ -156,6 +179,14 @@ fn run(cmd: Cmd) {
             seed,
             project,
         } => eval_cmd(&model, trajectories, seed, project),
+        Cmd::GenData {
+            pool,
+            batch,
+            long_fraction,
+            nu,
+            seed,
+            dump,
+        } => gen_data_cmd(pool, batch, long_fraction, nu, seed, dump.as_deref()),
         Cmd::EvalMetrics {
             model,
             horizons,
@@ -170,6 +201,7 @@ struct TrainArgs {
     steps: usize,
     lr: f64,
     batch: usize,
+    pool: usize,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -190,6 +222,7 @@ fn train_cmd(a: TrainArgs) {
         steps,
         lr,
         batch,
+        pool,
         rollout,
         rollout_after,
         noise,
@@ -209,7 +242,8 @@ fn train_cmd(a: TrainArgs) {
     let params = Params { nu, ..Params::default() };
     let gcfg = GeneratorConfig {
         params,
-        pool: batch,
+        pool: if pool == 0 { batch } else { pool },
+        batch,
         seed,
         ..Default::default()
     };
@@ -271,7 +305,7 @@ fn train_cmd(a: TrainArgs) {
     let errs = eval_model(&model, &meta, 4, seed + 1000, project, &device);
     print_errors(&errs);
     write_run_log(
-        log_dir, steps, lr, batch, rollout, rollout_after, noise, lr_floor, project, spectral, nu,
+        log_dir, steps, lr, batch, pool, rollout, rollout_after, noise, lr_floor, project, spectral, nu,
         seed, layers, dim, &rows, train_secs, &errs, note, model.num_params(),
     );
 }
@@ -472,6 +506,38 @@ fn eval_metrics_cmd(
     }
 }
 
+fn gen_data_cmd(
+    pool: usize,
+    batch: usize,
+    long_fraction: f32,
+    nu: f32,
+    seed: u64,
+    dump: Option<&Path>,
+) {
+    let cfg = GeneratorConfig {
+        params: Params { nu, ..Params::default() },
+        pool,
+        batch,
+        single_drop: true,
+        long_fraction,
+        seed,
+        ..Default::default()
+    };
+    let recs = train::data::generate(&cfg, dump);
+    let long = recs.iter().filter(|r| r.ticks > cfg.short_ticks.1).count();
+    println!(
+        "{} trajectories (batch {batch}), {long} long ({} ticks), {} short ({}-{} ticks)",
+        recs.len(),
+        cfg.long_ticks,
+        recs.len() - long,
+        cfg.short_ticks.0,
+        cfg.short_ticks.1
+    );
+    if let Some(dir) = dump {
+        println!("dumped to {}", dir.display());
+    }
+}
+
 fn git_commit() -> String {
     std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -486,6 +552,7 @@ fn write_run_log(
     steps: usize,
     lr: f64,
     batch: usize,
+    pool: usize,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -519,7 +586,7 @@ fn write_run_log(
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));
