@@ -52,6 +52,12 @@ enum Cmd {
         rollout_after: usize,
         #[arg(long, default_value_t = 0.0)]
         noise: f32,
+        /// Cosine floor as a fraction of `lr`. 1.0 = constant learning rate.
+        #[arg(long, default_value_t = 0.05)]
+        lr_floor: f64,
+        /// Project onto constant mass after every predicted step.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        project: bool,
         #[arg(long, default_value_t = 1e-3)]
         nu: f32,
         #[arg(long, default_value_t = 0)]
@@ -76,6 +82,8 @@ enum Cmd {
         trajectories: usize,
         #[arg(long, default_value_t = 0)]
         seed: u64,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        project: bool,
     },
 }
 
@@ -96,6 +104,8 @@ fn run(cmd: Cmd) {
             rollout,
             rollout_after,
             noise,
+            lr_floor,
+            project,
             nu,
             seed,
             layers,
@@ -103,45 +113,69 @@ fn run(cmd: Cmd) {
             out,
             log_dir,
             note,
-        } => train_cmd(
+        } => train_cmd(TrainArgs {
             steps,
             lr,
             batch,
             rollout,
             rollout_after,
             noise,
+            lr_floor,
+            project,
             nu,
             seed,
             layers,
             dim,
-            &out,
-            &log_dir,
+            out,
+            log_dir,
             note,
-        ),
+        }),
         Cmd::Eval {
             model,
             trajectories,
             seed,
-        } => eval_cmd(&model, trajectories, seed),
+            project,
+        } => eval_cmd(&model, trajectories, seed, project),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn train_cmd(
+struct TrainArgs {
     steps: usize,
     lr: f64,
     batch: usize,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
+    lr_floor: f64,
+    project: bool,
     nu: f32,
     seed: u64,
     layers: usize,
     dim: usize,
-    out: &Path,
-    log_dir: &Path,
+    out: PathBuf,
+    log_dir: PathBuf,
     note: Option<String>,
-) {
+}
+
+fn train_cmd(a: TrainArgs) {
+    let TrainArgs {
+        steps,
+        lr,
+        batch,
+        rollout,
+        rollout_after,
+        noise,
+        lr_floor,
+        project,
+        nu,
+        seed,
+        layers,
+        dim,
+        out,
+        log_dir,
+        note,
+    } = a;
+    let (out, log_dir) = (out.as_path(), log_dir.as_path());
     let device = Default::default();
     let params = Params { nu, ..Params::default() };
     let gcfg = GeneratorConfig {
@@ -171,6 +205,8 @@ fn train_cmd(
         rollout,
         rollout_after,
         noise,
+        lr_floor,
+        project,
         mask: Mask::Full,
         ..Default::default()
     };
@@ -202,11 +238,11 @@ fn train_cmd(
     save(out, &model, &meta);
     println!("wrote {}", out.display());
 
-    let errs = eval_model(&model, &meta, 4, seed + 1000, &device);
+    let errs = eval_model(&model, &meta, 4, seed + 1000, project, &device);
     print_errors(&errs);
     write_run_log(
-        log_dir, steps, lr, batch, rollout, rollout_after, noise, nu, seed, layers, dim, &rows,
-        train_secs, &errs, note, model.num_params(),
+        log_dir, steps, lr, batch, rollout, rollout_after, noise, lr_floor, project, nu, seed,
+        layers, dim, &rows, train_secs, &errs, note, model.num_params(),
     );
 }
 
@@ -249,11 +285,13 @@ struct Errors {
     persistence: Vec<f32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_model(
     model: &jacobi2000::Jacobi2000<Back>,
     meta: &Meta,
     trajectories: usize,
     seed: u64,
+    project: bool,
     device: &<Back as burn::tensor::backend::Backend>::Device,
 ) -> Errors {
     let ticks = vec![10usize, 50, 200];
@@ -270,6 +308,7 @@ fn eval_model(
             &init,
             &ticks,
             Mask::Full,
+            project,
             device,
         );
         for i in 0..ticks.len() {
@@ -310,11 +349,11 @@ fn print_errors(e: &Errors) {
     }
 }
 
-fn eval_cmd(dir: &Path, trajectories: usize, seed: u64) {
+fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool) {
     let device = Default::default();
     let (model, meta) = load(dir, &device);
-    println!("backend: {BACKEND}");
-    let e = eval_model(&model, &meta, trajectories, seed, &device);
+    println!("backend: {BACKEND}, mass projection: {project}");
+    let e = eval_model(&model, &meta, trajectories, seed, project, &device);
     print_errors(&e);
 }
 
@@ -335,6 +374,8 @@ fn write_run_log(
     rollout: usize,
     rollout_after: usize,
     noise: f32,
+    lr_floor: f64,
+    project: bool,
     nu: f32,
     seed: u64,
     layers: usize,
@@ -362,7 +403,7 @@ fn write_run_log(
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));

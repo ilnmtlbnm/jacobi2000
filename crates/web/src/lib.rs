@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use burn::module::Module;
 use burn::prelude::*;
 use burn::record::{BinBytesRecorder, FullPrecisionSettings, Recorder};
-use jacobi2000::{Jacobi2000, Jacobi2000Config, Mask};
+use jacobi2000::{project_mass, Jacobi2000, Jacobi2000Config, Mask};
 use solvers::{Params, ShallowWater, State};
 use train::checkpoint::Meta;
 use train::data::{meta_of, Normalizer, META_DIM};
@@ -33,6 +33,8 @@ struct App {
     truth: State,
     /// Model state, normalized, kept on the GPU between ticks.
     x: Tensor<B, 4>,
+    /// Box total of h at the last reset: the constant the projection restores.
+    mass0: Tensor<B, 2>,
     /// Field frozen at the last reset: the persistence baseline.
     frozen: Vec<f32>,
     tick: usize,
@@ -97,6 +99,7 @@ pub async fn init(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
             meta: meta_t,
             solver: ShallowWater::new(params),
             truth,
+            mass0: jacobi2000::mass(&x),
             x,
             frozen,
             tick: 0,
@@ -117,6 +120,7 @@ pub fn drop_at(x: f32, y: f32, amp: f32, sigma: f32) {
         app.truth.add_drop(&app.params, x, y, amp, sigma);
         let (frozen, t) = encode_tensor(&app.norm, &app.truth, &app.params, &app.device);
         app.frozen = frozen;
+        app.mass0 = jacobi2000::mass(&t);
         app.x = t;
         app.tick = 0;
         app.errors = vec![f32::NAN; CHECKPOINTS.len()];
@@ -132,6 +136,7 @@ pub fn reset() {
         app.truth = State::flat(&app.params);
         let (frozen, t) = encode_tensor(&app.norm, &app.truth, &app.params, &app.device);
         app.frozen = frozen;
+        app.mass0 = jacobi2000::mass(&t);
         app.x = t;
         app.tick = 0;
         app.errors = vec![f32::NAN; CHECKPOINTS.len()];
@@ -146,17 +151,22 @@ pub async fn step(n: usize) {
     let t0 = js_sys::Date::now();
     for _ in 0..n {
         // Advance the model on the GPU and the solver on the CPU.
-        let (x, mask, meta) = APP.with(|a| {
+        let (x, mask, meta, mass0) = APP.with(|a| {
             let mut a = a.borrow_mut();
             let app = a.as_mut().unwrap();
             app.solver.step(&mut app.truth);
             app.tick += 1;
-            (app.x.clone(), None::<Tensor<B, 2>>, app.meta.clone())
+            (
+                app.x.clone(),
+                None::<Tensor<B, 2>>,
+                app.meta.clone(),
+                app.mass0.clone(),
+            )
         });
         let next = APP.with(|a| {
             let a = a.borrow();
             let app = a.as_ref().unwrap();
-            app.model.step(x, meta, mask)
+            project_mass(app.model.step(x, meta, mask), mass0)
         });
         APP.with(|a| a.borrow_mut().as_mut().unwrap().x = next);
 

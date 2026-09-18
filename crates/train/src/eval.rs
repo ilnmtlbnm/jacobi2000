@@ -4,7 +4,7 @@
 //! channels are comparable and the numbers are dimensionless.
 
 use burn::prelude::*;
-use jacobi2000::{Jacobi2000, Mask};
+use jacobi2000::{project_mass, Jacobi2000, Mask};
 use solvers::{Params, ShallowWater, State};
 
 use crate::data::{meta_of, Normalizer, META_DIM};
@@ -30,7 +30,10 @@ fn rmse(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Roll `model` and the solver forward from the same initial state and
-/// compare at each checkpoint in `ticks` (which must be sorted).
+/// compare at each checkpoint in `ticks` (which must be sorted). With
+/// `project`, each predicted state is put back on the constant-mass
+/// constraint before it becomes the next input.
+#[allow(clippy::too_many_arguments)]
 pub fn rollout_errors<B: Backend>(
     model: &Jacobi2000<B>,
     params: &Params,
@@ -38,6 +41,7 @@ pub fn rollout_errors<B: Backend>(
     init: &State,
     ticks: &[usize],
     mask: Mask,
+    project: bool,
     device: &B::Device,
 ) -> RolloutErrors {
     let n = params.cells();
@@ -54,6 +58,7 @@ pub fn rollout_errors<B: Backend>(
     let frozen = packed.clone();
     let mut x = Tensor::<B, 1>::from_floats(packed.as_slice(), device)
         .reshape([1, 3, params.ny, params.nx]);
+    let mass0 = jacobi2000::mass(&x);
 
     let mut out = RolloutErrors {
         ticks: ticks.to_vec(),
@@ -65,6 +70,9 @@ pub fn rollout_errors<B: Backend>(
     for t in 1..=last {
         solver.step(&mut truth);
         x = model.step(x, meta.clone(), mask.clone());
+        if project {
+            x = project_mass(x, mass0.clone());
+        }
         if ticks.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];
             norm.encode(&truth, &mut target);

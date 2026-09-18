@@ -5,7 +5,7 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-use jacobi2000::{Jacobi2000, Mask};
+use jacobi2000::{project_mass, Jacobi2000, Mask};
 
 use crate::data::Generator;
 
@@ -24,6 +24,10 @@ pub struct FitConfig {
     /// by 50 ticks: the model never saw its own error distribution. Noise
     /// injection makes it contractive on off-manifold states.
     pub noise: f32,
+    /// Put every predicted state back on the constant-mass constraint before
+    /// it becomes the next rollout input, so the model is trained on the
+    /// states it will actually be run on (CONCEPT sec. 4: propose, project).
+    pub project: bool,
     pub log_every: usize,
     /// Final learning rate as a fraction of `lr`: cosine decay after warmup.
     pub lr_floor: f64,
@@ -40,6 +44,7 @@ impl Default for FitConfig {
             rollout: 4,
             rollout_after: 500,
             noise: 0.0,
+            project: true,
             log_every: 100,
             lr_floor: 0.05,
             mask: Mask::Full,
@@ -87,6 +92,7 @@ pub fn fit<B: AutodiffBackend>(
             .reshape([b, crate::data::META_DIM]);
 
         let mut x = to_field(&batch.states[0]);
+        let mass0 = jacobi2000::mass(&x);
         let mut loss = Tensor::<B, 1>::zeros([1], device);
         for step_k in 0..k {
             if cfg.noise > 0.0 {
@@ -98,6 +104,9 @@ pub fn fit<B: AutodiffBackend>(
                     );
             }
             x = model.step(x, meta.clone(), mask.clone());
+            if cfg.project {
+                x = project_mass(x, mass0.clone());
+            }
             let target = to_field(&batch.states[step_k + 1]);
             loss = loss + (x.clone() - target).powi_scalar(2).mean();
         }
