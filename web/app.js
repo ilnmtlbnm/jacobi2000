@@ -67,9 +67,14 @@ async function boot() {
   }
 }
 
-async function step(n) {
-  await engine.step(n);
-  await render();
+// Serialized so `run`, `step` and `step10` never overlap engine.step() calls.
+let stepChain = Promise.resolve();
+function step(n) {
+  stepChain = stepChain.then(async () => {
+    await engine.step(n);
+    await render();
+  });
+  return stepChain;
 }
 
 async function loop() {
