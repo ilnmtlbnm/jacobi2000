@@ -68,6 +68,13 @@ pub struct GeneratorConfig {
     /// instead of always being placed far enough from every wall to avoid
     /// them. Task 8b: reflections off a nearby wall were never seen.
     pub no_horizon_fraction: f32,
+    /// Task 8c: fraction of single-drop pool slots that draw from the
+    /// extended distribution above (`amplitude_max`, `extra_drop_prob`,
+    /// `no_horizon_fraction`) on birth. The rest draw from the ORIGINAL
+    /// single-drop distribution (amplitude 0.02-0.08, no extra drops,
+    /// margin-respecting), so the pool is a mixture rather than a full
+    /// replacement of the standard regime.
+    pub extended_fraction: f32,
     pub seed: u64,
 }
 
@@ -93,6 +100,7 @@ impl Default for GeneratorConfig {
             amplitude_max: 0.3,
             extra_drop_prob: 0.3,
             no_horizon_fraction: 0.3,
+            extended_fraction: 0.0,
             seed: 0,
         }
     }
@@ -333,6 +341,10 @@ pub struct Record {
     /// margin (task 8b `no_horizon_fraction`), so `horizon < ticks` is
     /// expected rather than a bug.
     pub no_horizon: bool,
+    /// True if this trajectory was drawn from the extended distribution
+    /// (task 8c `extended_fraction`) rather than the original single-drop
+    /// distribution.
+    pub extended: bool,
 }
 
 /// Log-uniform draw in `[lo, hi)`, `lo > 0`.
@@ -349,13 +361,22 @@ fn log_uniform(rng: &mut StdRng, lo: f32, hi: f32) -> f32 {
 /// them (reflections, near-wall/corner drops).
 fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record, Vec<PendingDrop>) {
     let p = cfg.params;
+    // Task 8c: each birth is either drawn from the extended distribution
+    // (as configured on the CLI) or from the original single-drop
+    // distribution, so the pool is a mixture rather than a full replacement.
+    let extended = rng.gen_bool(cfg.extended_fraction as f64);
+    let (amplitude_max, extra_drop_prob, no_horizon_fraction) = if extended {
+        (cfg.amplitude_max, cfg.extra_drop_prob, cfg.no_horizon_fraction)
+    } else {
+        (0.08, 0.0, 0.0)
+    };
     let long = rng.gen_bool(cfg.long_fraction as f64);
     let ticks = if long {
         cfg.long_ticks
     } else {
         rng.gen_range(cfg.short_ticks.0..=cfg.short_ticks.1)
     };
-    let no_horizon = rng.gen_bool(cfg.no_horizon_fraction as f64);
+    let no_horizon = rng.gen_bool(no_horizon_fraction as f64);
     let margin = if long || no_horizon {
         8.0
     } else {
@@ -363,7 +384,7 @@ fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record, 
     };
     let cx = rng.gen_range(margin..(p.nx as f32 - margin));
     let cy = rng.gen_range(margin..(p.ny as f32 - margin));
-    let amp = log_uniform(rng, cfg.amplitude.0, cfg.amplitude_max)
+    let amp = log_uniform(rng, cfg.amplitude.0, amplitude_max)
         * if rng.gen_bool(0.25) { -1.0 } else { 1.0 };
     let sigma = rng.gen_range(cfg.sigma.0..cfg.sigma.1);
     let mut s = State::flat(&p);
@@ -373,7 +394,7 @@ fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record, 
     // later tick either on top of the first drop (stacked) or elsewhere.
     let mut pending = Vec::new();
     for _ in 0..2 {
-        if ticks < 2 || !rng.gen_bool(cfg.extra_drop_prob as f64) {
+        if ticks < 2 || !rng.gen_bool(extra_drop_prob as f64) {
             break;
         }
         let (dcx, dcy) = if rng.gen_bool(0.5) {
@@ -388,7 +409,7 @@ fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record, 
             tick: rng.gen_range(1..ticks),
             cx: dcx,
             cy: dcy,
-            amp: log_uniform(rng, cfg.amplitude.0, cfg.amplitude_max)
+            amp: log_uniform(rng, cfg.amplitude.0, amplitude_max)
                 * if rng.gen_bool(0.25) { -1.0 } else { 1.0 },
             sigma: rng.gen_range(cfg.sigma.0..cfg.sigma.1),
         });
@@ -407,6 +428,7 @@ fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record, 
             peak: 0.0,
             extra_drops: pending.len(),
             no_horizon,
+            extended,
         },
         pending,
     )
@@ -580,10 +602,13 @@ mod tests {
         // Task 8b: I saw divergence on repeated drops (which stack
         // past the old 0.08 amplitude cap) and corner drops (which the old
         // generator never produced because it always kept the whole life
-        // pre-reflection). Both must be reachable from the defaults.
+        // pre-reflection). Both must be reachable when every birth draws
+        // from the extended distribution (task 8c: `extended_fraction`
+        // gates this, defaulting to 0.0 for the original distribution).
         let cfg = GeneratorConfig {
             pool: 200,
             single_drop: true,
+            extended_fraction: 1.0,
             seed: 7,
             ..Default::default()
         };
@@ -602,6 +627,28 @@ mod tests {
             recs.iter().any(|r| r.extra_drops > 0),
             "no trajectory drew an extra (stacked) drop among {} trajectories",
             recs.len()
+        );
+    }
+
+    #[test]
+    fn extended_fraction_mixes_original_and_extended_distributions() {
+        // Task 8c: the pool must be a mixture, not a full replacement, of
+        // the extended distribution.
+        let cfg = GeneratorConfig {
+            pool: 200,
+            single_drop: true,
+            extended_fraction: 0.3,
+            seed: 7,
+            ..Default::default()
+        };
+        let recs = generate(&cfg, None);
+        let extended = recs.iter().filter(|r| r.extended).count();
+        assert_eq!(extended, 66, "seeded RNG count changed: {extended} of 200");
+        assert!(
+            recs.iter()
+                .filter(|r| !r.extended)
+                .all(|r| r.amp.abs() <= 0.08 && r.extra_drops == 0 && !r.no_horizon),
+            "a non-extended birth used extended parameters"
         );
     }
 

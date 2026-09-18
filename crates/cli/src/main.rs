@@ -96,6 +96,12 @@ enum Cmd {
         /// reflections are kept.
         #[arg(long, default_value_t = 0.3)]
         no_horizon_fraction: f32,
+        /// Task 8c: fraction of single-drop pool births drawn from the
+        /// extended distribution above (amplitude_max, extra_drop_prob,
+        /// no_horizon_fraction). The rest draw from the original single-drop
+        /// distribution (amplitude 0.02-0.08, no extra drops, margin-kept).
+        #[arg(long, default_value_t = 0.0)]
+        extended_fraction: f32,
         #[arg(long, default_value_t = 4)]
         rollout: usize,
         #[arg(long, default_value_t = 1000)]
@@ -218,6 +224,7 @@ fn run(cmd: Cmd) {
             amplitude_max,
             extra_drop_prob,
             no_horizon_fraction,
+            extended_fraction,
             rollout,
             rollout_after,
             noise,
@@ -245,6 +252,7 @@ fn run(cmd: Cmd) {
             amplitude_max,
             extra_drop_prob,
             no_horizon_fraction,
+            extended_fraction,
             rollout,
             rollout_after,
             noise,
@@ -308,6 +316,7 @@ struct TrainArgs {
     amplitude_max: f32,
     extra_drop_prob: f32,
     no_horizon_fraction: f32,
+    extended_fraction: f32,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -336,6 +345,7 @@ fn train_cmd(a: TrainArgs) {
         amplitude_max,
         extra_drop_prob,
         no_horizon_fraction,
+        extended_fraction,
         rollout,
         rollout_after,
         noise,
@@ -364,6 +374,7 @@ fn train_cmd(a: TrainArgs) {
         amplitude_max,
         extra_drop_prob,
         no_horizon_fraction,
+        extended_fraction,
         seed,
         ..Default::default()
     };
@@ -446,7 +457,7 @@ fn train_cmd(a: TrainArgs) {
     print_errors(&errs);
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, amplitude_max,
-        extra_drop_prob, no_horizon_fraction, rollout, rollout_after, noise,
+        extra_drop_prob, no_horizon_fraction, extended_fraction, rollout, rollout_after, noise,
         lr_floor, project, spectral, nu, seed, layers, dim, &rows, train_secs, &errs, note,
         model.num_params(), init, mask,
     );
@@ -796,6 +807,7 @@ fn write_run_log(
     amplitude_max: f32,
     extra_drop_prob: f32,
     no_horizon_fraction: f32,
+    extended_fraction: f32,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -835,7 +847,7 @@ fn write_run_log(
         .map(|p| format!(" --init {}", p.display()))
         .unwrap_or_default();
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --amplitude-max {amplitude_max} --extra-drop-prob {extra_drop_prob} --no-horizon-fraction {no_horizon_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --amplitude-max {amplitude_max} --extra-drop-prob {extra_drop_prob} --no-horizon-fraction {no_horizon_fraction} --extended-fraction {extended_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" },
         mask_flags(mask)
     ));
