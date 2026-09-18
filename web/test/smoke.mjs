@@ -26,6 +26,18 @@ try {
   if (err) throw new Error(`engine init failed: ${err}`);
 
   await page.evaluate(() => window.__app.drop(32, 32));
+
+  // Horizon: centred drop on a 64x64 grid is 32 cells from every wall, so
+  // horizon = 32 / c ticks, c = sqrt(g*depth)*dt/dx from the model's meta.
+  const meta = JSON.parse(await (await fetch(`http://127.0.0.1:${port}/model/meta.json`)).text());
+  const c = Math.sqrt(meta.g * meta.depth) * meta.dt / meta.dx;
+  const horizon = await page.evaluate(() => window.__app.horizon());
+  const expectedHorizon = 32 / c;
+  if (Math.abs(horizon - expectedHorizon) > 1) {
+    throw new Error(`horizon expected ~${expectedHorizon.toFixed(2)}, got ${horizon}`);
+  }
+  console.log(`HORIZON: PASS (${horizon.toFixed(2)} ticks)`);
+
   await page.evaluate(() => window.__app.step(50), { timeout: 120000 });
 
   const ticks = await page.evaluate(() => window.__app.ticks());
