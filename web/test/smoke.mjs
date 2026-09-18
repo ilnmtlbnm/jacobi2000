@@ -59,6 +59,32 @@ try {
   const looksLikeADrop = modelPeak > 0.3 * solverPeak && modelPeak < 3 * solverPeak;
   console.log(`GATE rollout@50 beats frozen field: ${beatsFrozen ? 'PASS' : 'FAIL'} (${errors[1].toFixed(4)} vs ${errors[4].toFixed(4)})`);
   console.log(`GATE drop still looks like a drop: ${looksLikeADrop ? 'PASS' : 'FAIL'} (model peak ${modelPeak.toExponential(2)}, solver ${solverPeak.toExponential(2)})`);
+
+  // Regression: dropping while a step is mid-flight must not panic (RefCell
+  // already borrowed) and the drop must still land. A drop resets the tick
+  // counter to 0, so step(30) is guaranteed to cross the checkpoint at 10
+  // and genuinely await mid-flight (not run tick-atomically to completion).
+  await page.evaluate(() => window.__app.drop(5, 5));
+  const ticksBeforeRace = await page.evaluate(() => window.__app.ticks());
+  const peakBeforeRace = await page.evaluate(() => window.__app.peak());
+  check(ticksBeforeRace === 0, `race setup: expected ticks 0 after drop, got ${ticksBeforeRace}`);
+  const racePromise = page.evaluate(() => window.__app.step(30));
+  await page.evaluate(() => {
+    window.__app.drop(10, 10);
+    window.__app.drop(10, 10);
+    window.__app.drop(10, 10);
+  });
+  await racePromise;
+  const raceErr = await page.evaluate(() => window.__app.error);
+  check(!raceErr, `page error during race: ${raceErr}`);
+  const ticksAfterRace = await page.evaluate(() => window.__app.ticks());
+  const peakAfterRace = await page.evaluate(() => window.__app.peak());
+  check(
+    ticksAfterRace === ticksBeforeRace + 30,
+    `race: expected tick counter to advance by 30, ${ticksBeforeRace} -> ${ticksAfterRace}`,
+  );
+  check(peakAfterRace !== peakBeforeRace, 'race: solver peak did not change after concurrent drops');
+  console.log('RACE: PASS');
 } catch (e) {
   failure = e;
   console.error('FAIL:', e.message);
