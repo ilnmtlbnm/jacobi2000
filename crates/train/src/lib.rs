@@ -7,7 +7,7 @@ pub mod fit;
 pub mod metrics;
 pub mod spectral;
 
-pub use checkpoint::{Checkpoint, Meta};
+pub use checkpoint::{load, save, Checkpoint, Meta};
 pub use data::{Batch, Generator, GeneratorConfig, Normalizer, META_DIM};
 pub use eval::{rollout_errors, RolloutErrors};
 pub use fit::{fit, FitConfig};

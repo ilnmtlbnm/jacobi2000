@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use burn::module::{AutodiffModule, Module};
-use burn::record::{BinBytesRecorder, FullPrecisionSettings, Recorder};
 use clap::{Parser, Subcommand};
 use jacobi2000::{Jacobi2000Config, Mask};
 use rand::{Rng, SeedableRng};
@@ -17,6 +16,7 @@ use train::{
     metrics::{sample_single_drop, score_rollout, Metrics, BANDS},
     Generator, Meta,
 };
+use train::checkpoint::{load, save};
 
 #[cfg(feature = "wgpu")]
 type Back = burn::backend::Wgpu;
@@ -86,6 +86,10 @@ enum Cmd {
         log_dir: PathBuf,
         #[arg(long)]
         note: Option<String>,
+        /// Warm-start weights from an existing checkpoint (same architecture
+        /// config). Optimizer state and the LR schedule are fresh either way.
+        #[arg(long)]
+        init: Option<PathBuf>,
     },
     /// Rollout error at 10/50/200 ticks against the solver, with the
     /// frozen-field baseline.
@@ -164,6 +168,7 @@ fn run(cmd: Cmd) {
             out,
             log_dir,
             note,
+            init,
         } => train_cmd(TrainArgs {
             steps,
             lr,
@@ -184,6 +189,7 @@ fn run(cmd: Cmd) {
             out,
             log_dir,
             note,
+            init,
         }),
         Cmd::Eval {
             model,
@@ -229,6 +235,7 @@ struct TrainArgs {
     out: PathBuf,
     log_dir: PathBuf,
     note: Option<String>,
+    init: Option<PathBuf>,
 }
 
 fn train_cmd(a: TrainArgs) {
@@ -252,6 +259,7 @@ fn train_cmd(a: TrainArgs) {
         out,
         log_dir,
         note,
+        init,
     } = a;
     let (out, log_dir) = (out.as_path(), log_dir.as_path());
     let device = Default::default();
@@ -277,7 +285,22 @@ fn train_cmd(a: TrainArgs) {
         .with_ny(params.ny)
         .with_dim(dim)
         .with_layers(layers);
-    let model = mcfg.init::<Auto>(&device);
+    let mut model = mcfg.init::<Auto>(&device);
+    if let Some(init_dir) = &init {
+        let (init_model, init_meta): (jacobi2000::Jacobi2000<Auto>, Meta) =
+            load(init_dir, &device);
+        assert_eq!(init_meta.nx, mcfg.nx, "--init checkpoint nx mismatch");
+        assert_eq!(init_meta.ny, mcfg.ny, "--init checkpoint ny mismatch");
+        assert_eq!(init_meta.patch, mcfg.patch, "--init checkpoint patch mismatch");
+        assert_eq!(init_meta.channels, mcfg.channels, "--init checkpoint channels mismatch");
+        assert_eq!(init_meta.dim, mcfg.dim, "--init checkpoint dim mismatch");
+        assert_eq!(init_meta.layers, mcfg.layers, "--init checkpoint layers mismatch");
+        assert_eq!(init_meta.heads, mcfg.heads, "--init checkpoint heads mismatch");
+        assert_eq!(init_meta.ff_mult, mcfg.ff_mult, "--init checkpoint ff_mult mismatch");
+        assert_eq!(init_meta.meta_dim, mcfg.meta_dim, "--init checkpoint meta_dim mismatch");
+        model = init_model;
+        println!("warm start: {}", init_dir.display());
+    }
     println!("backend: {BACKEND}, params: {}", model.num_params());
 
     let fcfg = FitConfig {
@@ -325,41 +348,8 @@ fn train_cmd(a: TrainArgs) {
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, rollout, rollout_after, noise,
         lr_floor, project, spectral, nu, seed, layers, dim, &rows, train_secs, &errs, note,
-        model.num_params(),
+        model.num_params(), init,
     );
-}
-
-fn save<B: burn::tensor::backend::Backend>(
-    out: &Path,
-    model: &jacobi2000::Jacobi2000<B>,
-    meta: &Meta,
-) {
-    std::fs::create_dir_all(out).unwrap();
-    let rec = BinBytesRecorder::<FullPrecisionSettings>::default();
-    let bytes = rec.record(model.clone().into_record(), ()).unwrap();
-    std::fs::write(out.join("model.bin"), bytes).unwrap();
-    std::fs::write(
-        out.join("meta.json"),
-        serde_json::to_string_pretty(meta).unwrap(),
-    )
-    .unwrap();
-}
-
-fn load(dir: &Path, device: &<Back as burn::tensor::backend::Backend>::Device) -> (jacobi2000::Jacobi2000<Back>, Meta) {
-    let meta: Meta =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).unwrap()).unwrap();
-    let cfg = Jacobi2000Config::new()
-        .with_nx(meta.nx)
-        .with_ny(meta.ny)
-        .with_patch(meta.patch)
-        .with_dim(meta.dim)
-        .with_layers(meta.layers)
-        .with_heads(meta.heads)
-        .with_ff_mult(meta.ff_mult);
-    let bytes = std::fs::read(dir.join("model.bin")).unwrap();
-    let rec = BinBytesRecorder::<FullPrecisionSettings>::default();
-    let record = rec.load(bytes, device).unwrap();
-    (cfg.init::<Back>(device).load_record(record), meta)
 }
 
 struct Errors {
@@ -433,8 +423,8 @@ fn print_errors(e: &Errors) {
 }
 
 fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool) {
-    let device = Default::default();
-    let (model, meta) = load(dir, &device);
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
     println!("backend: {BACKEND}, mass projection: {project}");
     let e = eval_model(&model, &meta, trajectories, seed, project, &device);
     print_errors(&e);
@@ -480,8 +470,8 @@ fn eval_metrics_cmd(
     seed: u64,
     project: bool,
 ) {
-    let device = Default::default();
-    let (model, meta) = load(dir, &device);
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
     let params = meta.params();
     let mut horizons = horizons.to_vec();
     horizons.sort_unstable();
@@ -589,6 +579,7 @@ fn write_run_log(
     e: &Errors,
     note: Option<String>,
     num_params: usize,
+    init: Option<PathBuf>,
 ) {
     std::fs::create_dir_all(dir).unwrap();
     let date = std::process::Command::new("date")
@@ -606,8 +597,11 @@ fn write_run_log(
     s.push_str("Machine: Apple M2, 16 GB. Timings **provisional** (the GPU may be shared).\n\n");
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
+    let init_flag = init
+        .map(|p| format!(" --init {}", p.display()))
+        .unwrap_or_default();
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}{init_flag}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));
