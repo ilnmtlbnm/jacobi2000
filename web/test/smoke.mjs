@@ -19,6 +19,7 @@ page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
 
 let failure = null;
+const check = (cond, msg) => { if (!cond) throw new Error(msg); };
 try {
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__app && (window.__app.ready() || window.__app.error), null, { timeout: 60000 });
@@ -38,7 +39,37 @@ try {
   }
   console.log(`HORIZON: PASS (${horizon.toFixed(2)} ticks)`);
 
-  await page.evaluate(() => window.__app.step(50), { timeout: 120000 });
+  // Mask: read from the loaded checkpoint's meta, never hard-coded.
+  const mask = await page.evaluate(() => window.__app.mask());
+  const expectedMask = meta.mask && meta.mask.Stencil
+    ? `stencil r${meta.mask.Stencil.radius} d${meta.mask.Stencil.dilation}`
+    : 'full';
+  check(mask === expectedMask, `mask expected '${expectedMask}', got '${mask}'`);
+  console.log(`MASK: PASS (${mask})`);
+
+  await page.evaluate(() => window.__app.step(25), { timeout: 120000 });
+
+  // Receptive-field highlight: (2r+1)^2 token neighbourhood of the active
+  // stencil, plus one more (undilated) token hop for the per-cell head's
+  // own 3x3-token conv (crates/jacobi2000/src/model.rs, CellHead::token_mix).
+  const hl = await page.evaluate(() => window.__app.highlight(32, 32));
+  const headReach = 1;
+  const totalRadius = meta.mask.Stencil.radius + headReach;
+  const expectedSpan = (2 * totalRadius + 1) * meta.patch;
+  const xs = hl.cells.map((c) => c % meta.nx);
+  const ys = hl.cells.map((c) => Math.floor(c / meta.nx));
+  const xSpan = Math.max(...xs) - Math.min(...xs) + 1;
+  const ySpan = Math.max(...ys) - Math.min(...ys) + 1;
+  check(
+    xSpan === expectedSpan && ySpan === expectedSpan,
+    `highlight extent expected ${expectedSpan}x${expectedSpan} (radius ${meta.mask.Stencil.radius} + head reach ${headReach}), got ${xSpan}x${ySpan}`,
+  );
+  console.log(`HIGHLIGHT: PASS (${hl.cells.length} cells, radius ${hl.radius}, dilation ${hl.dilation}, span ${xSpan})`);
+
+  await page.screenshot({ path: '<tmp>/jacobi-stencil.png' });
+
+  await page.evaluate(() => window.__app.clearHighlight());
+  await page.evaluate(() => window.__app.step(25), { timeout: 120000 });
 
   const ticks = await page.evaluate(() => window.__app.ticks());
   const errors = await page.evaluate(() => window.__app.errors());
@@ -49,7 +80,6 @@ try {
   console.log(JSON.stringify({ ticks, errors, ms, solverPeak, modelPeak }, null, 2));
 
   // Health of the page and the engine: these are regressions if they break.
-  const check = (cond, msg) => { if (!cond) throw new Error(msg); };
   check(ticks === 50, `expected 50 ticks, got ${ticks}`);
   check(Number.isFinite(errors[1]), 'no model error at 50 ticks');
   check(Number.isFinite(modelPeak), 'model field is not finite');
