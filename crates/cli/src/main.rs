@@ -13,7 +13,10 @@ use train::{
     data::GeneratorConfig,
     eval::rollout_errors,
     fit::{fit, FitConfig},
-    metrics::{rollout_profiles, sample_single_drop, score_rollout, Metrics, BANDS},
+    metrics::{
+        rollout_profiles, sample_single_drop, sample_stress_drop, score_rollout, Metrics,
+        StressKind, BANDS,
+    },
     Generator, Meta,
 };
 use train::checkpoint::{load, save};
@@ -81,6 +84,18 @@ enum Cmd {
         /// Share of single-drop trajectories drawn at the long life.
         #[arg(long, default_value_t = 0.2)]
         long_fraction: f32,
+        /// Top of the single-drop amplitude range (log-uniform from 0.02).
+        #[arg(long, default_value_t = 0.3)]
+        amplitude_max: f32,
+        /// Probability of an extra (stacked or elsewhere) drop at a random
+        /// later tick, tried up to twice per single-drop trajectory.
+        #[arg(long, default_value_t = 0.3)]
+        extra_drop_prob: f32,
+        /// Fraction of single-drop trajectories exempt from the
+        /// pre-reflection margin, so near-wall/corner drops and their
+        /// reflections are kept.
+        #[arg(long, default_value_t = 0.3)]
+        no_horizon_fraction: f32,
         #[arg(long, default_value_t = 4)]
         rollout: usize,
         #[arg(long, default_value_t = 1000)]
@@ -147,6 +162,17 @@ enum Cmd {
         batch: usize,
         #[arg(long, default_value_t = 0.2)]
         long_fraction: f32,
+        /// Top of the single-drop amplitude range (log-uniform from 0.02).
+        #[arg(long, default_value_t = 0.3)]
+        amplitude_max: f32,
+        /// Probability of an extra (stacked or elsewhere) drop at a random
+        /// later tick, tried up to twice per trajectory.
+        #[arg(long, default_value_t = 0.3)]
+        extra_drop_prob: f32,
+        /// Fraction of trajectories exempt from the pre-reflection margin,
+        /// so near-wall/corner drops and their reflections are kept.
+        #[arg(long, default_value_t = 0.3)]
+        no_horizon_fraction: f32,
         #[arg(long, default_value_t = 1e-3)]
         nu: f32,
         #[arg(long, default_value_t = 0)]
@@ -157,6 +183,10 @@ enum Cmd {
     EvalMetrics {
         #[arg(long, default_value = "artifacts/model")]
         model: PathBuf,
+        /// Score the task 8b stress set instead: single high-amplitude,
+        /// stacked and corner drops, 8 trajectories each.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        stress: bool,
         #[arg(long, default_value = "10,25,50", value_delimiter = ',')]
         horizons: Vec<usize>,
         #[arg(long, default_value_t = 16)]
@@ -185,6 +215,9 @@ fn run(cmd: Cmd) {
             pool,
             single_drop,
             long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
             rollout,
             rollout_after,
             noise,
@@ -209,6 +242,9 @@ fn run(cmd: Cmd) {
             pool,
             single_drop,
             long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
             rollout,
             rollout_after,
             noise,
@@ -235,17 +271,30 @@ fn run(cmd: Cmd) {
             pool,
             batch,
             long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
             nu,
             seed,
             dump,
-        } => gen_data_cmd(pool, batch, long_fraction, nu, seed, dump.as_deref()),
+        } => gen_data_cmd(
+            pool, batch, long_fraction, amplitude_max, extra_drop_prob, no_horizon_fraction, nu,
+            seed, dump.as_deref(),
+        ),
         Cmd::EvalMetrics {
             model,
+            stress,
             horizons,
             trajectories,
             seed,
             project,
-        } => eval_metrics_cmd(&model, &horizons, trajectories, seed, project),
+        } => {
+            if stress {
+                eval_stress_cmd(&model, &horizons, project)
+            } else {
+                eval_metrics_cmd(&model, &horizons, trajectories, seed, project)
+            }
+        }
     }
 }
 
@@ -256,6 +305,9 @@ struct TrainArgs {
     pool: usize,
     single_drop: bool,
     long_fraction: f32,
+    amplitude_max: f32,
+    extra_drop_prob: f32,
+    no_horizon_fraction: f32,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -281,6 +333,9 @@ fn train_cmd(a: TrainArgs) {
         pool,
         single_drop,
         long_fraction,
+        amplitude_max,
+        extra_drop_prob,
+        no_horizon_fraction,
         rollout,
         rollout_after,
         noise,
@@ -306,6 +361,9 @@ fn train_cmd(a: TrainArgs) {
         batch,
         single_drop,
         long_fraction,
+        amplitude_max,
+        extra_drop_prob,
+        no_horizon_fraction,
         seed,
         ..Default::default()
     };
@@ -387,7 +445,8 @@ fn train_cmd(a: TrainArgs) {
     let errs = eval_model(&model, &meta, 4, seed + 1000, project, &device);
     print_errors(&errs);
     write_run_log(
-        log_dir, steps, lr, batch, pool, single_drop, long_fraction, rollout, rollout_after, noise,
+        log_dir, steps, lr, batch, pool, single_drop, long_fraction, amplitude_max,
+        extra_drop_prob, no_horizon_fraction, rollout, rollout_after, noise,
         lr_floor, project, spectral, nu, seed, layers, dim, &rows, train_secs, &errs, note,
         model.num_params(), init, mask,
     );
@@ -624,10 +683,66 @@ fn eval_metrics_cmd(
     }
 }
 
+/// Task 8b stress set: single high-amplitude, stacked and corner drops, 8
+/// trajectories each, seed 0 fixed per category so the set is reproducible.
+fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool) {
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
+    let params = meta.params();
+    let mut horizons = horizons.to_vec();
+    horizons.sort_unstable();
+
+    println!(
+        "backend: {BACKEND}, mass projection: {project}, mask: {}, STRESS SET (task 8b)",
+        mask_flags(meta.mask)
+    );
+    println!(
+        "note: corner drops reflect off two walls almost immediately, so the \
+         pre-reflection horizon filter used by the standard held-out set is \
+         meaningless for them; every corner trajectory is scored at every \
+         horizon regardless of reflection.\n"
+    );
+
+    for (label, kind) in [
+        ("single high-amplitude (0.15-0.3)", StressKind::HighAmp),
+        ("stacked (2-3 drops, same spot)", StressKind::Stacked),
+        ("corner (within 6 cells of two walls)", StressKind::Corner),
+    ] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let mut model_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+        let mut frozen_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
+        for _ in 0..8 {
+            let (init, drop) = sample_stress_drop(kind, &params, &mut rng);
+            let (m, f) = score_rollout(
+                &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project, &device,
+            );
+            for i in 0..horizons.len() {
+                model_rows[i].push(m[i]);
+                frozen_rows[i].push(f[i]);
+            }
+        }
+        println!("### {label} (8 trajectories)\n");
+        println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
+        println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        for (i, t) in horizons.iter().enumerate() {
+            println!("{}", metrics_row("model", *t, &mean_metrics(&model_rows[i])));
+            println!(
+                "{}",
+                metrics_row("frozen field", *t, &mean_metrics(&frozen_rows[i]))
+            );
+        }
+        println!();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn gen_data_cmd(
     pool: usize,
     batch: usize,
     long_fraction: f32,
+    amplitude_max: f32,
+    extra_drop_prob: f32,
+    no_horizon_fraction: f32,
     nu: f32,
     seed: u64,
     dump: Option<&Path>,
@@ -638,13 +753,18 @@ fn gen_data_cmd(
         batch,
         single_drop: true,
         long_fraction,
+        amplitude_max,
+        extra_drop_prob,
+        no_horizon_fraction,
         seed,
         ..Default::default()
     };
     let recs = train::data::generate(&cfg, dump);
     let long = recs.iter().filter(|r| r.ticks > cfg.short_ticks.1).count();
+    let high_amp = recs.iter().filter(|r| r.amp.abs() > 0.08).count();
+    let near_wall = recs.iter().filter(|r| r.no_horizon).count();
     println!(
-        "{} trajectories (batch {batch}), {long} long ({} ticks), {} short ({}-{} ticks)",
+        "{} trajectories (batch {batch}), {long} long ({} ticks), {} short ({}-{} ticks), {high_amp} amplitude > 0.08, {near_wall} near-wall/corner",
         recs.len(),
         cfg.long_ticks,
         recs.len() - long,
@@ -673,6 +793,9 @@ fn write_run_log(
     pool: usize,
     single_drop: bool,
     long_fraction: f32,
+    amplitude_max: f32,
+    extra_drop_prob: f32,
+    no_horizon_fraction: f32,
     rollout: usize,
     rollout_after: usize,
     noise: f32,
@@ -712,7 +835,7 @@ fn write_run_log(
         .map(|p| format!(" --init {}", p.display()))
         .unwrap_or_default();
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --amplitude-max {amplitude_max} --extra-drop-prob {extra_drop_prob} --no-horizon-fraction {no_horizon_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" },
         mask_flags(mask)
     ));

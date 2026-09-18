@@ -344,6 +344,72 @@ pub fn sample_single_drop(p: &Params, rng: &mut StdRng) -> (State, Drop) {
     (s, drop)
 }
 
+/// Task 8b stress-set categories: single high-amplitude drops, stacked
+/// drops at one spot, and drops in a corner (near two walls at once).
+#[derive(Debug, Clone, Copy)]
+pub enum StressKind {
+    HighAmp,
+    Stacked,
+    Corner,
+}
+
+/// A stress-set initial condition. Unlike `sample_single_drop`, the caller
+/// does not filter these by `Params::horizon_ticks`: high-amplitude and
+/// stacked drops are placed away from the walls same as the standard set,
+/// but corner drops are placed *in* a corner on purpose, so the
+/// pre-reflection horizon is meaningless for them and every one is scored.
+pub fn sample_stress_drop(kind: StressKind, p: &Params, rng: &mut StdRng) -> (State, Drop) {
+    match kind {
+        StressKind::HighAmp => {
+            let drop = Drop {
+                cx: rng.gen_range(8.0..(p.nx as f32 - 8.0)),
+                cy: rng.gen_range(8.0..(p.ny as f32 - 8.0)),
+                amp: rng.gen_range(0.15..0.3) * if rng.gen_bool(0.5) { -1.0 } else { 1.0 },
+                sigma: rng.gen_range(3.0..5.5),
+            };
+            let mut s = State::flat(p);
+            s.add_drop(p, drop.cx, drop.cy, drop.amp, drop.sigma);
+            (s, drop)
+        }
+        StressKind::Stacked => {
+            let cx = rng.gen_range(8.0..(p.nx as f32 - 8.0));
+            let cy = rng.gen_range(8.0..(p.ny as f32 - 8.0));
+            let n = rng.gen_range(2..=3);
+            let mut s = State::flat(p);
+            let (mut amp_total, mut sigma_last) = (0.0f32, 4.0f32);
+            for _ in 0..n {
+                let amp = rng.gen_range(0.05..0.1) * if rng.gen_bool(0.2) { -1.0 } else { 1.0 };
+                let sigma = rng.gen_range(3.0..5.5);
+                s.add_drop(p, cx, cy, amp, sigma);
+                amp_total += amp;
+                sigma_last = sigma;
+            }
+            (s, Drop { cx, cy, amp: amp_total, sigma: sigma_last })
+        }
+        StressKind::Corner => {
+            let cx = if rng.gen_bool(0.5) {
+                rng.gen_range(2.0..6.0)
+            } else {
+                p.nx as f32 - rng.gen_range(2.0..6.0)
+            };
+            let cy = if rng.gen_bool(0.5) {
+                rng.gen_range(2.0..6.0)
+            } else {
+                p.ny as f32 - rng.gen_range(2.0..6.0)
+            };
+            let drop = Drop {
+                cx,
+                cy,
+                amp: rng.gen_range(0.03..0.07) * if rng.gen_bool(0.25) { -1.0 } else { 1.0 },
+                sigma: rng.gen_range(3.0..5.5),
+            };
+            let mut s = State::flat(p);
+            s.add_drop(p, drop.cx, drop.cy, drop.amp, drop.sigma);
+            (s, drop)
+        }
+    }
+}
+
 /// Roll the model and the solver forward from the same single-drop state and
 /// score both the model and the frozen initial field at every horizon.
 /// `horizons` must be sorted and must all be below the reflection horizon.

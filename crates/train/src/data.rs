@@ -52,6 +52,22 @@ pub struct GeneratorConfig {
     pub sigma: (f32, f32),
     /// Amplitude of the random initial velocity field, in solver units.
     pub velocity: f32,
+    /// Top of the single-drop amplitude range: drawn log-uniform between
+    /// `amplitude.0` and this, so the old 0.02-0.08 uniform range is a
+    /// subset of what can come out. Task 8b: repeated drops at one spot
+    /// stack past 0.08, so the generator needs to be able to produce that
+    /// amplitude directly too.
+    pub amplitude_max: f32,
+    /// Probability of an extra drop at a random later tick (same or a
+    /// different position), tried up to twice per trajectory so a
+    /// trajectory can carry up to three drops total. Task 8b: stacked
+    /// drops at one spot were never seen during training.
+    pub extra_drop_prob: f32,
+    /// Fraction of single-drop trajectories exempt from the pre-reflection
+    /// margin, so near-wall/corner drops (and their reflections) are kept
+    /// instead of always being placed far enough from every wall to avoid
+    /// them. Task 8b: reflections off a nearby wall were never seen.
+    pub no_horizon_fraction: f32,
     pub seed: u64,
 }
 
@@ -74,6 +90,9 @@ impl Default for GeneratorConfig {
             amplitude: (0.02, 0.08),
             sigma: (2.5, 6.0),
             velocity: 0.02,
+            amplitude_max: 0.3,
+            extra_drop_prob: 0.3,
+            no_horizon_fraction: 0.3,
             seed: 0,
         }
     }
@@ -133,11 +152,37 @@ impl Normalizer {
     }
 }
 
+/// A drop scheduled to land at `tick` (trajectory age, in ticks) rather than
+/// at birth. Task 8b: "an optional second/third drop at a random later
+/// tick" needs the trajectory to carry a schedule, since the pool steps one
+/// tick at a time.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PendingDrop {
+    pub tick: usize,
+    pub cx: f32,
+    pub cy: f32,
+    pub amp: f32,
+    pub sigma: f32,
+}
+
+/// Apply (and remove) every pending drop scheduled for `age`.
+fn apply_pending(state: &mut State, p: &Params, pending: &mut Vec<PendingDrop>, age: usize) {
+    pending.retain(|d| {
+        if d.tick == age {
+            state.add_drop(p, d.cx, d.cy, d.amp, d.sigma);
+            false
+        } else {
+            true
+        }
+    });
+}
+
 struct Trajectory {
     solver: ShallowWater,
     state: State,
     age: usize,
     life: usize,
+    pending: Vec<PendingDrop>,
 }
 
 pub struct Generator {
@@ -157,6 +202,7 @@ impl Generator {
                 state: State::flat(&cfg.params),
                 age: 0,
                 life: cfg.trajectory_ticks,
+                pending: Vec::new(),
             };
             init_trajectory(&cfg, &mut rng, &mut t);
             // Stagger the pool so members retire at different times.
@@ -201,6 +247,7 @@ impl Generator {
                 count += n as u64;
                 t.solver.step(&mut t.state);
                 t.age += 1;
+                apply_pending(&mut t.state, &self.cfg.params, &mut t.pending, t.age);
             }
             for i in 0..self.pool.len() {
                 self.retire(i);
@@ -241,6 +288,7 @@ impl Generator {
                 if step > 0 {
                     t.solver.step(&mut t.state);
                     t.age += 1;
+                    apply_pending(&mut t.state, &p, &mut t.pending, t.age);
                 }
                 let off = k * 3 * n;
                 self.norm.encode(&t.state, &mut frame[off..off + 3 * n]);
@@ -278,12 +326,28 @@ pub struct Record {
     pub horizon: f32,
     /// Peak `|h - depth|` at the end of the trajectory: proof it was run.
     pub peak: f32,
+    /// Extra drops (task 8b) scheduled at a random later tick, beyond the
+    /// primary one above.
+    pub extra_drops: usize,
+    /// True if this trajectory was drawn exempt from the pre-reflection
+    /// margin (task 8b `no_horizon_fraction`), so `horizon < ticks` is
+    /// expected rather than a bug.
+    pub no_horizon: bool,
+}
+
+/// Log-uniform draw in `[lo, hi)`, `lo > 0`.
+fn log_uniform(rng: &mut StdRng, lo: f32, hi: f32) -> f32 {
+    rng.gen_range(lo.ln()..hi.ln()).exp()
 }
 
 /// A single drop with a life drawn from the short range, or from the long
-/// minority. Short ones are placed far enough from every wall that the whole
-/// life is pre-reflection; long ones are not, which is the point of them.
-fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record) {
+/// minority, plus (task 8b) an optional second/third drop at a random later
+/// tick and a configurable fraction of trajectories exempt from the
+/// pre-reflection margin. Short, margin-respecting ones are placed far
+/// enough from every wall that the whole life is pre-reflection; long ones
+/// and the `no_horizon_fraction` exempt ones are not, which is the point of
+/// them (reflections, near-wall/corner drops).
+fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record, Vec<PendingDrop>) {
     let p = cfg.params;
     let long = rng.gen_bool(cfg.long_fraction as f64);
     let ticks = if long {
@@ -291,18 +355,45 @@ fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record) 
     } else {
         rng.gen_range(cfg.short_ticks.0..=cfg.short_ticks.1)
     };
-    let margin = if long {
+    let no_horizon = rng.gen_bool(cfg.no_horizon_fraction as f64);
+    let margin = if long || no_horizon {
         8.0
     } else {
         ticks as f32 * p.cells_per_tick()
     };
     let cx = rng.gen_range(margin..(p.nx as f32 - margin));
     let cy = rng.gen_range(margin..(p.ny as f32 - margin));
-    let amp = rng.gen_range(cfg.amplitude.0..cfg.amplitude.1)
+    let amp = log_uniform(rng, cfg.amplitude.0, cfg.amplitude_max)
         * if rng.gen_bool(0.25) { -1.0 } else { 1.0 };
     let sigma = rng.gen_range(cfg.sigma.0..cfg.sigma.1);
     let mut s = State::flat(&p);
     s.add_drop(&p, cx, cy, amp, sigma);
+
+    // Up to two extra drops, each independently rolled, landing at a random
+    // later tick either on top of the first drop (stacked) or elsewhere.
+    let mut pending = Vec::new();
+    for _ in 0..2 {
+        if ticks < 2 || !rng.gen_bool(cfg.extra_drop_prob as f64) {
+            break;
+        }
+        let (dcx, dcy) = if rng.gen_bool(0.5) {
+            (cx, cy)
+        } else {
+            (
+                rng.gen_range(margin..(p.nx as f32 - margin)),
+                rng.gen_range(margin..(p.ny as f32 - margin)),
+            )
+        };
+        pending.push(PendingDrop {
+            tick: rng.gen_range(1..ticks),
+            cx: dcx,
+            cy: dcy,
+            amp: log_uniform(rng, cfg.amplitude.0, cfg.amplitude_max)
+                * if rng.gen_bool(0.25) { -1.0 } else { 1.0 },
+            sigma: rng.gen_range(cfg.sigma.0..cfg.sigma.1),
+        });
+    }
+
     (
         s,
         Record {
@@ -314,7 +405,10 @@ fn draw_single_drop(cfg: &GeneratorConfig, rng: &mut StdRng) -> (State, Record) 
             ticks,
             horizon: p.horizon_ticks(cx, cy),
             peak: 0.0,
+            extra_drops: pending.len(),
+            no_horizon,
         },
+        pending,
     )
 }
 
@@ -330,9 +424,12 @@ pub fn generate(cfg: &GeneratorConfig, dump: Option<&Path>) -> Vec<Record> {
     }
     let mut out = Vec::with_capacity(cfg.pool);
     for index in 0..cfg.pool {
-        let (mut state, mut rec) = draw_single_drop(cfg, &mut rng);
+        let (mut state, mut rec, mut pending) = draw_single_drop(cfg, &mut rng);
         rec.index = index;
-        solver.steps(&mut state, rec.ticks);
+        for t in 1..=rec.ticks {
+            solver.step(&mut state);
+            apply_pending(&mut state, &p, &mut pending, t);
+        }
         rec.peak = state
             .h
             .iter()
@@ -352,12 +449,13 @@ pub fn generate(cfg: &GeneratorConfig, dump: Option<&Path>) -> Vec<Record> {
 fn init_trajectory(cfg: &GeneratorConfig, rng: &mut StdRng, t: &mut Trajectory) {
     let p = cfg.params;
     if cfg.single_drop {
-        let (state, rec) = draw_single_drop(cfg, rng);
+        let (state, rec, pending) = draw_single_drop(cfg, rng);
         t.state = state;
         t.solver = ShallowWater::new(p);
         t.solver.steps(&mut t.state, cfg.warmup_ticks);
         t.age = 0;
         t.life = rec.ticks;
+        t.pending = pending;
         return;
     }
     t.state = State::flat(&p);
@@ -392,6 +490,7 @@ fn init_trajectory(cfg: &GeneratorConfig, rng: &mut StdRng, t: &mut Trajectory) 
     t.solver.steps(&mut t.state, cfg.warmup_ticks);
     t.age = 0;
     t.life = cfg.trajectory_ticks;
+    t.pending = Vec::new();
 }
 
 #[cfg(test)]
@@ -465,7 +564,7 @@ mod tests {
         assert!(short * 2 > recs.len(), "{short} short of {}", recs.len());
         for r in &recs {
             assert!(r.peak.is_finite() && r.peak > 0.0, "{r:?}");
-            if r.ticks <= cfg.short_ticks.1 {
+            if r.ticks <= cfg.short_ticks.1 && !r.no_horizon {
                 assert!(r.horizon >= r.ticks as f32, "reflects before it ends: {r:?}");
             }
         }
@@ -474,6 +573,36 @@ mod tests {
         let mut g = Generator::new(cfg);
         assert_eq!(g.pool.len(), 11);
         assert_eq!(g.next_batch(2).batch, 4);
+    }
+
+    #[test]
+    fn extended_single_drop_emits_high_amplitude_and_near_wall_drops() {
+        // Task 8b: I saw divergence on repeated drops (which stack
+        // past the old 0.08 amplitude cap) and corner drops (which the old
+        // generator never produced because it always kept the whole life
+        // pre-reflection). Both must be reachable from the defaults.
+        let cfg = GeneratorConfig {
+            pool: 200,
+            single_drop: true,
+            seed: 7,
+            ..Default::default()
+        };
+        let recs = generate(&cfg, None);
+        assert!(
+            recs.iter().any(|r| r.amp.abs() > 0.08),
+            "no amplitude above the old 0.08 cap among {} trajectories",
+            recs.len()
+        );
+        assert!(
+            recs.iter().any(|r| r.no_horizon && r.horizon < r.ticks as f32),
+            "no near-wall drop kept its reflection among {} trajectories",
+            recs.len()
+        );
+        assert!(
+            recs.iter().any(|r| r.extra_drops > 0),
+            "no trajectory drew an extra (stacked) drop among {} trajectories",
+            recs.len()
+        );
     }
 
     #[test]
