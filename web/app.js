@@ -7,6 +7,10 @@ const ctx = {
   div: $('c-div').getContext('2d'),
 };
 let nx = 64, ny = 64, running = false, ready = false;
+// Auto-stop at the pre-reflection horizon is armed per drop; a second click
+// on "run" after it fires is the explicit choice to continue past it.
+let horizonArmed = true;
+const TICK_MS = 100; // 10 ticks/s
 
 // Blue-white-red, symmetric about zero; scale is fixed so the two panels are
 // directly comparable frame to frame.
@@ -35,6 +39,8 @@ async function render() {
   $('peak').textContent = peak.toFixed(4);
   $('ticks').textContent = engine.ticks();
   $('ms').textContent = engine.ms_per_tick().toFixed(1);
+  const h = engine.horizon();
+  $('horizon').textContent = Number.isFinite(h) ? Math.floor(h) : '—';
   const e = engine.rollout_errors();
   const fmt = (v) => (Number.isNaN(v) ? '—' : v.toFixed(4));
   $('e10').textContent = fmt(e[0]); $('e50').textContent = fmt(e[1]); $('e200').textContent = fmt(e[2]);
@@ -77,10 +83,18 @@ function step(n) {
   return stepChain;
 }
 
+// Fixed 10 ticks/s while running; step/step10 stay instant (not tied to this).
 async function loop() {
   while (running) {
     await step(1);
-    await new Promise((r) => requestAnimationFrame(r));
+    if (horizonArmed && engine.ticks() >= engine.horizon()) {
+      running = false;
+      horizonArmed = false;
+      $('b-run').textContent = 'run';
+      $('status').textContent = `stopped at horizon: ${Math.floor(engine.horizon())} ticks (first wall reflection)`;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, TICK_MS));
   }
 }
 
@@ -89,11 +103,18 @@ $('c-solver').addEventListener('click', async (ev) => {
   const x = ((ev.clientX - r.left) / r.width) * nx;
   const y = ((ev.clientY - r.top) / r.height) * ny;
   engine.drop_at(x, y, 0.05, 4.0);
+  horizonArmed = true;
   await render();
 });
-$('b-drop').addEventListener('click', async () => { engine.drop_at(nx / 2, ny / 2, 0.05, 4.0); await render(); });
-$('b-reset').addEventListener('click', async () => { engine.reset(); await render(); });
-$('b-run').addEventListener('click', () => { running = !running; $('b-run').textContent = running ? 'pause' : 'run'; if (running) loop(); });
+$('b-drop').addEventListener('click', async () => { engine.drop_at(nx / 2, ny / 2, 0.05, 4.0); horizonArmed = true; await render(); });
+$('b-reset').addEventListener('click', async () => { engine.reset(); horizonArmed = true; await render(); });
+$('b-run').addEventListener('click', () => {
+  running = !running;
+  $('b-run').textContent = running ? 'pause' : 'run';
+  if (running) $('status').textContent = 'run: 10 ticks/s';
+  else if (ready) $('status').textContent = 'ready';
+  if (running) loop();
+});
 $('b-step').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(1); });
 $('b-step10').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(10); });
 
@@ -107,6 +128,7 @@ window.__app = {
   msPerTick: () => engine.ms_per_tick(),
   peak: () => { const s = engine.solver_field(); let p = 0; for (const v of s) p = Math.max(p, Math.abs(v)); return p; },
   modelPeak: async () => { const md = await engine.model_and_divergence(); let p = 0; for (let i = 0; i < nx * ny; i++) p = Math.max(p, Math.abs(md[i])); return p; },
+  horizon: () => engine.horizon(),
   error: null,
 };
 
