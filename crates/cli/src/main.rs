@@ -80,7 +80,15 @@ enum Cmd {
 }
 
 fn main() {
-    match Cli::parse().cmd {
+    run(Cli::parse().cmd);
+    // The wgpu runtime keeps a live client after the last tensor is dropped
+    // and the process then sits at 0% CPU forever. Everything a run produces
+    // (checkpoint, run log) is on disk by the time `run` returns, so leave.
+    std::process::exit(0);
+}
+
+fn run(cmd: Cmd) {
+    match cmd {
         Cmd::Train {
             steps,
             lr,
