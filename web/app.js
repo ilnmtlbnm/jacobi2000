@@ -12,6 +12,84 @@ let nx = 64, ny = 64, running = false, ready = false;
 let horizonArmed = true;
 const TICK_MS = 100; // 10 ticks/s
 
+// Parsed model/model meta.json, read once at boot; the source of truth for
+// the active mask (never hard-coded).
+let modelMeta = null;
+// Current receptive-field highlight ({cells, radius, dilation, headReach}),
+// or null. A second click on the model canvas clears it.
+let highlightState = null;
+
+function maskLabel(mask) {
+  if (mask === 'Full') return 'full';
+  if (mask && mask.Stencil) return `stencil r${mask.Stencil.radius} d${mask.Stencil.dilation}`;
+  return String(mask);
+}
+
+// Receptive field of the cell at (x, y): the (2r+1)^2 token neighbourhood
+// of the active stencil mask (radius r, dilation d), tokens mapped to cells
+// (patch x patch each), then widened by one more (undilated) token hop for
+// the per-cell head's own 3x3-token conv (crates/jacobi2000/src/model.rs,
+// `CellHead::token_mix`), which reads every attended token's immediate
+// neighbours after attention.
+function receptiveField(x, y) {
+  const patch = modelMeta.patch;
+  const tokensX = Math.ceil(nx / patch), tokensY = Math.ceil(ny / patch);
+  const tx = Math.floor(x / patch), ty = Math.floor(y / patch);
+  const mask = modelMeta.mask;
+  const isFull = mask === 'Full';
+  const radius = isFull ? null : mask.Stencil.radius;
+  const dilation = isFull ? null : mask.Stencil.dilation;
+  const headReach = 1;
+
+  const attn = new Set();
+  for (let ty2 = 0; ty2 < tokensY; ty2++) {
+    for (let tx2 = 0; tx2 < tokensX; tx2++) {
+      const dx = tx2 - tx, dy = ty2 - ty;
+      const inAttn = isFull
+        || (dx % dilation === 0 && dy % dilation === 0
+          && Math.abs(dx / dilation) <= radius && Math.abs(dy / dilation) <= radius);
+      if (inAttn) attn.add(ty2 * tokensX + tx2);
+    }
+  }
+  // Head reach: widen every attended token by one more token in each
+  // direction (dilation 1 — the conv is not dilated).
+  const tokens = new Set();
+  for (const idx of attn) {
+    const tx2 = idx % tokensX, ty2 = Math.floor(idx / tokensX);
+    for (let dy = -headReach; dy <= headReach; dy++) {
+      for (let dx = -headReach; dx <= headReach; dx++) {
+        const nx2 = tx2 + dx, ny2 = ty2 + dy;
+        if (nx2 >= 0 && nx2 < tokensX && ny2 >= 0 && ny2 < tokensY) tokens.add(ny2 * tokensX + nx2);
+      }
+    }
+  }
+  const cells = [];
+  for (const idx of tokens) {
+    const tx2 = idx % tokensX, ty2 = Math.floor(idx / tokensX);
+    for (let cy = ty2 * patch; cy < ty2 * patch + patch; cy++) {
+      for (let cx = tx2 * patch; cx < tx2 * patch + patch; cx++) {
+        cells.push(cy * nx + cx);
+      }
+    }
+  }
+  return { cells, radius, dilation, headReach };
+}
+
+function drawHighlightOverlay() {
+  if (!highlightState || highlightState.cells.length === 0) return;
+  let minX = nx, maxX = -1, minY = ny, maxY = -1;
+  for (const c of highlightState.cells) {
+    const x = c % nx, y = Math.floor(c / nx);
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  ctx.model.save();
+  ctx.model.strokeStyle = '#ffcc00';
+  ctx.model.lineWidth = 1;
+  ctx.model.strokeRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
+  ctx.model.restore();
+}
+
 // Blue-white-red, symmetric about zero; scale is fixed so the two panels are
 // directly comparable frame to frame.
 function paint(context, field, scale) {
@@ -33,6 +111,7 @@ async function render() {
   paint(ctx.solver, s, 0.05);
   paint(ctx.model, md.subarray(0, n), 0.05);
   paint(ctx.div, md.subarray(n, 2 * n), 0.05);
+  drawHighlightOverlay();
 
   let peak = 0;
   for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(s[i]));
@@ -55,13 +134,14 @@ async function boot() {
       fetch('./model/meta.json').then((r) => r.text()),
     ]);
     await engine.init(new Uint8Array(weights), meta);
+    modelMeta = JSON.parse(meta);
     const g = engine.grid_size();
     nx = g[0]; ny = g[1];
     $('c-solver').width = nx; $('c-solver').height = ny;
     $('c-model').width = nx; $('c-model').height = ny;
     $('c-div').width = nx; $('c-div').height = ny;
     $('grid').textContent = `${nx}x${ny}`;
-    $('mask').textContent = engine.mask_name();
+    $('mask').textContent = maskLabel(modelMeta.mask);
     $('backend').textContent = 'burn wgpu / WebGPU';
     $('status').textContent = 'ready';
     ready = true;
@@ -106,6 +186,14 @@ $('c-solver').addEventListener('click', async (ev) => {
   horizonArmed = true;
   await render();
 });
+$('c-model').addEventListener('click', async (ev) => {
+  const r = ev.target.getBoundingClientRect();
+  const x = Math.floor(((ev.clientX - r.left) / r.width) * nx);
+  const y = Math.floor(((ev.clientY - r.top) / r.height) * ny);
+  if (highlightState) highlightState = null;
+  else highlightState = receptiveField(x, y);
+  await render();
+});
 $('b-drop').addEventListener('click', async () => { engine.drop_at(nx / 2, ny / 2, 0.05, 4.0); horizonArmed = true; await render(); });
 $('b-reset').addEventListener('click', async () => { engine.reset(); horizonArmed = true; await render(); });
 $('b-run').addEventListener('click', () => {
@@ -129,6 +217,9 @@ window.__app = {
   peak: () => { const s = engine.solver_field(); let p = 0; for (const v of s) p = Math.max(p, Math.abs(v)); return p; },
   modelPeak: async () => { const md = await engine.model_and_divergence(); let p = 0; for (let i = 0; i < nx * ny; i++) p = Math.max(p, Math.abs(md[i])); return p; },
   horizon: () => engine.horizon(),
+  mask: () => maskLabel(modelMeta.mask),
+  highlight: (x, y) => { highlightState = receptiveField(x, y); drawHighlightOverlay(); return highlightState; },
+  clearHighlight: () => { highlightState = null; },
   error: null,
 };
 
