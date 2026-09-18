@@ -215,9 +215,15 @@ pub fn xcorr_lag(model: &[f64], solver: &[f64], max_lag: usize) -> f32 {
             best_c,
             corr_at_lag(model, solver, best_lag + 1),
         );
-        let den = l - 2.0 * c + r;
-        if den < 0.0 {
-            return best_lag as f32 + 0.5 * (l - r) / den;
+        // A short radial profile (a corner drop's rmax can be a handful of
+        // cells) leaves `l`/`r` at NEG_INFINITY once the shifted overlap
+        // drops below 3 points; `-inf - (-inf)` is NaN, so skip the
+        // sub-cell refinement rather than propagate it.
+        if l.is_finite() && r.is_finite() {
+            let den = l - 2.0 * c + r;
+            if den < 0.0 {
+                return best_lag as f32 + 0.5 * (l - r) / den;
+            }
         }
     }
     best_lag as f32
@@ -596,6 +602,19 @@ mod tests {
         let model = ring(23.0);
         let lag = xcorr_lag(&model, &solver, 8);
         assert!((lag - 3.0).abs() < 0.1, "lag {lag}");
+    }
+
+    #[test]
+    fn xcorr_lag_is_finite_on_a_short_corner_drop_profile() {
+        // A corner drop's radial profile can be only 2-3 bins long (task
+        // 8b eval-metrics --stress). At that length every shifted lag but
+        // 0 has fewer than 3 overlapping points and `corr_at_lag` reports
+        // NEG_INFINITY; the sub-cell refinement must not turn that into
+        // NaN (`-inf - (-inf)`).
+        let model = vec![0.1, 0.2, 0.15];
+        let solver = vec![0.1, 0.2, 0.15];
+        let lag = xcorr_lag(&model, &solver, 8);
+        assert!(lag.is_finite(), "lag {lag}");
     }
 
     #[test]
