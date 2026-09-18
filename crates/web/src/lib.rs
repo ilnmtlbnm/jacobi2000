@@ -41,6 +41,20 @@ struct App {
     errors: Vec<f32>,
     persistence: Vec<f32>,
     last_step_ms: f64,
+    /// Ticks until the wave from the nearest drop reaches the nearest wall
+    /// (min over drops since the last reset). `INFINITY` with no drop yet.
+    horizon: f32,
+}
+
+/// Wave speed in cells/tick: `sqrt(g * depth) * dt / dx`.
+fn wave_speed(p: &Params) -> f32 {
+    (p.g * p.depth).sqrt() * p.dt / p.dx
+}
+
+/// Ticks for a drop at `(x, y)` (cell coordinates) to reach the nearest wall.
+fn horizon_ticks(p: &Params, x: f32, y: f32) -> f32 {
+    let dist = x.min(p.nx as f32 - x).min(y).min(p.ny as f32 - y);
+    dist / wave_speed(p)
 }
 
 thread_local! {
@@ -116,6 +130,7 @@ pub async fn init(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
             errors: vec![f32::NAN; CHECKPOINTS.len()],
             persistence: vec![f32::NAN; CHECKPOINTS.len()],
             last_step_ms: 0.0,
+            horizon: f32::INFINITY,
         });
     });
     Ok(())
@@ -130,6 +145,7 @@ fn apply_drop(app: &mut App, x: f32, y: f32, amp: f32, sigma: f32) {
     app.tick = 0;
     app.errors = vec![f32::NAN; CHECKPOINTS.len()];
     app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
+    app.horizon = app.horizon.min(horizon_ticks(&app.params, x, y));
 }
 
 fn apply_reset(app: &mut App) {
@@ -141,6 +157,7 @@ fn apply_reset(app: &mut App) {
     app.tick = 0;
     app.errors = vec![f32::NAN; CHECKPOINTS.len()];
     app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
+    app.horizon = f32::INFINITY;
 }
 
 /// Drain drops and resets queued while a `step` was mid-flight. Called at
@@ -305,6 +322,13 @@ pub fn rollout_errors() -> Vec<f32> {
         v.extend_from_slice(&app.persistence);
         v
     })
+}
+
+/// Ticks until the nearest drop reaches the nearest wall (min over drops
+/// since the last reset), `Infinity` with no drop placed yet.
+#[wasm_bindgen]
+pub fn horizon() -> f64 {
+    APP.with(|a| a.borrow().as_ref().unwrap().horizon as f64)
 }
 
 #[wasm_bindgen]
