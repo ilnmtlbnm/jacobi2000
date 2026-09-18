@@ -7,7 +7,7 @@
 //! - the model state stays on the GPU between ticks, so N ticks cost one
 //!   readback, not N.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use burn::module::Module;
 use burn::prelude::*;
@@ -45,6 +45,16 @@ struct App {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// Set for the duration of `step`'s async body (which awaits GPU
+    /// readback partway through). While set, `drop_at`/`reset` must not
+    /// touch `APP` — they queue instead — since `step` re-borrows it after
+    /// every `.await` and a concurrent borrow would panic.
+    static STEPPING: Cell<bool> = const { Cell::new(false) };
+    /// Drops/resets that arrived while `STEPPING`; applied at the start of
+    /// the next `step` call so `drop_at`/`reset` never have to panic, and so
+    /// a drop never perturbs the tick count of the step already in flight.
+    static PENDING_DROPS: RefCell<Vec<[f32; 4]>> = const { RefCell::new(Vec::new()) };
+    static PENDING_RESET: Cell<bool> = const { Cell::new(false) };
 }
 
 fn encode_tensor(
@@ -111,36 +121,67 @@ pub async fn init(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Add a drop to both panels and restart the comparison from here.
+fn apply_drop(app: &mut App, x: f32, y: f32, amp: f32, sigma: f32) {
+    app.truth.add_drop(&app.params, x, y, amp, sigma);
+    let (frozen, t) = encode_tensor(&app.norm, &app.truth, &app.params, &app.device);
+    app.frozen = frozen;
+    app.mass0 = jacobi2000::mass(&t);
+    app.x = t;
+    app.tick = 0;
+    app.errors = vec![f32::NAN; CHECKPOINTS.len()];
+    app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
+}
+
+fn apply_reset(app: &mut App) {
+    app.truth = State::flat(&app.params);
+    let (frozen, t) = encode_tensor(&app.norm, &app.truth, &app.params, &app.device);
+    app.frozen = frozen;
+    app.mass0 = jacobi2000::mass(&t);
+    app.x = t;
+    app.tick = 0;
+    app.errors = vec![f32::NAN; CHECKPOINTS.len()];
+    app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
+}
+
+/// Drain drops and resets queued while a `step` was mid-flight. Called at
+/// the start of `step`, and safe to call with no App yet (init not done).
+fn apply_pending(app: &mut App) {
+    if PENDING_RESET.with(|r| r.replace(false)) {
+        apply_reset(app);
+    }
+    PENDING_DROPS.with(|p| {
+        for d in p.borrow_mut().drain(..) {
+            apply_drop(app, d[0], d[1], d[2], d[3]);
+        }
+    });
+}
+
+/// Add a drop to both panels and restart the comparison from here. Never
+/// panics: if `step` is mid-flight, the drop is queued and applied at the
+/// start of the next `step` call instead.
 #[wasm_bindgen]
 pub fn drop_at(x: f32, y: f32, amp: f32, sigma: f32) {
+    if STEPPING.with(Cell::get) {
+        PENDING_DROPS.with(|p| p.borrow_mut().push([x, y, amp, sigma]));
+        return;
+    }
     APP.with(|a| {
-        let mut a = a.borrow_mut();
-        let app = a.as_mut().unwrap();
-        app.truth.add_drop(&app.params, x, y, amp, sigma);
-        let (frozen, t) = encode_tensor(&app.norm, &app.truth, &app.params, &app.device);
-        app.frozen = frozen;
-        app.mass0 = jacobi2000::mass(&t);
-        app.x = t;
-        app.tick = 0;
-        app.errors = vec![f32::NAN; CHECKPOINTS.len()];
-        app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
+        if let Some(app) = a.borrow_mut().as_mut() {
+            apply_drop(app, x, y, amp, sigma);
+        }
     });
 }
 
 #[wasm_bindgen]
 pub fn reset() {
+    if STEPPING.with(Cell::get) {
+        PENDING_RESET.with(|r| r.set(true));
+        return;
+    }
     APP.with(|a| {
-        let mut a = a.borrow_mut();
-        let app = a.as_mut().unwrap();
-        app.truth = State::flat(&app.params);
-        let (frozen, t) = encode_tensor(&app.norm, &app.truth, &app.params, &app.device);
-        app.frozen = frozen;
-        app.mass0 = jacobi2000::mass(&t);
-        app.x = t;
-        app.tick = 0;
-        app.errors = vec![f32::NAN; CHECKPOINTS.len()];
-        app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
+        if let Some(app) = a.borrow_mut().as_mut() {
+            apply_reset(app);
+        }
     });
 }
 
@@ -148,6 +189,8 @@ pub fn reset() {
 /// one at the end for rendering.
 #[wasm_bindgen]
 pub async fn step(n: usize) {
+    APP.with(|a| apply_pending(a.borrow_mut().as_mut().unwrap()));
+    STEPPING.with(|s| s.set(true));
     let t0 = js_sys::Date::now();
     for _ in 0..n {
         // Advance the model on the GPU and the solver on the CPU.
@@ -196,6 +239,7 @@ pub async fn step(n: usize) {
     APP.with(|a| {
         a.borrow_mut().as_mut().unwrap().last_step_ms = dt / n.max(1) as f64;
     });
+    STEPPING.with(|s| s.set(false));
 }
 
 fn rmse(a: &[f32], b: &[f32]) -> f32 {
