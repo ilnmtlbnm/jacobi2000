@@ -29,7 +29,12 @@ pub struct Meta {
     pub g: f32,
     pub depth: f32,
     pub nu: f32,
+    #[serde(default = "default_mask")]
     pub mask: Mask,
+}
+
+fn default_mask() -> Mask {
+    Mask::Full
 }
 
 impl Meta {
@@ -136,6 +141,16 @@ mod tests {
                 dilation: 1
             }
         );
+    }
+
+    #[test]
+    fn meta_without_mask_field_defaults_to_full() {
+        let cfg = Jacobi2000Config::new().with_layers(1);
+        let mut json: serde_json::Value =
+            serde_json::to_value(test_meta(&cfg)).unwrap();
+        json.as_object_mut().unwrap().remove("mask");
+        let meta: Meta = serde_json::from_value(json).unwrap();
+        assert_eq!(meta.mask, Mask::Full);
     }
 
     #[test]
