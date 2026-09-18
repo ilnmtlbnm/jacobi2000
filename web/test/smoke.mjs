@@ -44,6 +44,15 @@ try {
   check(ms > 0, 'no per-tick timing');
   console.log('HEALTH: PASS');
 
+  // step/step10 buttons drive window.__app.step, same path as this test.
+  await page.evaluate(() => window.__app.step(1));
+  const ticksAfterStep1 = await page.evaluate(() => window.__app.ticks());
+  check(ticksAfterStep1 === ticks + 1, `step(1) expected ${ticks + 1}, got ${ticksAfterStep1}`);
+  await page.evaluate(() => window.__app.step(10));
+  const ticksAfterStep10 = await page.evaluate(() => window.__app.ticks());
+  check(ticksAfterStep10 === ticksAfterStep1 + 10, `step(10) expected ${ticksAfterStep1 + 10}, got ${ticksAfterStep10}`);
+  console.log('STEP: PASS');
+
   // The gate is a result, not an invariant: reported either way.
   // "The drop still looks like a drop" = relief of the same order as the solver's.
   const beatsFrozen = errors[1] < errors[4];
