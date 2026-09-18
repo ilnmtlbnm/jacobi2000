@@ -13,7 +13,7 @@ use train::{
     data::GeneratorConfig,
     eval::rollout_errors,
     fit::{fit, FitConfig},
-    metrics::{sample_single_drop, score_rollout, Metrics, BANDS},
+    metrics::{rollout_profiles, sample_single_drop, score_rollout, Metrics, BANDS},
     Generator, Meta,
 };
 use train::checkpoint::{load, save};
@@ -487,6 +487,7 @@ fn mean_metrics(rows: &[Metrics]) -> Metrics {
         active_rmse: rows.iter().map(|r| r.active_rmse).sum::<f32>() / n,
         amplitude_ratio: rows.iter().map(|r| r.amplitude_ratio).sum::<f32>() / n,
         radius_error: rows.iter().map(|r| r.radius_error).sum::<f32>() / n,
+        xcorr_lag: rows.iter().map(|r| r.xcorr_lag).sum::<f32>() / n,
         bands,
         global_rmse: rows.iter().map(|r| r.global_rmse).sum::<f32>() / n,
     }
@@ -494,17 +495,31 @@ fn mean_metrics(rows: &[Metrics]) -> Metrics {
 
 fn metrics_row(label: &str, ticks: usize, m: &Metrics) -> String {
     format!(
-        "| {label} | {ticks} | {:.4} | {:.4} | {:.5} | {:.4} | {:+.3} | {:.5} | {:.5} | {:.5} | {:.5} |",
+        "| {label} | {ticks} | {:.4} | {:.4} | {:.5} | {:.4} | {:+.3} | {:+.3} | {:.5} | {:.5} | {:.5} | {:.5} |",
         m.corr,
         m.corr_h,
         m.active_rmse,
         m.amplitude_ratio,
         m.radius_error,
+        m.xcorr_lag,
         m.bands[0],
         m.bands[1],
         m.bands[2],
         m.global_rmse
     )
+}
+
+/// Mean, std, min, max and the count with `|x| > 2.0` over a per-trajectory
+/// sample. Used for the radius-error and xcorr-lag diagnostics
+/// (docs/runs/2026-09-18-radius-estimator.md, task 8a).
+fn sample_stats(xs: &[f32]) -> (f32, f32, f32, f32, usize) {
+    let n = xs.len() as f32;
+    let mean = xs.iter().sum::<f32>() / n;
+    let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n;
+    let min = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let over = xs.iter().filter(|x| x.abs() > 2.0).count();
+    (mean, var.sqrt(), min, max, over)
 }
 
 fn eval_metrics_cmd(
@@ -524,6 +539,16 @@ fn eval_metrics_cmd(
     // all, so it is dropped rather than scored on reflections.
     let need = (*horizons.last().unwrap()).max(50) as f32;
 
+    // Radial profiles for the first two trajectories, at 25 and 50 ticks
+    // only (task 8a): the numeric table that shows whether the profile is
+    // bistable, which the scalar radius error alone cannot.
+    let profile_horizons: Vec<usize> = [25usize, 50]
+        .into_iter()
+        .filter(|h| horizons.contains(h))
+        .collect();
+    type Profile = (usize, Vec<f64>, Vec<f64>);
+    let mut profiles: Vec<Vec<Profile>> = Vec::new();
+
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut model_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
     let mut frozen_rows: Vec<Vec<Metrics>> = vec![Vec::new(); horizons.len()];
@@ -541,6 +566,19 @@ fn eval_metrics_cmd(
             model_rows[i].push(m[i]);
             frozen_rows[i].push(f[i]);
         }
+        if profiles.len() < 2 && !profile_horizons.is_empty() {
+            profiles.push(rollout_profiles(
+                &model,
+                &params,
+                &meta.norm,
+                &init,
+                &drop,
+                &profile_horizons,
+                meta.mask,
+                project,
+                &device,
+            ));
+        }
         used += 1;
     }
 
@@ -551,14 +589,38 @@ fn eval_metrics_cmd(
     println!(
         "{used} single-drop trajectories, {skipped} skipped (horizon < {need:.0} ticks)\n"
     );
-    println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (i, t) in horizons.iter().enumerate() {
         println!("{}", metrics_row("model", *t, &mean_metrics(&model_rows[i])));
         println!(
             "{}",
             metrics_row("frozen field", *t, &mean_metrics(&frozen_rows[i]))
         );
+    }
+
+    println!("\nper-trajectory model radius err / xcorr lag (task 8a, docs/runs/2026-09-18-radius-estimator.md):\n");
+    println!("| ticks | radius err mean | std | min | max | \\|err\\|>2 | xcorr lag mean | std |");
+    println!("|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for (i, t) in horizons.iter().enumerate() {
+        let radius: Vec<f32> = model_rows[i].iter().map(|m| m.radius_error).collect();
+        let lag: Vec<f32> = model_rows[i].iter().map(|m| m.xcorr_lag).collect();
+        let (rm, rs, rmin, rmax, rover) = sample_stats(&radius);
+        let (lm, ls, ..) = sample_stats(&lag);
+        println!(
+            "| {t} | {rm:+.3} | {rs:.3} | {rmin:+.3} | {rmax:+.3} | {rover} | {lm:+.3} | {ls:.3} |"
+        );
+    }
+
+    for (traj_i, traj) in profiles.iter().enumerate() {
+        for (t, mprof, tprof) in traj {
+            println!("\nradial |h| profile, trajectory {traj_i}, {t} ticks (model vs solver):\n");
+            println!("| r (cells) | model | solver |");
+            println!("|---:|---:|---:|");
+            for (r, (m, s)) in mprof.iter().zip(tprof).enumerate() {
+                println!("| {r} | {m:.5} | {s:.5} |");
+            }
+        }
     }
 }
 
