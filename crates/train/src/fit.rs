@@ -28,6 +28,9 @@ pub struct FitConfig {
     /// it becomes the next rollout input, so the model is trained on the
     /// states it will actually be run on (CONCEPT sec. 4: propose, project).
     pub project: bool,
+    /// Weight of the wavenumber-banded error term (`spectral::band_mse`) added
+    /// to plain MSE. 0 disables it.
+    pub spectral: f32,
     pub log_every: usize,
     /// Final learning rate as a fraction of `lr`: cosine decay after warmup.
     pub lr_floor: f64,
@@ -45,6 +48,7 @@ impl Default for FitConfig {
             rollout_after: 500,
             noise: 0.0,
             project: true,
+            spectral: 0.0,
             log_every: 100,
             lr_floor: 0.05,
             mask: Mask::Full,
@@ -108,7 +112,11 @@ pub fn fit<B: AutodiffBackend>(
                 x = project_mass(x, mass0.clone());
             }
             let target = to_field(&batch.states[step_k + 1]);
-            loss = loss + (x.clone() - target).powi_scalar(2).mean();
+            let err = x.clone() - target;
+            loss = loss + err.clone().powi_scalar(2).mean();
+            if cfg.spectral > 0.0 {
+                loss = loss + crate::spectral::band_mse(err) * cfg.spectral;
+            }
         }
         let loss = loss / k as f32;
 

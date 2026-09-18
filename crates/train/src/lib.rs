@@ -4,8 +4,10 @@ pub mod checkpoint;
 pub mod data;
 pub mod eval;
 pub mod fit;
+pub mod spectral;
 
 pub use checkpoint::{Checkpoint, Meta};
 pub use data::{Batch, Generator, GeneratorConfig, Normalizer, META_DIM};
 pub use eval::{rollout_errors, RolloutErrors};
 pub use fit::{fit, FitConfig};
+pub use spectral::band_mse;

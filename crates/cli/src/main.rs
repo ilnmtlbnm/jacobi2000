@@ -58,6 +58,9 @@ enum Cmd {
         /// Project onto constant mass after every predicted step.
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         project: bool,
+        /// Weight of the wavenumber-banded error term. 0 = plain MSE.
+        #[arg(long, default_value_t = 0.0)]
+        spectral: f32,
         #[arg(long, default_value_t = 1e-3)]
         nu: f32,
         #[arg(long, default_value_t = 0)]
@@ -106,6 +109,7 @@ fn run(cmd: Cmd) {
             noise,
             lr_floor,
             project,
+            spectral,
             nu,
             seed,
             layers,
@@ -122,6 +126,7 @@ fn run(cmd: Cmd) {
             noise,
             lr_floor,
             project,
+            spectral,
             nu,
             seed,
             layers,
@@ -148,6 +153,7 @@ struct TrainArgs {
     noise: f32,
     lr_floor: f64,
     project: bool,
+    spectral: f32,
     nu: f32,
     seed: u64,
     layers: usize,
@@ -167,6 +173,7 @@ fn train_cmd(a: TrainArgs) {
         noise,
         lr_floor,
         project,
+        spectral,
         nu,
         seed,
         layers,
@@ -207,6 +214,7 @@ fn train_cmd(a: TrainArgs) {
         noise,
         lr_floor,
         project,
+        spectral,
         mask: Mask::Full,
         ..Default::default()
     };
@@ -241,8 +249,8 @@ fn train_cmd(a: TrainArgs) {
     let errs = eval_model(&model, &meta, 4, seed + 1000, project, &device);
     print_errors(&errs);
     write_run_log(
-        log_dir, steps, lr, batch, rollout, rollout_after, noise, lr_floor, project, nu, seed,
-        layers, dim, &rows, train_secs, &errs, note, model.num_params(),
+        log_dir, steps, lr, batch, rollout, rollout_after, noise, lr_floor, project, spectral, nu,
+        seed, layers, dim, &rows, train_secs, &errs, note, model.num_params(),
     );
 }
 
@@ -376,6 +384,7 @@ fn write_run_log(
     noise: f32,
     lr_floor: f64,
     project: bool,
+    spectral: f32,
     nu: f32,
     seed: u64,
     layers: usize,
@@ -403,7 +412,7 @@ fn write_run_log(
     s.push_str(&format!("- commit: `{}`\n", git_commit()));
     s.push_str(&format!("- backend: {BACKEND}\n"));
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" }
     ));
     s.push_str(&format!("- parameters: {num_params}\n"));
