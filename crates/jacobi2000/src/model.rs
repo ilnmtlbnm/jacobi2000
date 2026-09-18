@@ -2,7 +2,8 @@
 //! parameters (dx, dt, g, depth, viscosity) enter as a conditioning vector
 //! added to every token, not as text.
 
-use burn::nn::{Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig};
+use burn::nn::conv::{Conv2d, Conv2dConfig};
+use burn::nn::{Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig, PaddingConfig2d};
 use burn::module::Param;
 use burn::prelude::*;
 use burn::tensor::activation::softmax;
@@ -31,6 +32,9 @@ pub struct Jacobi2000Config {
     pub ff_mult: usize,
     #[config(default = 5)]
     pub meta_dim: usize,
+    /// Width of the cell-resolution output head (see [`CellHead`]).
+    #[config(default = 32)]
+    pub head_dim: usize,
 }
 
 impl Jacobi2000Config {
@@ -54,7 +58,7 @@ impl Jacobi2000Config {
                 .map(|_| Block::new(self.dim, self.heads, self.ff_mult, device))
                 .collect(),
             norm: LayerNormConfig::new(self.dim).init(device),
-            head: LinearConfig::new(self.dim, g.patch_dim()).init(device),
+            head: CellHead::new(self.dim, self.head_dim, g, device),
             grid: g,
             dim: self.dim,
             heads: self.heads,
@@ -71,7 +75,7 @@ pub struct Jacobi2000<B: Backend> {
     pos: Param<Tensor<B, 3>>,
     blocks: Vec<Block<B>>,
     norm: LayerNorm<B>,
-    head: Linear<B>,
+    head: CellHead<B>,
     pub grid: Grid,
     dim: usize,
     heads: usize,
@@ -94,7 +98,7 @@ impl<B: Backend> Jacobi2000<B> {
         let [batch, _, _, _] = state.dims();
         let tokens = self.grid.tokens();
 
-        let x = self.patchify(state);
+        let x = self.patchify(state.clone());
         let mut x = self.embed.forward(x) + self.pos.val();
         let m = self.meta.forward(meta).reshape([batch, 1, self.dim]);
         x = x + m;
@@ -103,8 +107,7 @@ impl<B: Backend> Jacobi2000<B> {
         for b in self.blocks.iter() {
             x = b.forward(x, mask.clone(), self.heads);
         }
-        let x = self.head.forward(self.norm.forward(x));
-        self.unpatchify(x)
+        self.head.forward(self.norm.forward(x), state, self.grid)
     }
 
     /// One tick: state + predicted increment.
@@ -126,14 +129,91 @@ impl<B: Backend> Jacobi2000<B> {
             .reshape([b, g.tokens(), g.patch_dim()])
     }
 
-    fn unpatchify(&self, x: Tensor<B, 3>) -> Tensor<B, 4> {
-        let [b, _, _] = x.dims();
-        let g = self.grid;
-        let (p, tx, ty) = (g.patch, g.tokens_x(), g.tokens_y());
-        x.reshape([b, ty, tx, g.channels, p, p])
-            .permute([0, 3, 1, 4, 2, 5])
-            .reshape([b, g.channels, g.ny, g.nx])
+}
+
+/// Per-cell output head.
+///
+/// A plain `dim -> patch_dim` projection paints each 4x4 patch from 48
+/// independent rows, so the increment it writes is discontinuous at every
+/// patch boundary and the stencil mask of CONCEPT sec. 3 would only ever be
+/// per patch. This head decodes to cells instead, in three moves:
+///
+/// 1. a 3x3 convolution over the *token* grid, so a patch is decoded knowing
+///    its eight neighbours (one token of extra reach, the same reach one
+///    stencil layer has);
+/// 2. a linear upsample from token centres to cell centres, which is
+///    continuous across patch boundaries by construction (cell `i` of token
+///    `t` mixes `t` and `t+1` with weight `(i + 0.5) / patch`);
+/// 3. two 3x3 convolutions at cell resolution that also read the input
+///    field, so the sub-patch structure of the increment is a learned
+///    stencil on the state rather than 16 unrelated projections.
+#[derive(Module, Debug)]
+struct CellHead<B: Backend> {
+    token_mix: Conv2d<B>,
+    to_cells: Conv2d<B>,
+    conv1: Conv2d<B>,
+    conv2: Conv2d<B>,
+    act: Gelu,
+}
+
+impl<B: Backend> CellHead<B> {
+    fn new(dim: usize, head_dim: usize, grid: Grid, device: &B::Device) -> Self {
+        let conv = |cin: usize, cout: usize, k: usize| {
+            Conv2dConfig::new([cin, cout], [k, k])
+                .with_padding(PaddingConfig2d::Explicit(k / 2, k / 2))
+                .init(device)
+        };
+        CellHead {
+            token_mix: conv(dim, dim, 3),
+            to_cells: conv(dim, head_dim, 1),
+            conv1: conv(head_dim + grid.channels, head_dim, 3),
+            conv2: conv(head_dim, grid.channels, 3),
+            act: Gelu::new(),
+        }
     }
+
+    /// `x`: `[batch, tokens, dim]`, `state`: `[batch, channels, ny, nx]`.
+    fn forward(&self, x: Tensor<B, 3>, state: Tensor<B, 4>, grid: Grid) -> Tensor<B, 4> {
+        let [b, _, d] = x.dims();
+        let t = x
+            .reshape([b, grid.tokens_y(), grid.tokens_x(), d])
+            .permute([0, 3, 1, 2]);
+        let t = t.clone() + self.act.forward(self.token_mix.forward(t));
+        let z = self.to_cells.forward(t);
+        let z = upsample(z, 2, grid.patch);
+        let z = upsample(z, 3, grid.patch);
+        let z = Tensor::cat(vec![z, state], 1);
+        self.conv2
+            .forward(self.act.forward(self.conv1.forward(z)))
+    }
+}
+
+/// Linear upsample of `dim` (2 = y, 3 = x) by `p`, replicating the last
+/// token so the far edge has a neighbour to interpolate towards.
+fn upsample<B: Backend>(x: Tensor<B, 4>, dim: usize, p: usize) -> Tensor<B, 4> {
+    let dims = x.dims();
+    let n = dims[dim];
+    let next = Tensor::cat(
+        vec![
+            x.clone().narrow(dim, 1, n - 1),
+            x.clone().narrow(dim, n - 1, 1),
+        ],
+        dim,
+    );
+    let mut out = dims;
+    out[dim] = n * p;
+    let repeat = |y: Tensor<B, 4>| {
+        y.unsqueeze_dim::<5>(dim + 1)
+            .repeat_dim(dim + 1, p)
+            .reshape(out)
+    };
+    let mut wshape = [1usize; 4];
+    wshape[dim] = n * p;
+    let w: Vec<f32> = (0..n * p)
+        .map(|i| ((i % p) as f32 + 0.5) / p as f32)
+        .collect();
+    let w = Tensor::<B, 1>::from_floats(w.as_slice(), &x.device()).reshape(wshape);
+    repeat(x) * (-w.clone() + 1.0) + repeat(next) * w
 }
 
 #[derive(Module, Debug)]
@@ -221,15 +301,86 @@ mod tests {
         assert_eq!(out.dims(), [2, 3, 64, 64]);
     }
 
+    /// The inverse of `patchify`, which the model no longer needs now that
+    /// the head decodes to cells: kept here so the token layout stays pinned.
+    fn unpatchify(x: Tensor<B, 3>, g: Grid) -> Tensor<B, 4> {
+        let [b, _, _] = x.dims();
+        let (p, tx, ty) = (g.patch, g.tokens_x(), g.tokens_y());
+        x.reshape([b, ty, tx, g.channels, p, p])
+            .permute([0, 3, 1, 4, 2, 5])
+            .reshape([b, g.channels, g.ny, g.nx])
+    }
+
     #[test]
     fn patchify_round_trips() {
         let device = Default::default();
         let cfg = Jacobi2000Config::new();
         let model = cfg.init::<B>(&device);
         let (state, _) = inputs(2, &cfg, &device);
-        let back = model.unpatchify(model.patchify(state.clone()));
+        let back = unpatchify(model.patchify(state.clone()), cfg.grid());
         back.into_data()
             .assert_approx_eq::<f32>(&state.into_data(), burn::tensor::Tolerance::default());
+    }
+
+    /// A smooth input must come out smooth: the defect the per-cell head
+    /// replaces is a `dim -> patch_dim` projection, which paints each 4x4
+    /// patch from 16 unrelated rows and so writes white noise at cell scale.
+    /// The two assertions are not equally strong. The boundary-vs-interior
+    /// ratio is the block-structure statement, but a random `dim ->
+    /// patch_dim` head passes it too (its cell-to-cell steps are large
+    /// *everywhere*); the absolute smoothness bound is what that head fails.
+    #[test]
+    fn per_cell_head_has_no_4x4_block_structure() {
+        let device = Default::default();
+        let cfg = Jacobi2000Config::new();
+        let model = cfg.init::<B>(&device);
+        let g = cfg.grid();
+        // A smooth field: two long-wavelength modes, nothing near cell scale.
+        let field: Vec<f32> = (0..g.channels * g.cells())
+            .map(|i| {
+                let (x, y) = ((i % g.nx) as f32, ((i / g.nx) % g.ny) as f32);
+                let c = (i / g.cells()) as f32;
+                let k = std::f32::consts::TAU / 32.0;
+                0.5 * ((k * x + c).sin() + (k * y - c).cos())
+            })
+            .collect();
+        let state = Tensor::<B, 1>::from_floats(field.as_slice(), &device)
+            .reshape([1, g.channels, g.ny, g.nx]);
+        let meta = Tensor::<B, 2>::zeros([1, cfg.meta_dim], &device);
+        let out = model.forward(state, meta, None);
+
+        let d = out.clone().into_data();
+        let v = d.as_slice::<f32>().unwrap();
+        let at = |c: usize, y: usize, x: usize| v[(c * g.ny + y) * g.nx + x];
+        let (mut bsum, mut bn, mut isum, mut inn) = (0.0f64, 0usize, 0.0f64, 0usize);
+        for c in 0..g.channels {
+            for y in 0..g.ny {
+                for x in 1..g.nx {
+                    let step = (at(c, y, x) - at(c, y, x - 1)).abs() as f64;
+                    if x % g.patch == 0 {
+                        bsum += step;
+                        bn += 1;
+                    } else {
+                        isum += step;
+                        inn += 1;
+                    }
+                }
+            }
+        }
+        let (boundary, interior) = (bsum / bn as f64, isum / inn as f64);
+        assert!(
+            boundary < 1.25 * interior,
+            "patch boundaries are hard edges: {boundary:.5} across vs {interior:.5} inside"
+        );
+        let std = {
+            let n = v.len() as f64;
+            let m = v.iter().map(|&x| x as f64).sum::<f64>() / n;
+            (v.iter().map(|&x| (x as f64 - m).powi(2)).sum::<f64>() / n).sqrt()
+        };
+        assert!(
+            interior < 0.5 * std,
+            "output is not smooth at cell scale: step {interior:.5} vs std {std:.5}"
+        );
     }
 
     #[test]
