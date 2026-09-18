@@ -167,3 +167,82 @@ high-amp/stacked close to model18's (+0.175/+0.102 vs model18's
 +0.177/+0.106) without model18's extra standard-set cost. **Task 8b is
 still failed**; model18 is not an improvement over model17 and is not
 promoted.
+
+## Attempt 3 (run 17, model19)
+
+Machine: Apple M2, 16 GB. Backend: ndarray (CPU, eval-only). GPU uncontended
+(`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
+scoring). Checkpoint: `artifacts/model19` (run 17,
+docs/runs/2026-09-18-17.md, warm start from model17, `--extended-fraction
+0.3` mixture (70% original single-drop distribution / 30% extended:
+amp ≤0.3, extra drops, reflections kept), rollout 8, lr 1e-4, 700 steps).
+
+Full tables (model19, model17, model15 rows) are in
+`docs/runs/2026-09-18-17.md`. Summary at 50 ticks below.
+
+### Standard held-out set (24 single-drop trajectories, pre-reflection)
+
+Command: `./target/release/jacobi eval-metrics --model artifacts/model19 --horizons 10,25,50 --trajectories 24 --seed 0 --project false`
+
+| model | ticks | corr (h,u,v) | amplitude ratio | radius err (cells) | wavefront lag (xcorr) |
+|---|---:|---:|---:|---:|---:|
+| model19 | 50 | 0.9927 | 1.0460 | +3.284 | -0.209 |
+| model17 | 50 | 0.9695 | 1.0134 | -4.905 | +0.191 |
+| model15 | 50 | 0.9974 | 1.0335 | +0.081 | +0.052 |
+
+### Stress set (task 8b): single high-amp / stacked / corner, 8 trajectories each
+
+Command: `./target/release/jacobi eval-metrics --model artifacts/model19 --horizons 10,25,50 --trajectories 24 --seed 0 --project false --stress true`
+
+| category | model | ticks | corr (h,u,v) | amplitude ratio |
+|---|---|---:|---:|---:|
+| single high-amp | model19 | 50 | 0.9876 | 0.9089 |
+| single high-amp | model17 | 50 | 0.9833 | 0.9583 |
+| single high-amp | model15 | 50 | 0.8083 | 0.8694 |
+| stacked | model19 | 50 | 0.9960 | 0.9824 |
+| stacked | model17 | 50 | 0.9853 | 1.0717 |
+| stacked | model15 | 50 | 0.8831 | 1.2564 |
+| corner | model19 | 50 | 0.9837 | 0.8269 |
+| corner | model17 | 50 | 0.9590 | 0.7700 |
+| corner | model15 | 50 | 0.9837 | 0.8265 |
+
+### Task 8c criteria
+
+**Criterion 1 — standard set corr@50 ≥ 0.9774 (model15 0.9974 minus the 0.02
+tolerance).** model19 = 0.9927. **PASS** (delta from model15: -0.0047, well
+inside tolerance, and a large recovery from model17's -0.0279/model18's
+-0.0514).
+
+**Criterion 2 — every stress category corr@50 ≥ its model15 baseline
+(high-amp 0.8083, stacked 0.8831, corner 0.9837).**
+
+| category | model15 baseline | model19 | delta | pass/fail |
+|---|---:|---:|---:|---|
+| single high-amp | 0.8083 | 0.9876 | +0.1793 | pass |
+| stacked | 0.8831 | 0.9960 | +0.1129 | pass |
+| corner | 0.9837 | 0.9837 | +0.0000 | pass |
+
+All three stress categories meet or exceed the model15 baseline. Corner is
+an exact tie to four decimal places (0.9837 = 0.9837); the criterion is
+`≥`, so this passes. **PASS.**
+
+### Task 8c verdict: PASS
+
+Both criteria pass. The 70/30 rebalanced mixture (remesh 1's solution:
+mixture, not replacement) recovers the standard-set accuracy lost by
+attempts 1/2/2b while keeping almost all of their stress-set gains,
+including finally not regressing the corner category (model17/model18 both
+regressed corner; model19 holds it exactly at the model15 baseline).
+
+### Best checkpoint overall: model19
+
+model19 is the best checkpoint at every rung-5 gate: it is the only
+attempt (of 15/16/17/18/19) that passes both task 8b/8c criteria, it
+matches or exceeds model15's stress-set scores in all three categories, and
+its standard-set regression from model15 (-0.0047) is an order of magnitude
+smaller than model17's (-0.0279). All four GOAL-2026-09-18.md acceptance
+bars pass on model19's standard set (see docs/runs/2026-09-18-17.md /
+acceptance check). **model19 is BEST for the remainder of this queue**
+(task 9's widened model, if attempted, would supersede it; absent that,
+model19 is the best stencil checkpoint carried into Phase 5 and the
+Acceptance check).
