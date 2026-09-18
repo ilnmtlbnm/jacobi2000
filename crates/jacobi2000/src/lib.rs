@@ -8,4 +8,4 @@ pub mod project;
 pub use grid::Grid;
 pub use mask::Mask;
 pub use model::{Jacobi2000, Jacobi2000Config};
-pub use project::{mass, project_mass};
+pub use project::{energy, mass, project_energy, project_mass, Denorm};

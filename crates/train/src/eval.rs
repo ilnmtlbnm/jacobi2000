@@ -4,8 +4,10 @@
 //! channels are comparable and the numbers are dimensionless.
 
 use burn::prelude::*;
-use jacobi2000::{project_mass, Jacobi2000, Mask};
+use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
 use solvers::{Params, ShallowWater, State};
+
+use crate::fit::ENERGY_C;
 
 use crate::data::{meta_of, Normalizer, META_DIM};
 
@@ -32,7 +34,8 @@ fn rmse(a: &[f32], b: &[f32]) -> f32 {
 /// Roll `model` and the solver forward from the same initial state and
 /// compare at each checkpoint in `ticks` (which must be sorted). With
 /// `project`, each predicted state is put back on the constant-mass
-/// constraint before it becomes the next input.
+/// constraint before it becomes the next input; with `project_energy`, also
+/// onto the energy inequality (task 11).
 #[allow(clippy::too_many_arguments)]
 pub fn rollout_errors<B: Backend>(
     model: &Jacobi2000<B>,
@@ -42,6 +45,7 @@ pub fn rollout_errors<B: Backend>(
     ticks: &[usize],
     mask: Mask,
     project: bool,
+    project_energy_flag: bool,
     device: &B::Device,
 ) -> RolloutErrors {
     let n = params.cells();
@@ -49,6 +53,11 @@ pub fn rollout_errors<B: Backend>(
     let mask = mask.to_tensor::<B>(&grid, device);
     let meta = Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device)
         .reshape([1, META_DIM]);
+    let denorm = Denorm {
+        mean: norm.mean,
+        std: norm.std,
+        depth: norm.depth,
+    };
 
     let mut truth = init.clone();
     let mut solver = ShallowWater::new(*params);
@@ -69,9 +78,13 @@ pub fn rollout_errors<B: Backend>(
     let last = *ticks.last().unwrap();
     for t in 1..=last {
         solver.step(&mut truth);
+        let prev_energy = project_energy_flag.then(|| energy(&x, &denorm, params.g));
         x = model.step(x, meta.clone(), mask.clone());
         if project {
             x = project_mass(x, mass0.clone());
+        }
+        if let Some(prev_energy) = prev_energy {
+            x = project_energy(x, prev_energy, &denorm, params.g, params.nu, params.dt, ENERGY_C);
         }
         if ticks.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];

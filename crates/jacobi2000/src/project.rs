@@ -13,6 +13,86 @@
 
 use burn::prelude::*;
 
+/// The affine per-channel decode a normalized tensor was packed with
+/// (`x = (physical - mean - depth) / std` for h, `(physical - mean) / std`
+/// for u, v). Shape-for-shape the same as `train::data::Normalizer`, but
+/// this crate sits below `train` in the dependency graph, so it is its own
+/// tiny type: construct with
+/// `Denorm { mean: norm.mean, std: norm.std, depth: norm.depth }`.
+#[derive(Debug, Clone, Copy)]
+pub struct Denorm {
+    pub mean: [f32; 3],
+    pub std: [f32; 3],
+    pub depth: f32,
+}
+
+/// Potential (`1/2 g h^2`) and kinetic (`1/2 h (u^2+v^2)`) energy per batch
+/// member, summed over cells, physical units, `dx = 1` (a uniform cell-area
+/// factor on both sides of the inequality this feeds, so it drops out).
+fn potential_kinetic<B: Backend>(
+    x: &Tensor<B, 4>,
+    d: &Denorm,
+    g: f32,
+) -> (Tensor<B, 2>, Tensor<B, 2>) {
+    let [b, _, ny, nx] = x.dims();
+    let n = ny * nx;
+    let h = x.clone().slice([0..b, 0..1]) * d.std[0] + (d.mean[0] + d.depth);
+    let u = x.clone().slice([0..b, 1..2]) * d.std[1] + d.mean[1];
+    let v = x.clone().slice([0..b, 2..3]) * d.std[2] + d.mean[2];
+    let potential = (h.clone().powi_scalar(2) * (0.5 * g))
+        .reshape([b, n])
+        .sum_dim(1)
+        .reshape([b, 1]);
+    let kinetic = (h * (u.powi_scalar(2) + v.powi_scalar(2)) * 0.5)
+        .reshape([b, n])
+        .sum_dim(1)
+        .reshape([b, 1]);
+    (potential, kinetic)
+}
+
+/// Total energy per batch member (`[batch, 1]`), physical units: `sum 1/2 g
+/// h^2 + 1/2 h (u^2 + v^2)`.
+pub fn energy<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32) -> Tensor<B, 2> {
+    let (potential, kinetic) = potential_kinetic(x, d, g);
+    potential + kinetic
+}
+
+/// Project onto the energy inequality `E_new <= E_prev * (1 - c*nu*dt)`
+/// (`nu == 0` collapses that to `E_new <= E_prev`), scaling the velocity
+/// field `(u, v)` uniformly per batch member down to the bound when it is
+/// exceeded. Potential energy (`h`) is left untouched: `h` already carries
+/// its own hard constraint (`project_mass`), and scaling it here would fight
+/// that projection. Never scales up: `E_new <= bound` already is the
+/// identity (CONCEPT sec. 4, step 2: propose, then project onto the
+/// admissible set; this is the inequality half, `project_mass` is the
+/// equality half).
+pub fn project_energy<B: Backend>(
+    x: Tensor<B, 4>,
+    prev_energy: Tensor<B, 2>,
+    d: &Denorm,
+    g: f32,
+    nu: f32,
+    dt: f32,
+    c: f32,
+) -> Tensor<B, 4> {
+    let [b, _, _, _] = x.dims();
+    let bound = prev_energy * (1.0 - c * nu * dt);
+    let (potential, kinetic) = potential_kinetic(&x, d, g);
+    // scale^2 * kinetic + potential <= bound. budget = 0 when potential
+    // alone already exceeds the bound (kills all velocity); ratio >= 1 when
+    // the state is already within budget, and the clamp below then makes
+    // this the identity, so "never scale up" holds without a branch.
+    let budget = (bound - potential).clamp_min(0.0);
+    let scale = (budget / kinetic.clamp_min(1e-12)).sqrt().clamp(0.0, 1.0);
+    let scale = scale.reshape([b, 1, 1, 1]);
+
+    let u = x.clone().slice([0..b, 1..2]) * d.std[1] + d.mean[1];
+    let v = x.clone().slice([0..b, 2..3]) * d.std[2] + d.mean[2];
+    let u = (u * scale.clone() - d.mean[1]) / d.std[1];
+    let v = (v * scale - d.mean[2]) / d.std[2];
+    x.slice_assign([0..b, 1..2], u).slice_assign([0..b, 2..3], v)
+}
+
 /// Box mean of channel 0 (the surface height), `[batch, 1]`.
 pub fn mass<B: Backend>(x: &Tensor<B, 4>) -> Tensor<B, 2> {
     let [b, _, ny, nx] = x.dims();
@@ -64,5 +144,57 @@ mod tests {
         };
         d(y).into_data()
             .assert_approx_eq::<f32>(&d(x).into_data(), burn::tensor::Tolerance::default());
+    }
+
+    fn flat_state(h: f32, u: f32, v: f32, device: &<B as Backend>::Device) -> Tensor<B, 4> {
+        let n = 4 * 4;
+        let mut v_all = vec![h; n];
+        v_all.extend(vec![u; n]);
+        v_all.extend(vec![v; n]);
+        Tensor::<B, 1>::from_floats(v_all.as_slice(), device).reshape([1, 3, 4, 4])
+    }
+
+    fn identity_denorm() -> Denorm {
+        Denorm {
+            mean: [0.0; 3],
+            std: [1.0; 3],
+            depth: 0.0,
+        }
+    }
+
+    #[test]
+    fn energy_projection_scales_down_to_the_bound_and_leaves_mass_alone() {
+        let device = Default::default();
+        let d = identity_denorm();
+        let g = 9.81;
+        let x = flat_state(1.0, 2.0, 2.0, &device);
+        let e0 = energy(&x, &d, g);
+        // 78.48 potential + 64.0 kinetic = 142.48, well over a 100 bound.
+        let bound = Tensor::<B, 2>::from_floats([[100.0f32]], &device);
+        let m0 = mass(&x);
+
+        let y = project_energy(x, bound.clone(), &d, g, 0.0, 0.0, 0.0);
+        let e1: f32 = energy(&y, &d, g).into_scalar();
+        assert!(e1 <= 100.0 + 1e-3, "energy {e1} exceeds the bound");
+        assert!(e1 > 99.0, "projection over-corrected: {e1}");
+
+        let m1: f32 = mass(&y).into_scalar();
+        let m0: f32 = m0.into_scalar();
+        assert!((m1 - m0).abs() < 1e-6, "mass changed: {m0} -> {m1}");
+        let _ = e0;
+    }
+
+    #[test]
+    fn energy_projection_is_identity_within_the_bound() {
+        let device = Default::default();
+        let d = identity_denorm();
+        let g = 9.81;
+        let x = flat_state(1.0, 2.0, 2.0, &device);
+        // 142.48 actual energy, well inside a 200 bound: nothing to do.
+        let bound = Tensor::<B, 2>::from_floats([[200.0f32]], &device);
+
+        let y = project_energy(x.clone(), bound, &d, g, 0.0, 0.0, 0.0);
+        y.into_data()
+            .assert_approx_eq::<f32>(&x.into_data(), burn::tensor::Tolerance::default());
     }
 }

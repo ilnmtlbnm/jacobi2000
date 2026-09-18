@@ -11,12 +11,13 @@
 //! the field the drop actually lives in.
 
 use burn::prelude::*;
-use jacobi2000::{project_mass, Jacobi2000, Mask};
+use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
 use rand::rngs::StdRng;
 use rand::Rng;
 use solvers::{Params, ShallowWater, State};
 
 use crate::data::{meta_of, Normalizer, META_DIM};
+use crate::fit::ENERGY_C;
 
 pub const BANDS: usize = 3;
 
@@ -429,6 +430,7 @@ pub fn score_rollout<B: Backend>(
     horizons: &[usize],
     mask: Mask,
     project: bool,
+    project_energy_flag: bool,
     device: &B::Device,
 ) -> (Vec<Metrics>, Vec<Metrics>) {
     let n = params.cells();
@@ -436,6 +438,11 @@ pub fn score_rollout<B: Backend>(
     let mask = mask.to_tensor::<B>(&grid, device);
     let meta =
         Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device).reshape([1, META_DIM]);
+    let denorm = Denorm {
+        mean: norm.mean,
+        std: norm.std,
+        depth: norm.depth,
+    };
 
     let mut truth = init.clone();
     let mut solver = ShallowWater::new(*params);
@@ -451,9 +458,13 @@ pub fn score_rollout<B: Backend>(
     let last = *horizons.last().unwrap();
     for t in 1..=last {
         solver.step(&mut truth);
+        let prev_energy = project_energy_flag.then(|| energy(&x, &denorm, params.g));
         x = model.step(x, meta.clone(), mask.clone());
         if project {
             x = project_mass(x, mass0.clone());
+        }
+        if let Some(prev_energy) = prev_energy {
+            x = project_energy(x, prev_energy, &denorm, params.g, params.nu, params.dt, ENERGY_C);
         }
         if horizons.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];

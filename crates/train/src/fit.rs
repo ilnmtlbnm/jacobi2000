@@ -5,9 +5,15 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-use jacobi2000::{project_mass, Jacobi2000, Mask};
+use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
 
 use crate::data::Generator;
+
+/// Constant in the energy inequality `E_new <= E_prev * (1 - c*nu*dt)`
+/// (CONCEPT sec. 4, step 2). Not exposed as a flag: `--project-energy` is a
+/// toggle, and this crate's "no over-engineering" rule means one reasonable
+/// constant rather than a second knob nothing yet needs tuned.
+pub const ENERGY_C: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FitConfig {
@@ -28,6 +34,10 @@ pub struct FitConfig {
     /// it becomes the next rollout input, so the model is trained on the
     /// states it will actually be run on (CONCEPT sec. 4: propose, project).
     pub project: bool,
+    /// Also project onto the energy inequality (task 11), scaling (u, v)
+    /// down when the predicted step's energy exceeds the viscosity-scaled
+    /// bound. Off by default: a second hard constraint on top of mass.
+    pub project_energy: bool,
     /// Weight of the wavenumber-banded error term (`spectral::band_mse`) added
     /// to plain MSE. 0 disables it.
     pub spectral: f32,
@@ -48,6 +58,7 @@ impl Default for FitConfig {
             rollout_after: 500,
             noise: 0.0,
             project: true,
+            project_energy: false,
             spectral: 0.0,
             log_every: 100,
             lr_floor: 0.05,
@@ -74,6 +85,12 @@ pub fn fit<B: AutodiffBackend>(
     let mut opt = AdamWConfig::new()
         .with_weight_decay(cfg.weight_decay)
         .init();
+    let params = gen.config().params;
+    let denorm = Denorm {
+        mean: gen.norm.mean,
+        std: gen.norm.std,
+        depth: gen.norm.depth,
+    };
 
     let t0 = std::time::Instant::now();
     let mut running = 0.0f32;
@@ -107,9 +124,15 @@ pub fn fit<B: AutodiffBackend>(
                         device,
                     );
             }
+            let prev_energy = cfg
+                .project_energy
+                .then(|| energy(&x, &denorm, params.g));
             x = model.step(x, meta.clone(), mask.clone());
             if cfg.project {
                 x = project_mass(x, mass0.clone());
+            }
+            if let Some(prev_energy) = prev_energy {
+                x = project_energy(x, prev_energy, &denorm, params.g, params.nu, params.dt, ENERGY_C);
             }
             let target = to_field(&batch.states[step_k + 1]);
             let err = x.clone() - target;
