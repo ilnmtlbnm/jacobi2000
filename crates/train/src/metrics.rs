@@ -44,6 +44,12 @@ pub struct Metrics {
     /// Model minus solver radius of the azimuthally-averaged `|h|` peak, in
     /// cells. Positive = the model's ring runs ahead.
     pub radius_error: f32,
+    /// Lag (in cells) that best aligns the model's radial `|h|` profile to
+    /// the solver's, by cross-correlation over ±8 cells with sub-cell
+    /// parabolic refinement. Positive = the model's ring runs ahead. Unlike
+    /// `radius_error` (a single argmax bin each side), this uses the whole
+    /// profile shape and is not thrown by a bistable (two-peaked) profile.
+    pub xcorr_lag: f32,
     /// RMSE of the h error per Laplacian-pyramid band, shortest wavelength
     /// first (roughly 2-4, 4-8, 8-16 cells).
     pub bands: [f32; BANDS],
@@ -114,11 +120,10 @@ pub fn peak(f: &[f32]) -> f32 {
     f.iter().fold(0.0f32, |a, &x| a.max(x.abs()))
 }
 
-/// Radius (in cells) of the peak of the azimuthally-averaged `|f|` profile
-/// about `(cx, cy)`. Bins are one cell wide; the peak is refined to sub-cell
-/// accuracy by a parabola through the peak bin and its neighbours. Bins are
-/// cut off at the nearest wall so every annulus is fully sampled.
-pub fn wavefront_radius(f: &[f32], nx: usize, ny: usize, cx: f32, cy: f32) -> f32 {
+/// Azimuthally-averaged `|f|` profile about `(cx, cy)`, one value per
+/// one-cell-wide radius bin. Bins are cut off at the nearest wall so every
+/// annulus is fully sampled.
+pub fn radial_profile(f: &[f32], nx: usize, ny: usize, cx: f32, cy: f32) -> Vec<f64> {
     let rmax = cx
         .min(cy)
         .min(nx as f32 - cx)
@@ -138,11 +143,15 @@ pub fn wavefront_radius(f: &[f32], nx: usize, ny: usize, cx: f32, cy: f32) -> f3
             }
         }
     }
-    let prof: Vec<f64> = sum
-        .iter()
+    sum.iter()
         .zip(&count)
         .map(|(s, &c)| if c == 0 { 0.0 } else { s / c as f64 })
-        .collect();
+        .collect()
+}
+
+/// Radius (in cells) of a radial profile's peak, refined to sub-cell
+/// accuracy by a parabola through the peak bin and its neighbours.
+pub fn profile_peak(prof: &[f64]) -> f32 {
     let k = (0..prof.len()).fold(0, |b, i| if prof[i] > prof[b] { i } else { b });
     if k == 0 || k + 1 >= prof.len() {
         return k as f32;
@@ -153,6 +162,65 @@ pub fn wavefront_radius(f: &[f32], nx: usize, ny: usize, cx: f32, cy: f32) -> f3
         return k as f32;
     }
     (k as f64 + 0.5 * (l - r) / den) as f32
+}
+
+/// Radius (in cells) of the peak of the azimuthally-averaged `|f|` profile
+/// about `(cx, cy)`. Bistable at 50 ticks when the profile carries two
+/// comparable peaks (docs/runs/2026-09-18-radius-estimator.md): a tie
+/// between bins on either side of the true wavefront flips this by one
+/// argmax step. See `xcorr_lag` for a whole-profile alternative.
+pub fn wavefront_radius(f: &[f32], nx: usize, ny: usize, cx: f32, cy: f32) -> f32 {
+    profile_peak(&radial_profile(f, nx, ny, cx, cy))
+}
+
+/// Correlation of `model` against `solver` shifted by `lag` cells: position
+/// `i` of `model` is compared to position `i - lag` of `solver`, over the
+/// overlapping range. A profile shifted right by `k` (its features appear at
+/// `k` cells greater radius than the reference) reports its best lag at
+/// `+k`.
+fn corr_at_lag(model: &[f64], solver: &[f64], lag: isize) -> f32 {
+    let n = model.len() as isize;
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        let si = i - lag;
+        if si >= 0 && si < n {
+            a.push(model[i as usize] as f32);
+            b.push(solver[si as usize] as f32);
+        }
+    }
+    if a.len() < 3 {
+        return f32::NEG_INFINITY;
+    }
+    correlation(&a, &b)
+}
+
+/// Lag (in cells) that maximizes the cross-correlation of the model's radial
+/// profile against the solver's, searched over `±max_lag` cells and refined
+/// to sub-cell accuracy by a parabola through the best lag and its
+/// neighbours. Unlike a single argmax bin, this uses the whole profile shape
+/// and survives a bistable (two-peaked) profile.
+pub fn xcorr_lag(model: &[f64], solver: &[f64], max_lag: usize) -> f32 {
+    let max_lag = max_lag as isize;
+    let (mut best_lag, mut best_c) = (0isize, f32::NEG_INFINITY);
+    for lag in -max_lag..=max_lag {
+        let c = corr_at_lag(model, solver, lag);
+        if c > best_c {
+            best_c = c;
+            best_lag = lag;
+        }
+    }
+    if best_lag > -max_lag && best_lag < max_lag {
+        let (l, c, r) = (
+            corr_at_lag(model, solver, best_lag - 1),
+            best_c,
+            corr_at_lag(model, solver, best_lag + 1),
+        );
+        let den = l - 2.0 * c + r;
+        if den < 0.0 {
+            return best_lag as f32 + 0.5 * (l - r) / den;
+        }
+    }
+    best_lag as f32
 }
 
 /// Separable `[1, 2, 1] / 4` smoothing with edge replication.
@@ -227,6 +295,12 @@ pub fn band_errors(pred: &[f32], truth: &[f32], nx: usize, ny: usize) -> [f32; B
 
 /// Score one predicted state against the solver's, both packed normalized
 /// `[3, ny, nx]`, for a drop centred at `(cx, cy)`.
+/// Decode the packed `h` channel (the first `n` of `x`) back to physical
+/// units.
+pub fn decode_h(x: &[f32], norm: &Normalizer, n: usize) -> Vec<f32> {
+    x[..n].iter().map(|v| v * norm.std[0] + norm.mean[0]).collect()
+}
+
 pub fn score(
     pred: &[f32],
     truth: &[f32],
@@ -236,18 +310,19 @@ pub fn score(
     cy: f32,
 ) -> Metrics {
     let n = p.cells();
-    let decode = |x: &[f32]| -> Vec<f32> {
-        x[..n].iter().map(|v| v * norm.std[0] + norm.mean[0]).collect()
-    };
-    let (ph, th) = (decode(pred), decode(truth));
+    let (ph, th) = (decode_h(pred, norm, n), decode_h(truth, norm, n));
     let mask = active_mask(&th);
+    let (mprof, tprof) = (
+        radial_profile(&ph, p.nx, p.ny, cx, cy),
+        radial_profile(&th, p.nx, p.ny, cx, cy),
+    );
     Metrics {
         corr: correlation(pred, truth),
         corr_h: correlation(&pred[..n], &truth[..n]),
         active_rmse: masked_rmse(pred, truth, &mask),
         amplitude_ratio: peak(&ph) / peak(&th),
-        radius_error: wavefront_radius(&ph, p.nx, p.ny, cx, cy)
-            - wavefront_radius(&th, p.nx, p.ny, cx, cy),
+        radius_error: profile_peak(&mprof) - profile_peak(&tprof),
+        xcorr_lag: xcorr_lag(&mprof, &tprof, 8),
         bands: band_errors(&pred[..n], &truth[..n], p.nx, p.ny),
         global_rmse: rmse(pred, truth),
     }
@@ -320,6 +395,60 @@ pub fn score_rollout<B: Backend>(
     (model_rows, frozen_rows)
 }
 
+/// Like `score_rollout`, but returns the raw azimuthally-averaged `|h|`
+/// radial profiles (model, solver) at each horizon instead of scalar
+/// metrics. For the docs/runs/2026-09-18-radius-estimator.md diagnostic:
+/// printing the profile makes a bistable (two-peaked) argmax visible in a
+/// way a single radius number cannot.
+#[allow(clippy::too_many_arguments)]
+pub fn rollout_profiles<B: Backend>(
+    model: &Jacobi2000<B>,
+    params: &Params,
+    norm: &Normalizer,
+    init: &State,
+    drop: &Drop,
+    horizons: &[usize],
+    mask: Mask,
+    project: bool,
+    device: &B::Device,
+) -> Vec<(usize, Vec<f64>, Vec<f64>)> {
+    let n = params.cells();
+    let grid = model.grid;
+    let mask = mask.to_tensor::<B>(&grid, device);
+    let meta =
+        Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device).reshape([1, META_DIM]);
+
+    let mut truth = init.clone();
+    let mut solver = ShallowWater::new(*params);
+
+    let mut packed = vec![0.0f32; 3 * n];
+    norm.encode(init, &mut packed);
+    let mut x = Tensor::<B, 1>::from_floats(packed.as_slice(), device)
+        .reshape([1, 3, params.ny, params.nx]);
+    let mass0 = jacobi2000::mass(&x);
+
+    let mut out = Vec::new();
+    let last = *horizons.last().unwrap();
+    for t in 1..=last {
+        solver.step(&mut truth);
+        x = model.step(x, meta.clone(), mask.clone());
+        if project {
+            x = project_mass(x, mass0.clone());
+        }
+        if horizons.contains(&t) {
+            let mut target = vec![0.0f32; 3 * n];
+            norm.encode(&truth, &mut target);
+            let pred = x.to_data();
+            let pred = pred.as_slice::<f32>().unwrap();
+            let (ph, th) = (decode_h(pred, norm, n), decode_h(&target, norm, n));
+            let mprof = radial_profile(&ph, params.nx, params.ny, drop.cx, drop.cy);
+            let tprof = radial_profile(&th, params.nx, params.ny, drop.cx, drop.cy);
+            out.push((t, mprof, tprof));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +516,20 @@ mod tests {
             let got = wavefront_radius(&f, nx, ny, cx, cy);
             assert!((got - r0).abs() < 0.25, "r0 {r0} recovered as {got}");
         }
+    }
+
+    #[test]
+    fn xcorr_lag_recovers_a_three_cell_shift() {
+        let n = 64;
+        let ring = |r0: f64| -> Vec<f64> {
+            (0..n)
+                .map(|i| (-(i as f64 - r0).powi(2) / 8.0).exp())
+                .collect()
+        };
+        let solver = ring(20.0);
+        let model = ring(23.0);
+        let lag = xcorr_lag(&model, &solver, 8);
+        assert!((lag - 3.0).abs() < 0.1, "lag {lag}");
     }
 
     #[test]
