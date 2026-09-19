@@ -82,8 +82,20 @@ pub fn project_energy<B: Backend>(
     // alone already exceeds the bound (kills all velocity); ratio >= 1 when
     // the state is already within budget, and the clamp below then makes
     // this the identity, so "never scale up" holds without a branch.
-    let budget = (bound - potential).clamp_min(0.0);
-    let scale = (budget / kinetic.clamp_min(1e-12)).sqrt().clamp(0.0, 1.0);
+    //
+    // scale is detached: the projection is a hard, post-hoc correction
+    // applied to the model's proposal (CONCEPT sec. 4, "propose, then
+    // project"), not a differentiable layer the model should learn to
+    // anticipate through its gradient. `sqrt` has an unbounded derivative
+    // as its argument -> 0, which `budget` reaches whenever a batch
+    // member's potential energy alone already meets the bound; detaching
+    // budget/kinetic before the sqrt keeps the backward pass finite there.
+    // The scaled (u, v) below still carries gradient through the
+    // un-scaled path, since `scale` is now just a constant multiplier.
+    let budget = (bound.detach() - potential.detach()).clamp_min(0.0);
+    let scale = (budget / kinetic.detach().clamp_min(1e-12))
+        .sqrt()
+        .clamp(0.0, 1.0);
     let scale = scale.reshape([b, 1, 1, 1]);
 
     let u = x.clone().slice([0..b, 1..2]) * d.std[1] + d.mean[1];
@@ -196,5 +208,38 @@ mod tests {
         let y = project_energy(x.clone(), bound, &d, g, 0.0, 0.0, 0.0);
         y.into_data()
             .assert_approx_eq::<f32>(&x.into_data(), burn::tensor::Tolerance::default());
+    }
+
+    #[test]
+    fn energy_projection_gradient_is_finite_at_zero_budget() {
+        type AB = burn::backend::Autodiff<B>;
+        let device = Default::default();
+        let d = identity_denorm();
+        let g = 9.81;
+
+        let n = 2 * 4 * 4;
+        let mut v_all = vec![1.0f32; n];
+        v_all.extend(vec![2.0f32; n]);
+        v_all.extend(vec![2.0f32; n]);
+        let x = Tensor::<AB, 1>::from_floats(v_all.as_slice(), &device)
+            .reshape([2, 3, 4, 4])
+            .require_grad();
+
+        // Member 0's potential energy alone already meets a tiny bound, so
+        // budget = 0 there; member 1 has a normal, non-tight bound.
+        let bound = Tensor::<AB, 2>::from_floats([[0.0f32], [200.0]], &device);
+
+        let y = project_energy(x.clone(), bound, &d, g, 0.0, 0.0, 0.0);
+        let loss = y.powi_scalar(2).sum();
+        let grads = loss.backward();
+
+        let grad = x
+            .grad(&grads)
+            .expect("project_energy should be differentiable w.r.t. x");
+        let grad: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
+        assert!(
+            grad.iter().all(|v| v.is_finite()),
+            "non-finite gradient at budget=0: {grad:?}"
+        );
     }
 }

@@ -10,4 +10,4 @@ serde = { workspace = true }
 
 [dev-dependencies]
 # Backend features belong in the consumer crate; tests are a consumer.
-burn = { version = "0.20", default-features = false, features = ["std", "ndarray"] }
+burn = { version = "0.20", default-features = false, features = ["std", "ndarray", "autodiff"] }
