@@ -478,6 +478,97 @@ pub fn score_rollout<B: Backend>(
     (model_rows, frozen_rows)
 }
 
+/// One horizon tick's total physical energy under the model rollout with
+/// energy projection ON, the same rollout with it OFF, and the solver.
+#[derive(Debug, Clone, Copy)]
+pub struct EnergyRow {
+    pub tick: usize,
+    pub energy_on: f32,
+    pub energy_off: f32,
+    pub energy_solver: f32,
+}
+
+/// Max relative energy violation along a per-tick physical-energy sequence:
+/// `max_t (E_{t+1} - E_t * r_max) / E_t`, clamped at 0 so a rollout that
+/// never exceeds its bound reports 0 rather than a negative slack. This is
+/// the acceptance number (GOAL-2026-09-19.md): must be <= 1e-6 along the
+/// projected (ON) rollout.
+pub fn max_relative_violation(energies: &[f32], r_max: f32) -> f32 {
+    energies
+        .windows(2)
+        .map(|w| ((w[1] - w[0] * r_max) / w[0]).max(0.0))
+        .fold(0.0f32, f32::max)
+}
+
+/// Roll the model forward twice from the same initial state (once with the
+/// energy projection ON, once with it OFF; mass projection stays on in both,
+/// same as the main metrics table) alongside the solver, and report total
+/// physical energy at each requested horizon plus the max relative
+/// violation along the ON rollout (task 3, GOAL-2026-09-19.md).
+#[allow(clippy::too_many_arguments)]
+pub fn energy_drift_rollout<B: Backend>(
+    model: &Jacobi2000<B>,
+    params: &Params,
+    norm: &Normalizer,
+    init: &State,
+    horizons: &[usize],
+    mask: Mask,
+    r_max: f32,
+    device: &B::Device,
+) -> (Vec<EnergyRow>, f32) {
+    let n = params.cells();
+    let grid = model.grid;
+    let mask = mask.to_tensor::<B>(&grid, device);
+    let meta =
+        Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device).reshape([1, META_DIM]);
+    let denorm = Denorm {
+        mean: norm.mean,
+        std: norm.std,
+        depth: norm.depth,
+    };
+
+    let mut truth = init.clone();
+    let mut solver = ShallowWater::new(*params);
+
+    let mut packed = vec![0.0f32; 3 * n];
+    norm.encode(init, &mut packed);
+    let mut x_on = Tensor::<B, 1>::from_floats(packed.as_slice(), device)
+        .reshape([1, 3, params.ny, params.nx]);
+    let mut x_off = x_on.clone();
+    let mass0 = jacobi2000::mass(&x_on);
+
+    let mut on_energies: Vec<f32> = vec![energy(&x_on, &denorm, params.g).into_scalar().elem()];
+    let mut rows = Vec::new();
+    let last = *horizons.last().unwrap();
+    for t in 1..=last {
+        solver.step(&mut truth);
+
+        let prev_on = energy(&x_on, &denorm, params.g);
+        x_on = model.step(x_on, meta.clone(), mask.clone());
+        x_on = project_mass(x_on, mass0.clone());
+        x_on = project_energy(x_on, prev_on, &denorm, params.g, r_max);
+        on_energies.push(energy(&x_on, &denorm, params.g).into_scalar().elem());
+
+        x_off = model.step(x_off, meta.clone(), mask.clone());
+        x_off = project_mass(x_off, mass0.clone());
+
+        if horizons.contains(&t) {
+            let mut target = vec![0.0f32; 3 * n];
+            norm.encode(&truth, &mut target);
+            let target = Tensor::<B, 1>::from_floats(target.as_slice(), device)
+                .reshape([1, 3, params.ny, params.nx]);
+            rows.push(EnergyRow {
+                tick: t,
+                energy_on: *on_energies.last().unwrap(),
+                energy_off: energy(&x_off, &denorm, params.g).into_scalar().elem(),
+                energy_solver: energy(&target, &denorm, params.g).into_scalar().elem(),
+            });
+        }
+    }
+    let violation = max_relative_violation(&on_energies, r_max);
+    (rows, violation)
+}
+
 /// Like `score_rollout`, but returns the raw azimuthally-averaged `|h|`
 /// radial profiles (model, solver) at each horizon instead of scalar
 /// metrics. For the docs/runs/2026-09-18-radius-estimator.md diagnostic:
@@ -626,6 +717,21 @@ mod tests {
         let solver = vec![0.1, 0.2, 0.15];
         let lag = xcorr_lag(&model, &solver, 8);
         assert!(lag.is_finite(), "lag {lag}");
+    }
+
+    #[test]
+    fn max_relative_violation_reports_the_positive_excess_and_zero_within_bound() {
+        // 105 after a 100*1.0 bound: violates by exactly 5%.
+        let violating = [100.0f32, 100.0, 105.0];
+        let v = max_relative_violation(&violating, 1.0);
+        assert!((v - 0.05).abs() < 1e-6, "{v}");
+
+        // Monotonically non-increasing energy never exceeds a r_max=1.0
+        // bound, so the reported violation is exactly 0, not a negative
+        // slack.
+        let within = [100.0f32, 99.0, 98.0, 98.0];
+        let v = max_relative_violation(&within, 1.0);
+        assert_eq!(v, 0.0);
     }
 
     #[test]

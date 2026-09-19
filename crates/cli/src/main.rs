@@ -15,8 +15,8 @@ use train::{
     eval::rollout_errors,
     fit::{fit, FitConfig},
     metrics::{
-        rollout_profiles, sample_single_drop, sample_stress_drop, score_rollout, Metrics,
-        StressKind, BANDS,
+        energy_drift_rollout, rollout_profiles, sample_single_drop, sample_stress_drop,
+        score_rollout, EnergyRow, Metrics, StressKind, BANDS,
     },
     Generator, Meta,
 };
@@ -596,8 +596,8 @@ fn train_cmd(a: TrainArgs) {
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, amplitude_max,
         extra_drop_prob, no_horizon_fraction, extended_fraction, rollout, rollout_after, noise,
-        lr_floor, project, spectral, nu, seed, layers, dim, &rows, train_secs, &errs, note,
-        model.num_params(), init, mask,
+        lr_floor, project, project_energy, r_max, spectral, nu, seed, layers, dim, &rows,
+        train_secs, &errs, note, model.num_params(), init, mask,
     );
 }
 
@@ -835,6 +835,36 @@ fn eval_metrics_cmd(
         );
     }
 
+    let mut energy_rows: Vec<Vec<EnergyRow>> = vec![Vec::new(); horizons.len()];
+    let mut max_violation = 0.0f32;
+    for (init, _drop) in &trajs {
+        let (rows, violation) = energy_drift_rollout(
+            &model, &params, &meta.norm, init, &horizons, meta.mask, meta.energy_r_max, &device,
+        );
+        for (i, row) in rows.into_iter().enumerate() {
+            energy_rows[i].push(row);
+        }
+        max_violation = max_violation.max(violation);
+    }
+    println!(
+        "\nenergy drift (physical units), model rollout with energy projection ON vs OFF vs \
+         the solver, r_max={:.6}, mean over {used} trajectories:\n",
+        meta.energy_r_max
+    );
+    println!("| ticks | energy ON | energy OFF | energy solver |");
+    println!("|---:|---:|---:|---:|");
+    for (i, t) in horizons.iter().enumerate() {
+        let n = energy_rows[i].len() as f32;
+        let on: f32 = energy_rows[i].iter().map(|r| r.energy_on).sum::<f32>() / n;
+        let off: f32 = energy_rows[i].iter().map(|r| r.energy_off).sum::<f32>() / n;
+        let solver: f32 = energy_rows[i].iter().map(|r| r.energy_solver).sum::<f32>() / n;
+        println!("| {t} | {on:.6} | {off:.6} | {solver:.6} |");
+    }
+    println!(
+        "\nmax relative energy violation along the projected (ON) rollout: {max_violation:.3e} \
+         (bound: <= 1e-6)"
+    );
+
     for (traj_i, traj) in profiles.iter().enumerate() {
         for (t, mprof, tprof) in traj {
             println!("\nradial |h| profile, trajectory {traj_i}, {t} ticks (model vs solver):\n");
@@ -1021,6 +1051,8 @@ fn write_run_log(
     noise: f32,
     lr_floor: f64,
     project: bool,
+    project_energy: bool,
+    r_max: f32,
     spectral: f32,
     nu: f32,
     seed: u64,
@@ -1055,7 +1087,7 @@ fn write_run_log(
         .map(|p| format!(" --init {}", p.display()))
         .unwrap_or_default();
     s.push_str(&format!(
-        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --amplitude-max {amplitude_max} --extra-drop-prob {extra_drop_prob} --no-horizon-fraction {no_horizon_fraction} --extended-fraction {extended_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
+        "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --amplitude-max {amplitude_max} --extra-drop-prob {extra_drop_prob} --no-horizon-fraction {no_horizon_fraction} --extended-fraction {extended_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --project-energy {project_energy} --r-max {r_max} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" },
         mask_flags(mask)
     ));
