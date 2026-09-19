@@ -478,6 +478,69 @@ pub fn score_rollout<B: Backend>(
     (model_rows, frozen_rows)
 }
 
+/// Task C6: forward-then-backward round trip. Step `forward` N ticks from
+/// `init` (mass-projected as usual), then step `reverse` N ticks back from
+/// wherever that landed, and score the result against the ORIGINAL `init`
+/// (not the solver's ground truth — this measures whether the two learned
+/// operators are inverses of each other, independent of either one's own
+/// forward accuracy). Returns `(round_trip_metrics, solver_reference_rmse)`
+/// where the second is `rmse(init, solver_forward_N(init))`: how far the
+/// physics itself moves in N ticks, the scale a round-trip error should be
+/// read against (not a literal floor — the solver has no inverse to round-
+/// trip with).
+#[allow(clippy::too_many_arguments)]
+pub fn round_trip<B: Backend>(
+    forward: &Jacobi2000<B>,
+    reverse: &Jacobi2000<B>,
+    params: &Params,
+    norm: &Normalizer,
+    init: &State,
+    drop: &Drop,
+    n: usize,
+    mask: Mask,
+    project: bool,
+    device: &B::Device,
+) -> (Metrics, f32) {
+    let np = params.cells();
+    let grid = forward.grid;
+    let mask_t = mask.to_tensor::<B>(&grid, device);
+    let meta = Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device)
+        .reshape([1, META_DIM]);
+
+    let mut packed0 = vec![0.0f32; 3 * np];
+    norm.encode(init, &mut packed0);
+    let mut x = Tensor::<B, 1>::from_floats(packed0.as_slice(), device)
+        .reshape([1, 3, params.ny, params.nx]);
+    let mass0 = jacobi2000::mass(&x);
+
+    for _ in 0..n {
+        x = forward.step(x, meta.clone(), mask_t.clone());
+        if project {
+            x = project_mass(x, mass0.clone());
+        }
+    }
+    for _ in 0..n {
+        x = reverse.step(x, meta.clone(), mask_t.clone());
+        if project {
+            x = project_mass(x, mass0.clone());
+        }
+    }
+    let data = x.into_data();
+    let round_tripped = data.as_slice::<f32>().unwrap();
+    let m = score(round_tripped, &packed0, norm, params, drop.cx, drop.cy);
+
+    let mut solver = ShallowWater::new(*params);
+    let mut truth = init.clone();
+    for _ in 0..n {
+        solver.step(&mut truth);
+    }
+    let mut packedn = vec![0.0f32; 3 * np];
+    norm.encode(&truth, &mut packedn);
+    let solver_ref = rmse(&packed0, &packedn);
+
+    (m, solver_ref)
+}
+
 /// Task C5: score a reverse-trained model (state(t+1) -> state(t)) against
 /// the solver run BACKWARD in time. The solver itself only steps forward, so
 /// the truth trajectory is built by running it forward `horizons.last()`

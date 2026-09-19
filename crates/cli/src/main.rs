@@ -293,6 +293,25 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         seed: u64,
     },
+    /// Task C6: forward-then-backward round trip. Step `forward` N ticks,
+    /// then `reverse` N ticks back, and score against the original state
+    /// (see `metrics::round_trip`).
+    RoundTrip {
+        #[arg(long)]
+        forward: PathBuf,
+        #[arg(long)]
+        reverse: PathBuf,
+        #[arg(long, default_value = "10,25,50", value_delimiter = ',')]
+        horizons: Vec<usize>,
+        #[arg(long, default_value_t = 8)]
+        trajectories: usize,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        #[arg(long, default_value_t = 1e-3)]
+        nu: f32,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        project: bool,
+    },
 }
 
 fn main() {
@@ -433,6 +452,9 @@ fn run(cmd: Cmd) {
             pool, ticks, long_fraction, amplitude_max, extra_drop_prob, no_horizon_fraction,
             extended_fraction, nu, seed,
         ),
+        Cmd::RoundTrip { forward, reverse, horizons, trajectories, seed, nu, project } => {
+            round_trip_cmd(&forward, &reverse, &horizons, trajectories, seed, nu, project)
+        }
     }
 }
 
@@ -1313,6 +1335,49 @@ fn write_pgm(path: &Path, field: &[f32], nx: usize, ny: usize) {
     let mut out = format!("P5\n{nx} {ny}\n255\n").into_bytes();
     out.extend_from_slice(&bytes);
     std::fs::write(path, out).unwrap();
+}
+
+/// Task C6: forward-then-backward round trip, at `nu` (which may differ
+/// from either checkpoint's own training `nu` — the model sees it through
+/// the meta channel), over `trajectories` fresh single-drop initial
+/// conditions, reported at each horizon in `horizons`.
+#[allow(clippy::too_many_arguments)]
+fn round_trip_cmd(
+    forward_dir: &Path,
+    reverse_dir: &Path,
+    horizons: &[usize],
+    trajectories: usize,
+    seed: u64,
+    nu: f32,
+    project: bool,
+) {
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let (fwd, fwd_meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(forward_dir, &device);
+    let (rev, _rev_meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(reverse_dir, &device);
+    let params = Params { nu, ..fwd_meta.params() };
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    println!("| horizon | corr | amplitude ratio | round-trip RMSE | solver reference RMSE (N-tick physical change) |");
+    println!("|---:|---:|---:|---:|---:|");
+    for &n in horizons {
+        let (mut corr_sum, mut amp_sum, mut rt_sum, mut ref_sum) = (0.0, 0.0, 0.0, 0.0);
+        for _ in 0..trajectories {
+            let (init, drop) = sample_single_drop(&params, &mut rng);
+            let (m, solver_ref) = train::metrics::round_trip(
+                &fwd, &rev, &params, &fwd_meta.norm, &init, &drop, n, fwd_meta.mask, project,
+                &device,
+            );
+            corr_sum += m.corr as f64;
+            amp_sum += m.amplitude_ratio as f64;
+            rt_sum += m.global_rmse as f64;
+            ref_sum += solver_ref as f64;
+        }
+        let t = trajectories as f64;
+        println!(
+            "| {n} | {:.4} | {:.4} | {:.5} | {:.5} |",
+            corr_sum / t, amp_sum / t, rt_sum / t, ref_sum / t
+        );
+    }
 }
 
 /// Task D9: score a `--lagrangian` checkpoint against SPH-splatted truth on
