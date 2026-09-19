@@ -37,3 +37,7 @@ Three runs, model20's recipe with `--init artifacts/model19 --reverse true --ste
 - This is the "reversibility floor" for this pair; no classical reverse solver reference was run (the solver is not time-reversible with viscosity).
 
 Demo: `web/model/model20/model-reverse.bin` + `meta-reverse.json` = model-rev-nu0.001 (gitignored); `rewind()` enabled when present. Headless check: `web/test/smoke.mjs` (REWIND line).
+
+## Headless rewind check (2026-09-20 01:10)
+
+`web/test/smoke.mjs` with model-rev-nu0.001 staged as `web/model/model20/model-reverse.bin`: all other gates PASS; **REWIND: FAIL** (peak at [9,9], origin [20,40], error 32.9 cells). The CLI round-trip at 25 ticks is corr 0.93, so this is most likely a web wiring bug (stale wasm export, wrong state passed to the reverse step, or peak finder on an empty field), not the model. Open item.
