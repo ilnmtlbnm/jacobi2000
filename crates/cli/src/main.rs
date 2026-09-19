@@ -161,6 +161,12 @@ enum Cmd {
         /// skipped (score with `eval-metrics --lagrangian` instead).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         lagrangian: bool,
+        /// Task C5: train the backward stepper. The generator's time axis is
+        /// flipped (mask and solver unchanged) so the model learns
+        /// state(t+1) -> state(t) instead of state(t) -> state(t+1).
+        /// Incompatible with `--lagrangian`.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        reverse: bool,
     },
     /// Rollout error at 10/50/200 ticks against the solver, with the
     /// frozen-field baseline.
@@ -237,6 +243,10 @@ enum Cmd {
         /// disables the ensemble section of the report.
         #[arg(long, default_value_t = 1)]
         xr: usize,
+        /// Task C5/C7: score a reverse-trained checkpoint's rewind rollout
+        /// against the solver run backward (see `score_rollout_reverse`).
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        reverse: bool,
     },
     /// Native PGM picture sequence (task D9 step 3). Solver-truth frames
     /// only for now (no checkpoint to compare against yet).
@@ -317,6 +327,7 @@ fn run(cmd: Cmd) {
             radius,
             dilation,
             lagrangian,
+            reverse,
         } => train_cmd(TrainArgs {
             steps,
             lr,
@@ -346,6 +357,7 @@ fn run(cmd: Cmd) {
             init,
             mask: mask.build(radius, dilation),
             lagrangian,
+            reverse,
         }),
         Cmd::Eval {
             model,
@@ -384,11 +396,14 @@ fn run(cmd: Cmd) {
             project,
             project_energy,
             xr,
+            reverse,
         } => {
             if stress {
                 eval_stress_cmd(&model, &horizons, project, project_energy)
             } else {
-                eval_metrics_cmd(&model, &horizons, trajectories, seed, project, project_energy, xr)
+                eval_metrics_cmd(
+                    &model, &horizons, trajectories, seed, project, project_energy, xr, reverse,
+                )
             }
         }
         Cmd::Pictures { lagrangian, out_dir } => pictures_cmd(lagrangian, &out_dir),
@@ -438,6 +453,7 @@ struct TrainArgs {
     init: Option<PathBuf>,
     mask: Mask,
     lagrangian: bool,
+    reverse: bool,
 }
 
 fn train_cmd(a: TrainArgs) {
@@ -470,6 +486,7 @@ fn train_cmd(a: TrainArgs) {
         init,
         mask,
         lagrangian,
+        reverse,
     } = a;
     let (out, log_dir) = (out.as_path(), log_dir.as_path());
     let device = Default::default();
@@ -502,6 +519,7 @@ fn train_cmd(a: TrainArgs) {
             no_horizon_fraction,
             extended_fraction,
             seed,
+            reverse,
             ..Default::default()
         };
         let mut g = Generator::new(gcfg);
@@ -586,6 +604,14 @@ fn train_cmd(a: TrainArgs) {
         println!(
             "lagrangian: skipping solver-rollout eval and run-log write (shallow-water-only); \
              score with `eval-metrics --lagrangian --model {}`",
+            out.display()
+        );
+        return;
+    }
+    if reverse {
+        println!(
+            "reverse: skipping the forward-only solver-rollout eval and run-log write; \
+             score with `eval-metrics --reverse --model {}`",
             out.display()
         );
         return;
@@ -746,6 +772,7 @@ fn eval_metrics_cmd(
     project: bool,
     project_energy: bool,
     xr: usize,
+    reverse: bool,
 ) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
@@ -780,10 +807,17 @@ fn eval_metrics_cmd(
             skipped += 1;
             continue;
         }
-        let (m, f) = score_rollout(
-            &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
-            project_energy, meta.energy_r_max, &device,
-        );
+        let (m, f) = if reverse {
+            train::metrics::score_rollout_reverse(
+                &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
+                project_energy, meta.energy_r_max, &device,
+            )
+        } else {
+            score_rollout(
+                &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
+                project_energy, meta.energy_r_max, &device,
+            )
+        };
         for i in 0..horizons.len() {
             model_rows[i].push(m[i]);
             frozen_rows[i].push(f[i]);
@@ -833,6 +867,15 @@ fn eval_metrics_cmd(
         println!(
             "| {t} | {rm:+.3} | {rs:.3} | {rmin:+.3} | {rmax:+.3} | {rover} | {lm:+.3} | {ls:.3} |"
         );
+    }
+
+    if reverse {
+        println!(
+            "\nreverse mode: skipping the forward-solver energy-drift, radial-profile and xr \
+             sections below (they assume forward semantics); the corr/amp/lag table above is \
+             the rewind score."
+        );
+        return;
     }
 
     let mut energy_rows: Vec<Vec<EnergyRow>> = vec![Vec::new(); horizons.len()];

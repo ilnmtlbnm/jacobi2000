@@ -478,6 +478,81 @@ pub fn score_rollout<B: Backend>(
     (model_rows, frozen_rows)
 }
 
+/// Task C5: score a reverse-trained model (state(t+1) -> state(t)) against
+/// the solver run BACKWARD in time. The solver itself only steps forward, so
+/// the truth trajectory is built by running it forward `horizons.last()`
+/// ticks from `init` and recording every state; the model then starts at the
+/// LAST recorded state and steps backward, compared at each horizon against
+/// the truth tick `last - t`.
+#[allow(clippy::too_many_arguments)]
+pub fn score_rollout_reverse<B: Backend>(
+    model: &Jacobi2000<B>,
+    params: &Params,
+    norm: &Normalizer,
+    init: &State,
+    drop: &Drop,
+    horizons: &[usize],
+    mask: Mask,
+    project: bool,
+    project_energy_flag: bool,
+    r_max: f32,
+    device: &B::Device,
+) -> (Vec<Metrics>, Vec<Metrics>) {
+    let n = params.cells();
+    let grid = model.grid;
+    let mask = mask.to_tensor::<B>(&grid, device);
+    let meta =
+        Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device).reshape([1, META_DIM]);
+    let denorm = Denorm {
+        mean: norm.mean,
+        std: norm.std,
+        depth: norm.depth,
+    };
+    let last = *horizons.last().unwrap();
+
+    // Forward truth trajectory, tick 0 (== init) .. last.
+    let mut solver = ShallowWater::new(*params);
+    let mut truth = init.clone();
+    let mut truth_states: Vec<Vec<f32>> = Vec::with_capacity(last + 1);
+    let mut packed0 = vec![0.0f32; 3 * n];
+    norm.encode(&truth, &mut packed0);
+    truth_states.push(packed0);
+    for _ in 1..=last {
+        solver.step(&mut truth);
+        let mut packed = vec![0.0f32; 3 * n];
+        norm.encode(&truth, &mut packed);
+        truth_states.push(packed);
+    }
+
+    let latest = truth_states[last].clone();
+    let mut x = Tensor::<B, 1>::from_floats(latest.as_slice(), device)
+        .reshape([1, 3, params.ny, params.nx]);
+    let mass0 = jacobi2000::mass(&x);
+
+    let (mut model_rows, mut frozen_rows) = (Vec::new(), Vec::new());
+    for t in 1..=last {
+        let prev_energy = project_energy_flag.then(|| energy(&x, &denorm, params.g));
+        x = model.step(x, meta.clone(), mask.clone());
+        if project {
+            x = project_mass(x, mass0.clone());
+        }
+        if let Some(prev_energy) = prev_energy {
+            x = project_energy(x, prev_energy, &denorm, params.g, r_max);
+        }
+        if horizons.contains(&t) {
+            let target = &truth_states[last - t];
+            let pred = x.to_data();
+            let pred = pred.as_slice::<f32>().unwrap();
+            model_rows.push(score(pred, target, norm, params, drop.cx, drop.cy));
+            // Frozen baseline: "the later state itself" (the goal doc's
+            // frozen-baseline choice for rewind — the state we started
+            // stepping backward from, unchanged).
+            frozen_rows.push(score(&latest, target, norm, params, drop.cx, drop.cy));
+        }
+    }
+    (model_rows, frozen_rows)
+}
+
 /// One horizon tick's total physical energy under the model rollout with
 /// energy projection ON, the same rollout with it OFF, and the solver.
 #[derive(Debug, Clone, Copy)]

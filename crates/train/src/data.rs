@@ -76,6 +76,12 @@ pub struct GeneratorConfig {
     /// replacement of the standard regime.
     pub extended_fraction: f32,
     pub seed: u64,
+    /// Task C5: flip the time axis of every batch this generator produces —
+    /// `states[0]` is still the model input but is now the LATEST tick of
+    /// the window the solver advanced, and `states[1..]` walk backward to
+    /// the earliest. Mask and solver unchanged; only the order presented to
+    /// `fit`/`score_rollout` is reversed, so the model learns t+1 -> t.
+    pub reverse: bool,
 }
 
 impl Default for GeneratorConfig {
@@ -102,6 +108,7 @@ impl Default for GeneratorConfig {
             no_horizon_fraction: 0.3,
             extended_fraction: 0.0,
             seed: 0,
+            reverse: false,
         }
     }
 }
@@ -304,6 +311,9 @@ impl Generator {
         }
         for pick in picks {
             self.retire(pick);
+        }
+        if self.cfg.reverse {
+            states.reverse();
         }
         Batch {
             states,
@@ -563,6 +573,33 @@ mod tests {
             .map(|(a, c)| (a - c).abs())
             .sum();
         assert!(d > 0.0, "frames identical");
+    }
+
+    #[test]
+    fn reverse_flips_the_window_order() {
+        // Same seed, same pool: with `reverse` off vs on, the two batches'
+        // frame sequences must be exact reverses of each other (task C5 —
+        // the solver and mask are unchanged, only the order presented to
+        // `fit` is flipped).
+        let base = GeneratorConfig {
+            pool: 4,
+            seed: 7,
+            ..Default::default()
+        };
+        let mut fwd = Generator::new(base);
+        let fwd_batch = fwd.next_batch(4);
+
+        let rev_cfg = GeneratorConfig {
+            reverse: true,
+            ..base
+        };
+        let mut rev = Generator::new(rev_cfg);
+        let rev_batch = rev.next_batch(4);
+
+        assert_eq!(fwd_batch.states.len(), rev_batch.states.len());
+        for (a, b) in fwd_batch.states.iter().zip(rev_batch.states.iter().rev()) {
+            assert_eq!(a, b);
+        }
     }
 
     #[test]
