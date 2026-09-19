@@ -1,0 +1,18 @@
+=== nu=0
+| horizon | corr | amplitude ratio | round-trip RMSE | solver reference RMSE (N-tick physical change) |
+|---:|---:|---:|---:|---:|
+| 10 | 0.9600 | 0.9439 | 0.16620 | 0.49066 |
+| 25 | 0.8513 | 0.8397 | 0.32670 | 0.83358 |
+| 50 | 0.6449 | 0.7291 | 0.58166 | 0.87773 |
+=== nu=0.001
+| horizon | corr | amplitude ratio | round-trip RMSE | solver reference RMSE (N-tick physical change) |
+|---:|---:|---:|---:|---:|
+| 10 | 0.9817 | 0.9031 | 0.10171 | 0.49064 |
+| 25 | 0.9263 | 0.8417 | 0.19198 | 0.83352 |
+| 50 | 0.8025 | 0.7710 | 0.33987 | 0.87767 |
+=== nu=0.01
+| horizon | corr | amplitude ratio | round-trip RMSE | solver reference RMSE (N-tick physical change) |
+|---:|---:|---:|---:|---:|
+| 10 | 0.9773 | 0.9017 | 0.11777 | 0.49048 |
+| 25 | 0.8998 | 0.8490 | 0.23689 | 0.83305 |
+| 50 | 0.7466 | 0.7802 | 0.42441 | 0.87707 |
