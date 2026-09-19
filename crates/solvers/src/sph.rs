@@ -94,10 +94,21 @@ impl Params {
 }
 
 pub enum Initial {
-    /// A rectangular column of fluid in the corner (x=0, y=0 is floor).
+    /// A rectangular column of fluid in the corner (x=0, y=0 is floor),
+    /// width `0.25 * domain_x`, height `0.5 * domain_y`.
     DamBreak,
-    /// A circular blob dropped above a resting layer at the bottom.
+    /// A circular blob dropped above a resting layer at the bottom, radius
+    /// `0.1 * domain_x`, layer height `0.2 * domain_y`, centred in x.
     Drop,
+    /// `DamBreak` with configurable column size (fractions of the domain).
+    DamBreakSized { col_w_frac: f32, col_h_frac: f32 },
+    /// `Drop` with configurable blob position/radius and layer height
+    /// (fractions of the domain).
+    DropSized {
+        cx_frac: f32,
+        radius_frac: f32,
+        layer_frac: f32,
+    },
 }
 
 pub struct Sph {
@@ -169,43 +180,56 @@ impl Sph {
         let mut x = Vec::new();
         let mut y = Vec::new();
 
-        match initial {
-            Initial::DamBreak => {
-                let col_w = 0.25 * params.domain_x();
-                let col_h = 0.5 * params.domain_y();
-                let mut px = spacing * 0.5;
-                while px < col_w {
-                    let mut py = spacing * 0.5;
-                    while py < col_h {
-                        x.push(px);
-                        y.push(py);
-                        py += spacing;
-                    }
-                    px += spacing;
+        let (col_w_frac, col_h_frac, dam_break) = match initial {
+            Initial::DamBreak => (0.25, 0.5, true),
+            Initial::DamBreakSized { col_w_frac, col_h_frac } => (col_w_frac, col_h_frac, true),
+            Initial::Drop | Initial::DropSized { .. } => (0.0, 0.0, false),
+        };
+
+        if dam_break {
+            let col_w = col_w_frac * params.domain_x();
+            let col_h = col_h_frac * params.domain_y();
+            let mut px = spacing * 0.5;
+            while px < col_w {
+                let mut py = spacing * 0.5;
+                while py < col_h {
+                    x.push(px);
+                    y.push(py);
+                    py += spacing;
+                }
+                px += spacing;
+            }
+        } else {
+            let (cx_frac, radius_frac, layer_frac) = match initial {
+                Initial::Drop => (0.5, 0.1, 0.2),
+                Initial::DropSized {
+                    cx_frac,
+                    radius_frac,
+                    layer_frac,
+                } => (cx_frac, radius_frac, layer_frac),
+                Initial::DamBreak | Initial::DamBreakSized { .. } => unreachable!(),
+            };
+            let layer_h = layer_frac * params.domain_y();
+            let layer_cx = 0.5 * params.domain_x();
+            let cx = cx_frac * params.domain_x();
+            for dx in centered_offsets(params.domain_x(), spacing) {
+                let px = layer_cx + dx;
+                let mut py = spacing * 0.5;
+                while py < layer_h {
+                    x.push(px);
+                    y.push(py);
+                    py += spacing;
                 }
             }
-            Initial::Drop => {
-                let layer_h = 0.2 * params.domain_y();
-                let cx = 0.5 * params.domain_x();
-                for dx in centered_offsets(params.domain_x(), spacing) {
-                    let px = cx + dx;
-                    let mut py = spacing * 0.5;
-                    while py < layer_h {
-                        x.push(px);
-                        y.push(py);
-                        py += spacing;
-                    }
-                }
-                let blob_r = 0.1 * params.domain_x();
-                let cy = layer_h + 3.0 * blob_r;
-                let x_offsets = centered_offsets(2.0 * (blob_r + spacing), spacing);
-                let y_offsets = centered_offsets(2.0 * (blob_r + spacing), spacing);
-                for &dx in &x_offsets {
-                    for &dy in &y_offsets {
-                        if (dx * dx + dy * dy).sqrt() <= blob_r {
-                            x.push(cx + dx);
-                            y.push(cy + dy);
-                        }
+            let blob_r = radius_frac * params.domain_x();
+            let cy = layer_h + 3.0 * blob_r;
+            let x_offsets = centered_offsets(2.0 * (blob_r + spacing), spacing);
+            let y_offsets = centered_offsets(2.0 * (blob_r + spacing), spacing);
+            for &dx in &x_offsets {
+                for &dy in &y_offsets {
+                    if (dx * dx + dy * dy).sqrt() <= blob_r {
+                        x.push(cx + dx);
+                        y.push(cy + dy);
                     }
                 }
             }
