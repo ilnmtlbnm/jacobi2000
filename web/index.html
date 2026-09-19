@@ -176,6 +176,40 @@
         text-decoration: none;
     }
     footer a:hover { color: var(--muted); }
+
+    .picker { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .picker button {
+        padding: 6px 10px;
+        font-size: 12px;
+        text-align: left;
+    }
+    .picker button.active {
+        background: var(--text);
+        color: var(--bg);
+        border-color: var(--text);
+    }
+    .recipe {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 10px;
+        line-height: 1.6;
+    }
+    label.toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 12px;
+        cursor: pointer;
+    }
+    .panel-metrics {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 10px;
+        color: var(--muted);
+        margin-top: 4px;
+        white-space: pre;
+    }
 </style>
 </head>
 <body>
@@ -194,6 +228,31 @@
     <div class="kv"><span>backend</span><span id="backend">—</span></div>
     <div class="kv"><span>grid</span><span id="grid">—</span></div>
     <div class="kv"><span>mask</span><span id="mask">—</span></div>
+    <div class="kv"><span>model</span><span id="model-name">—</span></div>
+    <p class="recipe" id="recipe"></p>
+</section>
+
+<section>
+    <h2>MODEL</h2>
+    <p class="tagline">"I need to see the other models!" — pick a checkpoint, or a second one to compare</p>
+    <div class="picker" id="model-picker"></div>
+    <div class="controls">
+        <label class="toggle"><input type="checkbox" id="t-compare"> compare mode</label>
+    </div>
+    <div class="picker" id="compare-picker" style="display:none;"></div>
+</section>
+
+<section>
+    <h2>CASE</h2>
+    <div class="picker" id="case-picker">
+        <button data-case="drop" class="active">drop</button>
+        <button data-case="dam_break">dam break</button>
+        <button data-case="extended">extended</button>
+    </div>
+    <div class="controls">
+        <label class="toggle"><input type="checkbox" id="t-mass" checked> mass projection</label>
+        <label class="toggle"><input type="checkbox" id="t-energy"> energy projection</label>
+    </div>
 </section>
 
 <section>
@@ -211,9 +270,20 @@
 <section>
     <h2>OUTPUT</h2>
     <div class="grids">
-        <div class="panel"><canvas id="c-solver" width="64" height="64"></canvas><div class="caption">solver (truth) — click to drop</div></div>
-        <div class="panel"><canvas id="c-model" width="64" height="64"></canvas><div class="caption">model</div></div>
-        <div class="panel"><canvas id="c-div" width="64" height="64"></canvas><div class="caption">divergence</div></div>
+        <div class="panel">
+            <canvas id="c-solver" width="64" height="64"></canvas>
+            <div class="caption">solver (truth) — click to drop</div>
+        </div>
+        <div class="panel">
+            <canvas id="c-model" width="64" height="64"></canvas>
+            <div class="caption" id="c-model-caption">model</div>
+            <div class="panel-metrics" id="metrics-a"></div>
+        </div>
+        <div class="panel">
+            <canvas id="c-div" width="64" height="64"></canvas>
+            <div class="caption" id="c-div-caption">divergence</div>
+            <div class="panel-metrics" id="metrics-b"></div>
+        </div>
     </div>
 </section>
 

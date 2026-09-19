@@ -30,7 +30,7 @@ try {
 
   // Horizon: centred drop on a 64x64 grid is 32 cells from every wall, so
   // horizon = 32 / c ticks, c = sqrt(g*depth)*dt/dx from the model's meta.
-  const meta = JSON.parse(await (await fetch(`http://127.0.0.1:${port}/model/meta.json`)).text());
+  const meta = JSON.parse(await (await fetch(`http://127.0.0.1:${port}/model/model20/meta.json`)).text());
   const c = Math.sqrt(meta.g * meta.depth) * meta.dt / meta.dx;
   const horizon = await page.evaluate(() => window.__app.horizon());
   const expectedHorizon = 32 / c;

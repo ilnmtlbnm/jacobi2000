@@ -19,6 +19,13 @@ let modelMeta = null;
 // or null. A second click on the model canvas clears it.
 let highlightState = null;
 
+// Gallery state: web/model/index.json entries, and which are active.
+let gallery = [];
+let primaryName = null;
+let compareName = null;
+let compareOn = false;
+let currentCase = 'drop';
+
 function maskLabel(mask) {
   if (mask === 'Full') return 'full';
   if (mask && mask.Stencil) return `stencil r${mask.Stencil.radius} d${mask.Stencil.dilation}`;
@@ -104,6 +111,18 @@ function paint(context, field, scale) {
   context.putImageData(img, 0, 0);
 }
 
+function fmtMetric(label, v) {
+  return `${label} ${Number.isFinite(v) ? v.toFixed(3) : '—'}`;
+}
+
+function renderCompareMetrics() {
+  const m = engine.compare_metrics(); // [corrA, ampA, lagA, corrB, ampB, lagB]
+  $('metrics-a').textContent = [fmtMetric('corr', m[0]), fmtMetric('amp', m[1]), fmtMetric('lag', m[2])].join('\n');
+  $('metrics-b').textContent = compareOn
+    ? [fmtMetric('corr', m[3]), fmtMetric('amp', m[4]), fmtMetric('lag', m[5])].join('\n')
+    : '';
+}
+
 // TODO(task 10, xr ensemble spread): add a fourth panel and call
 //   const spread = await engine.spread_field(4);
 // then paint(ctx.spread, spread, 0.01) alongside the calls below. Left as a
@@ -115,8 +134,14 @@ async function render() {
   const n = nx * ny;
   paint(ctx.solver, s, 0.05);
   paint(ctx.model, md.subarray(0, n), 0.05);
-  paint(ctx.div, md.subarray(n, 2 * n), 0.05);
+  if (compareOn) {
+    const sec = await engine.secondary_field();
+    paint(ctx.div, sec, 0.05);
+  } else {
+    paint(ctx.div, md.subarray(n, 2 * n), 0.05);
+  }
   drawHighlightOverlay();
+  renderCompareMetrics();
 
   let peak = 0;
   for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(s[i]));
@@ -131,22 +156,128 @@ async function render() {
   $('p10').textContent = fmt(e[3]); $('p50').textContent = fmt(e[4]); $('p200').textContent = fmt(e[5]);
 }
 
+function entryLabel(entry) {
+  const params = entry.params >= 1e6 ? `${(entry.params / 1e6).toFixed(1)}M` : `${(entry.params / 1e3).toFixed(0)}k`;
+  const corr = Number.isFinite(entry.corr50) ? entry.corr50.toFixed(3) : '—';
+  return `${entry.name} · ${params} · corr@50 ${corr}`;
+}
+
+function renderRecipe(entry) {
+  $('model-name').textContent = entry.name;
+  $('recipe').textContent = `${entry.dim}/${entry.layers}, ${entry.params.toLocaleString()} params — ${entry.recipe} — ${entry.note}`;
+}
+
+async function fetchModel(dir) {
+  const [weights, meta] = await Promise.all([
+    fetch(`./model/${dir}/model.bin`).then((r) => r.arrayBuffer()),
+    fetch(`./model/${dir}/meta.json`).then((r) => r.text()),
+  ]);
+  return { weights: new Uint8Array(weights), meta };
+}
+
+function buildPicker(el, onPick, excludeName) {
+  el.innerHTML = '';
+  for (const entry of gallery) {
+    if (entry.name === excludeName) continue;
+    const b = document.createElement('button');
+    b.textContent = entryLabel(entry);
+    b.dataset.name = entry.name;
+    b.addEventListener('click', () => onPick(entry));
+    el.appendChild(b);
+  }
+}
+
+function markActive(el, name) {
+  for (const b of el.children) b.classList.toggle('active', b.dataset.name === name);
+}
+
+async function pickPrimary(entry) {
+  running = false;
+  $('b-run').textContent = 'run';
+  $('status').textContent = `loading ${entry.name}...`;
+  const { weights, meta } = await fetchModel(entry.dir);
+  await engine.load_model(weights, meta, entry.name);
+  primaryName = entry.name;
+  modelMeta = JSON.parse(meta);
+  highlightState = null;
+  $('mask').textContent = maskLabel(modelMeta.mask);
+  renderRecipe(entry);
+  buildPicker($('model-picker'), pickPrimary, compareOn ? compareName : null);
+  markActive($('model-picker'), primaryName);
+  if (compareOn) buildPicker($('compare-picker'), pickCompare, primaryName);
+  $('status').textContent = 'ready';
+  await render();
+}
+
+async function pickCompare(entry) {
+  $('status').textContent = `loading ${entry.name} (compare)...`;
+  const { weights, meta } = await fetchModel(entry.dir);
+  await engine.enable_compare(weights, meta, entry.name);
+  compareName = entry.name;
+  $('c-model-caption').textContent = `A: ${primaryName}`;
+  $('c-div-caption').textContent = `B: ${compareName}`;
+  buildPicker($('compare-picker'), pickCompare, primaryName);
+  markActive($('compare-picker'), compareName);
+  buildPicker($('model-picker'), pickPrimary, compareName);
+  markActive($('model-picker'), primaryName);
+  $('status').textContent = 'ready';
+  await render();
+}
+
+$('t-compare').addEventListener('change', async (ev) => {
+  compareOn = ev.target.checked;
+  $('compare-picker').style.display = compareOn ? 'flex' : 'none';
+  if (compareOn) {
+    // Default the compare slot to the first gallery entry that isn't primary.
+    const candidate = gallery.find((e) => e.name !== primaryName && e.loadable !== false);
+    if (candidate) await pickCompare(candidate);
+  } else {
+    engine.disable_compare();
+    compareName = null;
+    $('c-model-caption').textContent = 'model';
+    $('c-div-caption').textContent = 'divergence';
+    $('compare-picker').innerHTML = '';
+    buildPicker($('model-picker'), pickPrimary, null);
+    markActive($('model-picker'), primaryName);
+    await render();
+  }
+});
+
+$('case-picker').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-case]');
+  if (!btn) return;
+  currentCase = btn.dataset.case;
+  for (const b of $('case-picker').children) b.classList.toggle('active', b === btn);
+  running = false;
+  $('b-run').textContent = 'run';
+  horizonArmed = true;
+  highlightState = null;
+  engine.set_case(currentCase);
+  await render();
+});
+
+$('t-mass').addEventListener('change', (ev) => engine.set_mass_projection(ev.target.checked));
+$('t-energy').addEventListener('change', (ev) => engine.set_energy_projection(ev.target.checked));
+
 async function boot() {
   try {
     await init();
-    const [weights, meta] = await Promise.all([
-      fetch('./model/model.bin').then((r) => r.arrayBuffer()),
-      fetch('./model/meta.json').then((r) => r.text()),
-    ]);
-    await engine.init(new Uint8Array(weights), meta);
+    gallery = await fetch('./model/index.json').then((r) => r.json());
+    const initial = gallery.find((e) => e.name === 'model20') ?? gallery[0];
+    const { weights, meta } = await fetchModel(initial.dir);
+    await engine.init(weights, meta, initial.name);
+    primaryName = initial.name;
     modelMeta = JSON.parse(meta);
-    // Task C7: reverse checkpoint is optional — a page whose model/ has no
-    // model-reverse.bin still boots and runs exactly as before, `rewind`
-    // just no-ops (checked in engine.rewind itself).
+    renderRecipe(initial);
+    buildPicker($('model-picker'), pickPrimary, null);
+    markActive($('model-picker'), primaryName);
+    // Task C7: reverse checkpoint is optional — a page whose model/<name>/
+    // has no model-reverse.bin still boots and runs exactly as before,
+    // `rewind` just no-ops (checked in engine.rewind itself).
     try {
       const [rw, rm] = await Promise.all([
-        fetch('./model/model-reverse.bin').then((r) => { if (!r.ok) throw new Error('no reverse checkpoint'); return r.arrayBuffer(); }),
-        fetch('./model/meta-reverse.json').then((r) => r.text()),
+        fetch(`./model/${initial.dir}/model-reverse.bin`).then((r) => { if (!r.ok) throw new Error('no reverse checkpoint'); return r.arrayBuffer(); }),
+        fetch(`./model/${initial.dir}/meta-reverse.json`).then((r) => r.text()),
       ]);
       await engine.init_reverse(new Uint8Array(rw), rm);
       console.log('STATUS: reverse checkpoint loaded, rewind() enabled');
@@ -228,6 +359,7 @@ $('b-step10').addEventListener('click', () => { running = false; $('b-run').text
 window.__app = {
   ready: () => ready,
   drop: (x, y) => engine.drop_at(x, y, 0.05, 4.0),
+  reset: () => engine.reset(),
   step,
   ticks: () => engine.ticks(),
   errors: () => Array.from(engine.rollout_errors()),
@@ -248,6 +380,29 @@ window.__app = {
     return engine.ticks();
   },
   peakLocation: async () => Array.from(await engine.peak_location()),
+  // Gallery API, driven by the headless test the same way the rest of
+  // window.__app is: no DOM clicks.
+  gallery: () => gallery,
+  pickModel: async (name) => pickPrimary(gallery.find((e) => e.name === name)),
+  enableCompare: async (name) => {
+    compareOn = true;
+    $('t-compare').checked = true;
+    $('compare-picker').style.display = 'flex';
+    await pickCompare(gallery.find((e) => e.name === name));
+  },
+  disableCompare: async () => {
+    compareOn = false;
+    $('t-compare').checked = false;
+    engine.disable_compare();
+    compareName = null;
+    await render();
+  },
+  setCase: async (c) => { currentCase = c; engine.set_case(c); await render(); },
+  setMassProjection: (on) => engine.set_mass_projection(on),
+  setEnergyProjection: (on) => engine.set_energy_projection(on),
+  compareMetrics: () => Array.from(engine.compare_metrics()),
+  secondaryField: async () => Array.from(await engine.secondary_field()),
+  modelName: () => engine.model_name(),
   error: null,
 };
 
