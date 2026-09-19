@@ -46,6 +46,10 @@ struct App {
     /// Ticks until the wave from the nearest drop reaches the nearest wall
     /// (min over drops since the last reset). `INFINITY` with no drop yet.
     horizon: f32,
+    /// Task C7: the reverse (backward-stepping) checkpoint, loaded
+    /// separately via `init_reverse`. `None` until then, so `rewind` is a
+    /// no-op (logged to STATUS by the caller) on a page that never loaded one.
+    reverse_model: Option<Jacobi2000<B>>,
 }
 
 /// Wave speed in cells/tick: `sqrt(g * depth) * dt / dx`.
@@ -136,9 +140,94 @@ pub async fn init(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
             persistence: vec![f32::NAN; CHECKPOINTS.len()],
             last_step_ms: 0.0,
             horizon: f32::INFINITY,
+            reverse_model: None,
         });
     });
     Ok(())
+}
+
+/// Task C7: load the reverse checkpoint next to the forward one. Same
+/// architecture config as the forward model (`Jacobi2000Config` from its own
+/// `meta.json`); only the weights differ. Safe to call any time after
+/// `init`; `rewind` no-ops until this has run.
+#[wasm_bindgen]
+pub async fn init_reverse(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
+    let meta: Meta = serde_json::from_str(&meta_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let device = APP.with(|a| a.borrow().as_ref().unwrap().device.clone());
+    let cfg = Jacobi2000Config::new()
+        .with_nx(meta.nx)
+        .with_ny(meta.ny)
+        .with_patch(meta.patch)
+        .with_dim(meta.dim)
+        .with_layers(meta.layers)
+        .with_heads(meta.heads)
+        .with_ff_mult(meta.ff_mult);
+    let record = BinBytesRecorder::<FullPrecisionSettings>::default()
+        .load(weights, &device)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let model = cfg.init::<B>(&device).load_record(record);
+    APP.with(|a| a.borrow_mut().as_mut().unwrap().reverse_model = Some(model));
+    Ok(())
+}
+
+/// Task C7: step the reverse model back `n` ticks from the current model
+/// state, mass-projected same as the forward `step`. No-op (returns
+/// immediately) if `init_reverse` was never called. Does not touch the
+/// solver/truth panel or the tick counter's forward meaning; `ticks()`
+/// after a rewind reports `tick.saturating_sub(n)` so the demo's tick
+/// readout stays consistent with "N ticks back from here".
+#[wasm_bindgen]
+pub async fn rewind(n: usize) {
+    let has_reverse = APP.with(|a| a.borrow().as_ref().unwrap().reverse_model.is_some());
+    if !has_reverse {
+        return;
+    }
+    APP.with(|a| apply_pending(a.borrow_mut().as_mut().unwrap()));
+    STEPPING.with(|s| s.set(true));
+    for _ in 0..n {
+        let (x, mask, meta, mass0) = APP.with(|a| {
+            let a = a.borrow();
+            let app = a.as_ref().unwrap();
+            (app.x.clone(), app.mask.clone(), app.meta.clone(), app.mass0.clone())
+        });
+        let next = APP.with(|a| {
+            let a = a.borrow();
+            let app = a.as_ref().unwrap();
+            let rm = app.reverse_model.as_ref().unwrap();
+            project_mass(rm.step(x, meta, mask), mass0)
+        });
+        APP.with(|a| {
+            let mut a = a.borrow_mut();
+            let app = a.as_mut().unwrap();
+            app.x = next;
+            app.tick = app.tick.saturating_sub(1);
+        });
+    }
+    STEPPING.with(|s| s.set(false));
+}
+
+/// `(x, y)` cell coordinates of the model's current `|h - depth|` peak,
+/// physical units. Used by the rewind smoke test to check that stepping
+/// back recovers a peak near a drop's known origin.
+#[wasm_bindgen]
+pub async fn peak_location() -> Vec<f32> {
+    let (x, norm, params) = APP.with(|a| {
+        let a = a.borrow();
+        let app = a.as_ref().unwrap();
+        (app.x.clone(), app.norm, app.params)
+    });
+    let data = x.into_data_async().await.unwrap();
+    let v = data.as_slice::<f32>().unwrap();
+    let n = params.cells();
+    let (mut best_i, mut best_v) = (0usize, f32::NEG_INFINITY);
+    for i in 0..n {
+        let h = (v[i] * norm.std[0] + norm.mean[0]).abs();
+        if h > best_v {
+            best_v = h;
+            best_i = i;
+        }
+    }
+    vec![(best_i % params.nx) as f32, (best_i / params.nx) as f32]
 }
 
 fn apply_drop(app: &mut App, x: f32, y: f32, amp: f32, sigma: f32) {

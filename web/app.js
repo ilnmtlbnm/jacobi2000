@@ -140,6 +140,19 @@ async function boot() {
     ]);
     await engine.init(new Uint8Array(weights), meta);
     modelMeta = JSON.parse(meta);
+    // Task C7: reverse checkpoint is optional — a page whose model/ has no
+    // model-reverse.bin still boots and runs exactly as before, `rewind`
+    // just no-ops (checked in engine.rewind itself).
+    try {
+      const [rw, rm] = await Promise.all([
+        fetch('./model/model-reverse.bin').then((r) => { if (!r.ok) throw new Error('no reverse checkpoint'); return r.arrayBuffer(); }),
+        fetch('./model/meta-reverse.json').then((r) => r.text()),
+      ]);
+      await engine.init_reverse(new Uint8Array(rw), rm);
+      console.log('STATUS: reverse checkpoint loaded, rewind() enabled');
+    } catch (err) {
+      console.log(`STATUS: no reverse checkpoint (${err}), rewind() is a no-op`);
+    }
     const g = engine.grid_size();
     nx = g[0]; ny = g[1];
     $('c-solver').width = nx; $('c-solver').height = ny;
@@ -225,6 +238,16 @@ window.__app = {
   mask: () => maskLabel(modelMeta.mask),
   highlight: (x, y) => { highlightState = receptiveField(x, y); drawHighlightOverlay(); return highlightState; },
   clearHighlight: () => { highlightState = null; },
+  // Task C7: step the reverse model back n ticks from the current model
+  // state. STATUS-line logged per call (console, matching the demo's
+  // existing STATUS-panel-only convention — no new UI element).
+  rewind: async (n) => {
+    await engine.rewind(n);
+    await render();
+    console.log(`STATUS: rewind(${n}) -> tick ${engine.ticks()}`);
+    return engine.ticks();
+  },
+  peakLocation: async () => Array.from(await engine.peak_location()),
   error: null,
 };
 
