@@ -84,7 +84,7 @@ fn meta_of(p: &SphParams, depth_proxy: f32) -> [f32; META_DIM] {
 /// The flat-layer depth that would hold the same total mass across the full
 /// domain width: `total_mass / (rho0 * domain_x)`, a rho0-based
 /// column-height proxy standing in for shallow water's `depth`.
-fn depth_proxy(sph: &Sph, p: &SphParams) -> f32 {
+pub fn depth_proxy(sph: &Sph, p: &SphParams) -> f32 {
     sph.total_mass() as f32 / (p.rest_density * p.domain_x())
 }
 

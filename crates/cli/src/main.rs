@@ -247,6 +247,11 @@ enum Cmd {
         /// against the solver run backward (see `score_rollout_reverse`).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         reverse: bool,
+        /// Task D9: score a `--lagrangian`-trained checkpoint against
+        /// SPH-splatted truth (dam break + drop trajectories) instead of
+        /// the shallow-water solver.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        lagrangian: bool,
     },
     /// Native PGM picture sequence (task D9 step 3). Solver-truth frames
     /// only for now (no checkpoint to compare against yet).
@@ -255,6 +260,10 @@ enum Cmd {
         lagrangian: bool,
         #[arg(long, default_value = "docs/pictures")]
         out_dir: PathBuf,
+        /// Task D9: also roll a `--lagrangian`-trained checkpoint forward
+        /// alongside the SPH solver and write its own frame sequence.
+        #[arg(long)]
+        model: Option<PathBuf>,
     },
     /// Measure the solver's own per-tick total-energy ratio `r_t =
     /// E_{t+1}/E_t` on the training distribution (single-drop 70/30
@@ -397,8 +406,11 @@ fn run(cmd: Cmd) {
             project_energy,
             xr,
             reverse,
+            lagrangian,
         } => {
-            if stress {
+            if lagrangian {
+                eval_lagrangian_cmd(&model, seed)
+            } else if stress {
                 eval_stress_cmd(&model, &horizons, project, project_energy)
             } else {
                 eval_metrics_cmd(
@@ -406,7 +418,7 @@ fn run(cmd: Cmd) {
                 )
             }
         }
-        Cmd::Pictures { lagrangian, out_dir } => pictures_cmd(lagrangian, &out_dir),
+        Cmd::Pictures { lagrangian, out_dir, model } => pictures_cmd(lagrangian, &out_dir, model.as_deref()),
         Cmd::EnergyStats {
             pool,
             ticks,
@@ -1303,9 +1315,68 @@ fn write_pgm(path: &Path, field: &[f32], nx: usize, ny: usize) {
     std::fs::write(path, out).unwrap();
 }
 
+/// Task D9: score a `--lagrangian` checkpoint against SPH-splatted truth on
+/// one dam-break and one drop trajectory, corr + amplitude ratio at 25
+/// ticks (model ticks, `SPH_STEPS_PER_TICK` SPH steps each) — the rung-1
+/// pair the goal doc asks for on the Lagrangian side.
+fn eval_lagrangian_cmd(dir: &Path, _seed: u64) {
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
+    let sph_params = solvers::sph::Params::default();
+    let rho0 = sph_params.rest_density;
+    let n = sph_params.nx * sph_params.ny;
+    let mask = meta.mask.to_tensor::<Back>(&model.grid, &device);
+
+    println!("| trajectory | ticks | corr | amplitude ratio |");
+    println!("|---|---:|---:|---:|");
+    for (name, initial) in [
+        ("dam break", solvers::sph::Initial::DamBreak),
+        (
+            "drop",
+            solvers::sph::Initial::DropSized { cx_frac: 0.5, radius_frac: 0.1, layer_frac: 0.2 },
+        ),
+    ] {
+        let mut sph = solvers::sph::Sph::new(sph_params, initial);
+        let dproxy = train::lagrangian::depth_proxy(&sph, &sph_params);
+        let field0 = solvers::splat::splat(&sph, sph_params.nx, sph_params.ny, sph_params.dx, sph_params.h, rho0);
+        let state0 = solvers::State { h: field0.h, u: field0.u, v: field0.v };
+        let mut norm = meta.norm;
+        norm.depth = dproxy;
+        let mut packed = vec![0.0f32; 3 * n];
+        norm.encode(&state0, &mut packed);
+        let mut x = Tensor::<Back, 1>::from_floats(packed.as_slice(), &device)
+            .reshape([1, 3, sph_params.ny, sph_params.nx]);
+        let meta_arr = [
+            sph_params.dx.ln(),
+            (train::lagrangian::SPH_STEPS_PER_TICK as f32 * sph_params.dt).ln(),
+            sph_params.gravity.ln(),
+            dproxy.ln(),
+            (sph_params.alpha + 1e-6).ln(),
+        ];
+        let meta_t = Tensor::<Back, 1>::from_floats(meta_arr.as_slice(), &device)
+            .reshape([1, train::META_DIM]);
+
+        for _ in 0..25 {
+            sph.steps(train::lagrangian::SPH_STEPS_PER_TICK);
+            x = model.step(x, meta_t.clone(), mask.clone());
+        }
+        let truth = solvers::splat::splat(&sph, sph_params.nx, sph_params.ny, sph_params.dx, sph_params.h, rho0);
+        let data = x.into_data();
+        let pred = data.as_slice::<f32>().unwrap();
+        let model_h = train::metrics::decode_h(pred, &norm, n);
+        let corr = train::metrics::correlation(&model_h, &truth.h);
+        let peak = |v: &[f32]| v.iter().fold(0.0f32, |a, &y| a.max(y.abs()));
+        let amp_ratio = peak(&model_h) / peak(&truth.h);
+        println!("| {name} | 25 | {corr:.4} | {amp_ratio:.4} |");
+    }
+}
+
 /// Task D9 step 3: SPH dam-break solver-truth PGM frames at t = 0, 10, 25
-/// (model ticks, `train::lagrangian::SPH_STEPS_PER_TICK` SPH steps each).
-fn pictures_cmd(lagrangian: bool, out_dir: &Path) {
+/// (model ticks, `train::lagrangian::SPH_STEPS_PER_TICK` SPH steps each),
+/// plus (with `--model`) the same ticks rolled out by a `--lagrangian`
+/// checkpoint from the same initial splatted state, and the rung-1
+/// correlation/amplitude-ratio at 25 ticks between them.
+fn pictures_cmd(lagrangian: bool, out_dir: &Path, model_path: Option<&Path>) {
     if !lagrangian {
         println!("pictures: only --lagrangian is implemented so far");
         return;
@@ -1314,10 +1385,47 @@ fn pictures_cmd(lagrangian: bool, out_dir: &Path) {
     let sph_params = solvers::sph::Params::default();
     let mut sph = solvers::sph::Sph::new(sph_params, solvers::sph::Initial::DamBreak);
     let rho0 = sph_params.rest_density;
+    let n = sph_params.nx * sph_params.ny;
+    let dproxy = train::lagrangian::depth_proxy(&sph, &sph_params);
+
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let loaded: Option<(jacobi2000::Jacobi2000<Back>, Meta)> =
+        model_path.map(|mp| load(mp, &device));
+    let mut model_run = loaded.map(|(model, meta)| {
+        let field0 = solvers::splat::splat(
+            &sph, sph_params.nx, sph_params.ny, sph_params.dx, sph_params.h, rho0,
+        );
+        let state0 = solvers::State { h: field0.h, u: field0.u, v: field0.v };
+        let mut norm = meta.norm;
+        norm.depth = dproxy;
+        let mut packed = vec![0.0f32; 3 * n];
+        norm.encode(&state0, &mut packed);
+        let mask = meta.mask.to_tensor::<Back>(&model.grid, &device);
+        let meta_arr = [
+            sph_params.dx.ln(),
+            (train::lagrangian::SPH_STEPS_PER_TICK as f32 * sph_params.dt).ln(),
+            sph_params.gravity.ln(),
+            dproxy.ln(),
+            (sph_params.alpha + 1e-6).ln(),
+        ];
+        let meta_t = Tensor::<Back, 1>::from_floats(meta_arr.as_slice(), &device)
+            .reshape([1, train::META_DIM]);
+        let x = Tensor::<Back, 1>::from_floats(packed.as_slice(), &device)
+            .reshape([1, 3, sph_params.ny, sph_params.nx]);
+        (model, norm, mask, meta_t, x)
+    });
+
     let mut written = 0;
+    let mut model_h_25 = None;
+    let mut truth_h_25 = None;
     for &tick in &[0usize, 10, 25] {
         while written < tick {
             sph.steps(train::lagrangian::SPH_STEPS_PER_TICK);
+            if let Some((model, _norm, mask, meta_t, x)) = model_run.as_mut() {
+                // One model tick == SPH_STEPS_PER_TICK SPH steps (just
+                // advanced above), matching the training generator.
+                *x = model.step(x.clone(), meta_t.clone(), mask.clone());
+            }
             written += 1;
         }
         let field = solvers::splat::splat(
@@ -1326,5 +1434,29 @@ fn pictures_cmd(lagrangian: bool, out_dir: &Path) {
         let path = out_dir.join(format!("sph-dambreak-solver-t{tick}.pgm"));
         write_pgm(&path, &field.h, sph_params.nx, sph_params.ny);
         println!("wrote {}", path.display());
+        if tick == 25 {
+            truth_h_25 = Some(field.h.clone());
+        }
+
+        if let Some((_, norm, _, _, x)) = model_run.as_ref() {
+            let data = x.clone().into_data();
+            let pred = data.as_slice::<f32>().unwrap();
+            let h = train::metrics::decode_h(pred, norm, n);
+            let path = out_dir.join(format!("sph-dambreak-model-t{tick}.pgm"));
+            write_pgm(&path, &h, sph_params.nx, sph_params.ny);
+            println!("wrote {}", path.display());
+            if tick == 25 {
+                model_h_25 = Some(h);
+            }
+        }
+    }
+
+    if let (Some(m), Some(t)) = (model_h_25, truth_h_25) {
+        let corr = train::metrics::correlation(&m, &t);
+        let peak = |v: &[f32]| v.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+        let amp_ratio = peak(&m) / peak(&t);
+        println!("\nrung-1 @ 25 ticks, model vs SPH-splatted truth: corr {corr:.4}, amplitude ratio {amp_ratio:.4}");
+    } else if model_run.is_none() {
+        println!("model frames: skipped (--model not given)");
     }
 }
