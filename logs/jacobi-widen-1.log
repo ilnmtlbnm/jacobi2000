@@ -1,0 +1,40 @@
+normalizer: mean [0.0007391327, -0.00024297294, 0.00026254586] std [0.00827614, 0.016871676, 0.017550923]
+backend: wgpu (Metal), params: 5427971, mask: --mask stencil --radius 1 --dilation 1
+step      1  loss 1.679198e-2  2.1s
+step    100  loss 4.422648e-3  17.1s
+step    200  loss 3.144422e-3  32.3s
+step    300  loss 3.347076e-2  87.4s
+step    400  loss 9.517426e-3  142.7s
+step    500  loss 1.246104e-2  198.1s
+step    600  loss 6.415169e-3  253.8s
+step    700  loss 6.434110e-3  309.5s
+step    800  loss 9.099415e-3  364.8s
+step    900  loss 4.961427e-3  420.6s
+step   1000  loss 4.734058e-3  476.5s
+step   1100  loss 5.027466e-3  532.3s
+step   1200  loss 4.182322e-3  588.0s
+step   1300  loss 1.385191e-1  643.8s
+step   1400  loss 5.986428e-3  699.8s
+step   1500  loss 4.825214e-3  755.7s
+step   1600  loss 4.109769e-3  811.5s
+step   1700  loss 1.236027e-2  867.2s
+step   1800  loss 3.516980e-3  922.9s
+step   1900  loss 4.167898e-3  978.4s
+step   2000  loss 2.760924e-3  1034.1s
+step   2100  loss 2.630782e-3  1089.6s
+step   2200  loss 3.094900e-3  1145.3s
+step   2300  loss 2.565895e-3  1200.8s
+step   2400  loss 2.259394e-3  1256.6s
+step   2500  loss 2.161713e-3  1312.3s
+step   2600  loss 2.049983e-3  1368.1s
+step   2700  loss 2.040730e-3  1423.9s
+step   2800  loss 5.923076e-3  1479.7s
+step   2900  loss 3.318464e-3  1535.5s
+step   3000  loss 2.259603e-3  1591.2s
+wrote artifacts/model-wide-1
+
+  ticks |    model |  frozen field
+     10 | 0.03992 | 0.54385
+     50 | 0.13266 | 1.03250
+    200 | 0.34554 | 1.02235
+run log: docs/runs/2026-09-19-3.md
