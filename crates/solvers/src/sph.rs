@@ -113,12 +113,12 @@ pub struct Sph {
     ay: Vec<f32>,
 }
 
-fn cubic_spline_sigma(h: f32) -> f32 {
+pub(crate) fn cubic_spline_sigma(h: f32) -> f32 {
     10.0 / (7.0 * PI * h * h)
 }
 
 /// Monaghan cubic spline, `q = r / h`.
-fn kernel(r: f32, h: f32, sigma: f32) -> f32 {
+pub(crate) fn kernel(r: f32, h: f32, sigma: f32) -> f32 {
     let q = r / h;
     if q < 1.0 {
         sigma * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
@@ -263,6 +263,10 @@ impl Sph {
 
     pub fn total_mass(&self) -> f64 {
         self.mass.iter().map(|&m| m as f64).sum()
+    }
+
+    pub fn masses(&self) -> &[f32] {
+        &self.mass
     }
 
     fn cell_size(&self) -> f32 {
@@ -452,6 +456,47 @@ impl Sph {
         for _ in 0..n {
             self.step();
         }
+    }
+
+    /// Test-only: build a system directly from particle positions/velocities,
+    /// skipping `Initial::{DamBreak,Drop}` (both of which touch a wall by
+    /// construction). Used by `splat`'s tests, which need interior
+    /// configurations that stay clear of every wall.
+    #[cfg(test)]
+    pub(crate) fn from_particles(
+        params: Params,
+        x: Vec<f32>,
+        y: Vec<f32>,
+        vx: Vec<f32>,
+        vy: Vec<f32>,
+    ) -> Self {
+        let spacing = params.spacing();
+        let m = params.rest_density * spacing * spacing;
+        let n = x.len();
+        let mass = vec![m; n];
+        let density = vec![params.rest_density; n];
+        let pressure = vec![0.0; n];
+        let ax = vec![0.0; n];
+        let ay = vec![0.0; n];
+        let mut sph = Sph {
+            params,
+            x,
+            y,
+            vx,
+            vy,
+            mass,
+            density,
+            pressure,
+            ax,
+            ay,
+        };
+        let grid = sph.build_grid();
+        sph.compute_density(&grid);
+        sph.compute_pressure();
+        let (ax, ay) = sph.compute_accel(&grid);
+        sph.ax = ax;
+        sph.ay = ay;
+        sph
     }
 }
 
