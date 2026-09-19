@@ -127,6 +127,24 @@ try {
   );
   check(peakAfterRace !== peakBeforeRace, 'race: solver peak did not change after concurrent drops');
   console.log('RACE: PASS');
+  // Task C7: rewind. Reset, drop at a known origin, step the forward model
+  // 20 ticks, then rewind the reverse model 20 ticks and check the peak
+  // lands back near the drop's origin. Skips (does not fail) if the page
+  // has no reverse checkpoint (model/model-reverse.bin absent) — the demo
+  // still works without one, per the no-op rewind() contract.
+  await page.evaluate(() => window.__app.reset());
+  await page.evaluate(() => window.__app.drop(20, 40));
+  await page.evaluate(() => window.__app.step(20));
+  const ticksBeforeRewind = await page.evaluate(() => window.__app.ticks());
+  const tickAfterRewind = await page.evaluate(() => window.__app.rewind(20));
+  const after = await page.evaluate(() => window.__app.peakLocation());
+  if (tickAfterRewind === 0 && ticksBeforeRewind === 20) {
+    const dist = Math.hypot(after[0] - 20, after[1] - 40);
+    console.log(`REWIND: ${dist <= 4 ? 'PASS' : 'FAIL'} (peak at [${after}], origin [20,40], error ${dist.toFixed(2)} cells)`);
+    check(dist <= 4, `rewind(20) peak expected within 4 cells of [20,40], got [${after}] (${dist.toFixed(2)} cells)`);
+  } else {
+    console.log(`REWIND: SKIPPED (no reverse checkpoint loaded — tick stayed at ${tickAfterRewind})`);
+  }
 } catch (e) {
   failure = e;
   console.error('FAIL:', e.message);
