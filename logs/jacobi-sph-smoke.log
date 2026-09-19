@@ -1,0 +1,10 @@
+normalizer (lagrangian): mean [-11.061786, 0.05500759, -0.4983745] std [4.565203, 0.71898305, 1.6390324]
+warm start: artifacts/model19
+backend: wgpu (Metal), params: 995843, mask: --mask stencil --radius 1 --dilation 1
+step      1  loss 1.247377e-1  4.0s
+step    100  loss 6.515709e-2  82.1s
+step    200  loss 8.883975e-2  159.3s
+step    300  loss 1.196097e-1  241.0s
+step    400  loss 7.172247e-2  319.6s
+wrote artifacts/model-sph-smoke
+lagrangian: skipping solver-rollout eval and run-log write (shallow-water-only); score with `eval-metrics --lagrangian --model artifacts/model-sph-smoke`
