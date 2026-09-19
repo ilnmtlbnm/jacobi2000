@@ -11,7 +11,7 @@ pub mod xr;
 
 pub use checkpoint::{load, save, Checkpoint, Meta};
 pub use data::{Batch, Generator, GeneratorConfig, Normalizer, META_DIM};
-pub use lagrangian::{LagrangianConfig, LagrangianGenerator};
+pub use lagrangian::{generate as generate_lagrangian, LagrangianConfig, LagrangianGenerator, LagrangianRecord};
 pub use eval::{rollout_errors, RolloutErrors};
 pub use fit::{fit, FitConfig};
 pub use metrics::Metrics;

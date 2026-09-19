@@ -19,8 +19,11 @@
 //! trajectory via `Initial::DamBreakSized`/`DropSized`, so the model sees a
 //! spread of dam breaks and drops rather than one fixed shape.
 
+use std::path::Path;
+
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 use solvers::sph::{Initial, Params as SphParams, Sph};
 use solvers::splat::splat;
 use solvers::State;
@@ -245,6 +248,87 @@ impl LagrangianGenerator {
     }
 }
 
+/// One record of a fresh SPH trajectory dumped by `gen-data --lagrangian`,
+/// mirroring `data::Record`'s role for the shallow-water rung-2 pool.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LagrangianRecord {
+    pub index: usize,
+    pub dam_break: bool,
+    pub col_w_frac: f32,
+    pub col_h_frac: f32,
+    pub cx_frac: f32,
+    pub radius_frac: f32,
+    pub layer_frac: f32,
+    pub ticks: usize,
+    /// Peak `|h - depth_proxy|` at the end of the trajectory: proof it ran.
+    pub peak: f32,
+}
+
+/// Generate `cfg.pool` fresh SPH dam-break/drop trajectories, each run for a
+/// random life drawn from `cfg.life_ticks` (in model ticks, i.e.
+/// `SPH_STEPS_PER_TICK` SPH steps each), and write one record per trajectory
+/// to `dump` if given.
+pub fn generate(cfg: &LagrangianConfig, dump: Option<&Path>) -> Vec<LagrangianRecord> {
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
+    if let Some(dir) = dump {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let mut out = Vec::with_capacity(cfg.pool);
+    for index in 0..cfg.pool {
+        let dam_break = rng.gen_bool(0.5);
+        let (initial, col_w_frac, col_h_frac, cx_frac, radius_frac, layer_frac) = if dam_break {
+            let col_w_frac = rng.gen_range(0.15..0.35);
+            let col_h_frac = rng.gen_range(0.3..0.7);
+            (
+                Initial::DamBreakSized { col_w_frac, col_h_frac },
+                col_w_frac,
+                col_h_frac,
+                0.0,
+                0.0,
+                0.0,
+            )
+        } else {
+            let cx_frac = rng.gen_range(0.3..0.7);
+            let radius_frac = rng.gen_range(0.06..0.14);
+            let layer_frac = rng.gen_range(0.1..0.3);
+            (
+                Initial::DropSized { cx_frac, radius_frac, layer_frac },
+                0.0,
+                0.0,
+                cx_frac,
+                radius_frac,
+                layer_frac,
+            )
+        };
+        let ticks = rng.gen_range(cfg.life_ticks.0..=cfg.life_ticks.1);
+        let mut sph = Sph::new(cfg.sph, initial);
+        sph.steps(ticks * SPH_STEPS_PER_TICK);
+        let dproxy = depth_proxy(&sph, &cfg.sph);
+        let field = splat(&sph, cfg.sph.nx, cfg.sph.ny, cfg.grid_dx, cfg.splat_h, cfg.sph.rest_density);
+        let peak = field.h.iter().fold(0.0f32, |a, &x| a.max((x - dproxy).abs()));
+        let rec = LagrangianRecord {
+            index,
+            dam_break,
+            col_w_frac,
+            col_h_frac,
+            cx_frac,
+            radius_frac,
+            layer_frac,
+            ticks,
+            peak,
+        };
+        if let Some(dir) = dump {
+            std::fs::write(
+                dir.join(format!("traj-{index:05}.json")),
+                serde_json::to_string(&rec).unwrap(),
+            )
+            .unwrap();
+        }
+        out.push(rec);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +352,25 @@ mod tests {
             .map(|(a, c)| (a - c).abs())
             .sum();
         assert!(d > 0.0, "frames identical");
+    }
+
+    #[test]
+    fn generate_dumps_one_record_per_trajectory() {
+        let cfg = LagrangianConfig {
+            pool: 6,
+            life_ticks: (2, 4),
+            seed: 3,
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join(format!("jacobi2000-lag-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let recs = generate(&cfg, Some(&dir));
+        assert_eq!(recs.len(), 6);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 6);
+        for r in &recs {
+            assert!(r.peak.is_finite());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
