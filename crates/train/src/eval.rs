@@ -7,8 +7,6 @@ use burn::prelude::*;
 use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
 use solvers::{Params, ShallowWater, State};
 
-use crate::fit::ENERGY_C;
-
 use crate::data::{meta_of, Normalizer, META_DIM};
 
 #[derive(Debug, Clone)]
@@ -46,6 +44,7 @@ pub fn rollout_errors<B: Backend>(
     mask: Mask,
     project: bool,
     project_energy_flag: bool,
+    r_max: f32,
     device: &B::Device,
 ) -> RolloutErrors {
     let n = params.cells();
@@ -84,7 +83,7 @@ pub fn rollout_errors<B: Backend>(
             x = project_mass(x, mass0.clone());
         }
         if let Some(prev_energy) = prev_energy {
-            x = project_energy(x, prev_energy, &denorm, params.g, params.nu, params.dt, ENERGY_C);
+            x = project_energy(x, prev_energy, &denorm, params.g, r_max);
         }
         if ticks.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];

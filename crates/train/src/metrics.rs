@@ -17,7 +17,6 @@ use rand::Rng;
 use solvers::{Params, ShallowWater, State};
 
 use crate::data::{meta_of, Normalizer, META_DIM};
-use crate::fit::ENERGY_C;
 
 pub const BANDS: usize = 3;
 
@@ -431,6 +430,7 @@ pub fn score_rollout<B: Backend>(
     mask: Mask,
     project: bool,
     project_energy_flag: bool,
+    r_max: f32,
     device: &B::Device,
 ) -> (Vec<Metrics>, Vec<Metrics>) {
     let n = params.cells();
@@ -464,7 +464,7 @@ pub fn score_rollout<B: Backend>(
             x = project_mass(x, mass0.clone());
         }
         if let Some(prev_energy) = prev_energy {
-            x = project_energy(x, prev_energy, &denorm, params.g, params.nu, params.dt, ENERGY_C);
+            x = project_energy(x, prev_energy, &denorm, params.g, r_max);
         }
         if horizons.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];

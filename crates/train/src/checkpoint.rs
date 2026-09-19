@@ -31,10 +31,23 @@ pub struct Meta {
     pub nu: f32,
     #[serde(default = "default_mask")]
     pub mask: Mask,
+    /// Per-tick energy ratio bound (`E_new <= E_prev * r_max`) used by the
+    /// energy projection this checkpoint was trained/evaluated with, measured
+    /// from the solver's own trajectories (see
+    /// `train::fit::fallback_r_max` and docs/runs/2026-09-19-energy-stats.md).
+    /// Meaningless unless `--project-energy` is also on. Defaults to 1.0
+    /// (no energy growth allowed) for checkpoints saved before this field
+    /// existed, none of which used the energy projection anyway.
+    #[serde(default = "default_r_max")]
+    pub energy_r_max: f32,
 }
 
 fn default_mask() -> Mask {
     Mask::Full
+}
+
+fn default_r_max() -> f32 {
+    1.0
 }
 
 impl Meta {
@@ -112,6 +125,7 @@ mod tests {
             depth: 1.0,
             nu: 1e-3,
             mask: Mask::Full,
+            energy_r_max: 1.0,
         }
     }
 

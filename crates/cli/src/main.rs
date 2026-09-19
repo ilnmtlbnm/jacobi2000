@@ -5,8 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use burn::module::{AutodiffModule, Module};
+use burn::tensor::Tensor;
 use clap::{Parser, Subcommand};
-use jacobi2000::{Jacobi2000Config, Mask};
+use jacobi2000::{energy, Denorm, Jacobi2000Config, Mask};
 use rand::{Rng, SeedableRng};
 use solvers::{Params, State};
 use train::{
@@ -119,6 +120,13 @@ enum Cmd {
         /// bound. Off by default, alongside the existing mass projection.
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         project_energy: bool,
+        /// Per-tick energy ratio bound (`E_new <= E_prev * r_max`) for the
+        /// energy projection above. Defaults to the measured value from
+        /// `energy-stats` (docs/runs/2026-09-19-energy-stats.md) when not
+        /// given; falls back to the coded `1 - c*nu*dt` formula only if no
+        /// measurement exists for this `nu`.
+        #[arg(long)]
+        r_max: Option<f32>,
         /// Weight of the wavenumber-banded error term. 0 = plain MSE.
         #[arg(long, default_value_t = 0.0)]
         spectral: f32,
@@ -146,6 +154,13 @@ enum Cmd {
         radius: usize,
         #[arg(long, default_value_t = 1)]
         dilation: usize,
+        /// Task D9: train on SPH-splatted (h, u, v) fields (random dam
+        /// breaks and drops) instead of the shallow-water generator.
+        /// Overrides the shallow-water-only pool/single-drop flags above;
+        /// the post-training solver-rollout eval and run-log write are
+        /// skipped (score with `eval-metrics --lagrangian` instead).
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        lagrangian: bool,
     },
     /// Rollout error at 10/50/200 ticks against the solver, with the
     /// frozen-field baseline.
@@ -193,6 +208,11 @@ enum Cmd {
         seed: u64,
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// Task D9: generate SPH dam-break/drop trajectories instead
+        /// (random column widths/heights, drop positions/radii). Overrides
+        /// the shallow-water-only flags above.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        lagrangian: bool,
     },
     EvalMetrics {
         #[arg(long, default_value = "artifacts/model")]
@@ -217,6 +237,42 @@ enum Cmd {
         /// disables the ensemble section of the report.
         #[arg(long, default_value_t = 1)]
         xr: usize,
+    },
+    /// Native PGM picture sequence (task D9 step 3). Solver-truth frames
+    /// only for now (no checkpoint to compare against yet).
+    Pictures {
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        lagrangian: bool,
+        #[arg(long, default_value = "docs/pictures")]
+        out_dir: PathBuf,
+    },
+    /// Measure the solver's own per-tick total-energy ratio `r_t =
+    /// E_{t+1}/E_t` on the training distribution (single-drop 70/30
+    /// mixture), to set the energy-projection bound `r_max` from data
+    /// instead of assuming a formula (docs/runs/2026-09-19-energy-stats.md).
+    EnergyStats {
+        /// Live trajectories advanced in lockstep.
+        #[arg(long, default_value_t = 32)]
+        pool: usize,
+        /// Ticks to advance the whole pool.
+        #[arg(long, default_value_t = 100)]
+        ticks: usize,
+        #[arg(long, default_value_t = 0.2)]
+        long_fraction: f32,
+        #[arg(long, default_value_t = 0.3)]
+        amplitude_max: f32,
+        #[arg(long, default_value_t = 0.3)]
+        extra_drop_prob: f32,
+        #[arg(long, default_value_t = 0.3)]
+        no_horizon_fraction: f32,
+        /// 70/30 mixture: 30% of births drawn from the extended
+        /// distribution above, matching run 17/18's training mixture.
+        #[arg(long, default_value_t = 0.3)]
+        extended_fraction: f32,
+        #[arg(long, default_value_t = 1e-3)]
+        nu: f32,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
     },
 }
 
@@ -247,6 +303,7 @@ fn run(cmd: Cmd) {
             lr_floor,
             project,
             project_energy,
+            r_max,
             spectral,
             nu,
             seed,
@@ -259,6 +316,7 @@ fn run(cmd: Cmd) {
             mask,
             radius,
             dilation,
+            lagrangian,
         } => train_cmd(TrainArgs {
             steps,
             lr,
@@ -276,6 +334,7 @@ fn run(cmd: Cmd) {
             lr_floor,
             project,
             project_energy,
+            r_max,
             spectral,
             nu,
             seed,
@@ -286,6 +345,7 @@ fn run(cmd: Cmd) {
             note,
             init,
             mask: mask.build(radius, dilation),
+            lagrangian,
         }),
         Cmd::Eval {
             model,
@@ -304,10 +364,17 @@ fn run(cmd: Cmd) {
             nu,
             seed,
             dump,
-        } => gen_data_cmd(
-            pool, batch, long_fraction, amplitude_max, extra_drop_prob, no_horizon_fraction, nu,
-            seed, dump.as_deref(),
-        ),
+            lagrangian,
+        } => {
+            if lagrangian {
+                gen_data_lagrangian_cmd(pool, batch, nu, seed, dump.as_deref())
+            } else {
+                gen_data_cmd(
+                    pool, batch, long_fraction, amplitude_max, extra_drop_prob,
+                    no_horizon_fraction, nu, seed, dump.as_deref(),
+                )
+            }
+        }
         Cmd::EvalMetrics {
             model,
             stress,
@@ -324,6 +391,21 @@ fn run(cmd: Cmd) {
                 eval_metrics_cmd(&model, &horizons, trajectories, seed, project, project_energy, xr)
             }
         }
+        Cmd::Pictures { lagrangian, out_dir } => pictures_cmd(lagrangian, &out_dir),
+        Cmd::EnergyStats {
+            pool,
+            ticks,
+            long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
+            extended_fraction,
+            nu,
+            seed,
+        } => energy_stats_cmd(
+            pool, ticks, long_fraction, amplitude_max, extra_drop_prob, no_horizon_fraction,
+            extended_fraction, nu, seed,
+        ),
     }
 }
 
@@ -344,6 +426,7 @@ struct TrainArgs {
     lr_floor: f64,
     project: bool,
     project_energy: bool,
+    r_max: Option<f32>,
     spectral: f32,
     nu: f32,
     seed: u64,
@@ -354,6 +437,7 @@ struct TrainArgs {
     note: Option<String>,
     init: Option<PathBuf>,
     mask: Mask,
+    lagrangian: bool,
 }
 
 fn train_cmd(a: TrainArgs) {
@@ -374,6 +458,7 @@ fn train_cmd(a: TrainArgs) {
         lr_floor,
         project,
         project_energy,
+        r_max,
         spectral,
         nu,
         seed,
@@ -384,29 +469,46 @@ fn train_cmd(a: TrainArgs) {
         note,
         init,
         mask,
+        lagrangian,
     } = a;
     let (out, log_dir) = (out.as_path(), log_dir.as_path());
     let device = Default::default();
     let params = Params { nu, ..Params::default() };
-    let gcfg = GeneratorConfig {
-        params,
-        pool: if pool == 0 { batch } else { pool },
-        batch,
-        single_drop,
-        long_fraction,
-        amplitude_max,
-        extra_drop_prob,
-        no_horizon_fraction,
-        extended_fraction,
-        seed,
-        ..Default::default()
+    let r_max = r_max.unwrap_or_else(|| train::fit::fallback_r_max(params.nu, params.dt));
+    let mut gen: Box<dyn train::fit::BatchSource> = if lagrangian {
+        let lcfg = train::LagrangianConfig {
+            pool: if pool == 0 { batch } else { pool },
+            batch,
+            seed,
+            sph: solvers::sph::Params {
+                alpha: nu,
+                ..solvers::sph::Params::default()
+            },
+            ..Default::default()
+        };
+        let mut g = train::LagrangianGenerator::new(lcfg);
+        g.fit_normalizer(50);
+        println!("normalizer (lagrangian): mean {:?} std {:?}", g.norm.mean, g.norm.std);
+        Box::new(g)
+    } else {
+        let gcfg = GeneratorConfig {
+            params,
+            pool: if pool == 0 { batch } else { pool },
+            batch,
+            single_drop,
+            long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
+            extended_fraction,
+            seed,
+            ..Default::default()
+        };
+        let mut g = Generator::new(gcfg);
+        g.fit_normalizer(50);
+        println!("normalizer: mean {:?} std {:?}", g.norm.mean, g.norm.std);
+        Box::new(g)
     };
-    let mut gen = Generator::new(gcfg);
-    gen.fit_normalizer(50);
-    println!(
-        "normalizer: mean {:?} std {:?}",
-        gen.norm.mean, gen.norm.std
-    );
 
     let mcfg = Jacobi2000Config::new()
         .with_nx(params.nx)
@@ -444,18 +546,20 @@ fn train_cmd(a: TrainArgs) {
         lr_floor,
         project,
         project_energy,
+        r_max,
         spectral,
         mask,
         ..Default::default()
     };
     let mut rows = Vec::new();
-    let model = fit(model, &mut gen, &fcfg, &device, |row| {
+    let model = fit(model, gen.as_mut(), &fcfg, &device, |row| {
         println!("step {:>6}  loss {:.6e}  {:.1}s", row.step, row.loss, row.secs);
         rows.push((row.step, row.loss, row.secs));
     });
     let train_secs = rows.last().map(|r| r.2).unwrap_or(0.0);
 
     let model = model.valid();
+    let tick_params = gen.tick_params();
     let meta = Meta {
         nx: params.nx,
         ny: params.ny,
@@ -466,18 +570,28 @@ fn train_cmd(a: TrainArgs) {
         heads: 4,
         ff_mult: 4,
         meta_dim: train::META_DIM,
-        norm: gen.norm,
-        dx: params.dx,
-        dt: params.dt,
-        g: params.g,
-        depth: params.depth,
-        nu: params.nu,
+        norm: gen.norm(),
+        dx: tick_params.dx,
+        dt: tick_params.dt,
+        g: tick_params.g,
+        depth: tick_params.depth,
+        nu: tick_params.nu,
         mask,
+        energy_r_max: r_max,
     };
     save(out, &model, &meta);
     println!("wrote {}", out.display());
 
-    let errs = eval_model(&model, &meta, 4, seed + 1000, project, project_energy, &device);
+    if lagrangian {
+        println!(
+            "lagrangian: skipping solver-rollout eval and run-log write (shallow-water-only); \
+             score with `eval-metrics --lagrangian --model {}`",
+            out.display()
+        );
+        return;
+    }
+
+    let errs = eval_model(&model, &meta, 4, seed + 1000, project, project_energy, r_max, &device);
     print_errors(&errs);
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, amplitude_max,
@@ -501,6 +615,7 @@ fn eval_model(
     seed: u64,
     project: bool,
     project_energy: bool,
+    r_max: f32,
     device: &<Back as burn::tensor::backend::Backend>::Device,
 ) -> Errors {
     let ticks = vec![10usize, 50, 200];
@@ -519,6 +634,7 @@ fn eval_model(
             meta.mask,
             project,
             project_energy,
+            r_max,
             device,
         );
         for i in 0..ticks.len() {
@@ -563,10 +679,13 @@ fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool, project_e
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
     println!(
-        "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy}, mask: {}",
+        "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy} (r_max {}), mask: {}",
+        meta.energy_r_max,
         mask_flags(meta.mask)
     );
-    let e = eval_model(&model, &meta, trajectories, seed, project, project_energy, &device);
+    let e = eval_model(
+        &model, &meta, trajectories, seed, project, project_energy, meta.energy_r_max, &device,
+    );
     print_errors(&e);
 }
 
@@ -663,7 +782,7 @@ fn eval_metrics_cmd(
         }
         let (m, f) = score_rollout(
             &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
-            project_energy, &device,
+            project_energy, meta.energy_r_max, &device,
         );
         for i in 0..horizons.len() {
             model_rows[i].push(m[i]);
@@ -791,7 +910,7 @@ fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool, project_energy
             let (init, drop) = sample_stress_drop(kind, &params, &mut rng);
             let (m, f) = score_rollout(
                 &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
-                project_energy, &device,
+                project_energy, meta.energy_r_max, &device,
             );
             for i in 0..horizons.len() {
                 model_rows[i].push(m[i]);
@@ -847,6 +966,29 @@ fn gen_data_cmd(
         recs.len() - long,
         cfg.short_ticks.0,
         cfg.short_ticks.1
+    );
+    if let Some(dir) = dump {
+        println!("dumped to {}", dir.display());
+    }
+}
+
+fn gen_data_lagrangian_cmd(pool: usize, batch: usize, nu: f32, seed: u64, dump: Option<&Path>) {
+    let cfg = train::LagrangianConfig {
+        pool,
+        batch,
+        seed,
+        sph: solvers::sph::Params {
+            alpha: nu,
+            ..solvers::sph::Params::default()
+        },
+        ..Default::default()
+    };
+    let recs = train::generate_lagrangian(&cfg, dump);
+    let dam_break = recs.iter().filter(|r| r.dam_break).count();
+    println!(
+        "{} trajectories (batch {batch}), {dam_break} dam break, {} drop",
+        recs.len(),
+        recs.len() - dam_break
     );
     if let Some(dir) = dump {
         println!("dumped to {}", dir.display());
@@ -936,4 +1078,178 @@ fn write_run_log(
     }
     std::fs::write(&path, s).unwrap();
     println!("run log: {}", path.display());
+}
+
+/// Min, p50, p99, max of a sample. Nearest-rank percentile (no
+/// interpolation): good enough for a diagnostic report, and this is the
+/// only place that needs it.
+fn distribution(xs: &mut [f32]) -> (f32, f32, f32, f32) {
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let at = |p: f32| xs[((p * (xs.len() - 1) as f32).round() as usize).min(xs.len() - 1)];
+    (xs[0], at(0.5), at(0.99), xs[xs.len() - 1])
+}
+
+/// Measure the solver's own per-tick total-energy ratio `r_t = E_{t+1}/E_t`
+/// on the training distribution (task A1/A2 of
+/// convergence/queues/constrained-wider-reversible.md): the coded bound
+/// `1 - c*nu*dt` turned out far tighter than the solver's real dissipation
+/// (docs/runs/2026-09-19-energy-smoke-2.md), so the energy-projection bound
+/// is measured from data instead of assumed.
+#[allow(clippy::too_many_arguments)]
+fn energy_stats_cmd(
+    pool: usize,
+    ticks: usize,
+    long_fraction: f32,
+    amplitude_max: f32,
+    extra_drop_prob: f32,
+    no_horizon_fraction: f32,
+    extended_fraction: f32,
+    nu: f32,
+    seed: u64,
+) {
+    let device = <Back as burn::tensor::backend::Backend>::Device::default();
+    let params = Params { nu, ..Params::default() };
+    let base = GeneratorConfig {
+        params,
+        pool,
+        batch: pool,
+        single_drop: true,
+        long_fraction,
+        amplitude_max,
+        extra_drop_prob,
+        no_horizon_fraction,
+        extended_fraction,
+        seed,
+        ..Default::default()
+    };
+
+    let mut gen = Generator::new(base);
+    let denorm = Denorm { mean: gen.norm.mean, std: gen.norm.std, depth: gen.norm.depth };
+    let mut all_ratios = Vec::new();
+    let mut all_energy = Vec::new();
+    for _ in 0..ticks {
+        let batch = gen.next_batch(1);
+        let b = batch.batch;
+        let dims = [b, 3, batch.ny, batch.nx];
+        let x0 = Tensor::<Back, 1>::from_floats(batch.states[0].as_slice(), &device).reshape(dims);
+        let x1 = Tensor::<Back, 1>::from_floats(batch.states[1].as_slice(), &device).reshape(dims);
+        let e0: Vec<f32> = energy(&x0, &denorm, params.g).into_data().to_vec().unwrap();
+        let e1: Vec<f32> = energy(&x1, &denorm, params.g).into_data().to_vec().unwrap();
+        for i in 0..b {
+            all_energy.push(e0[i]);
+            if e0[i] > 1e-9 {
+                all_ratios.push(e1[i] / e0[i]);
+            }
+        }
+    }
+
+    // The drop's initial transient: fresh (unstaggered) single trajectories,
+    // ticks 1..5 from birth, each its own pool-of-1 Generator so its first
+    // `next_batch` call really is the drop's first solver step (pool > 1
+    // staggers births to decorrelate a training pool, which would mix in
+    // already-aged states here).
+    let transient_ticks = 5.min(ticks);
+    let mut transient = vec![Vec::new(); transient_ticks];
+    for i in 0..pool {
+        let tcfg = GeneratorConfig {
+            params,
+            pool: 1,
+            batch: 1,
+            single_drop: true,
+            long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
+            extended_fraction,
+            seed: seed.wrapping_add(1_000_000 + i as u64),
+            ..Default::default()
+        };
+        let mut tg = Generator::new(tcfg);
+        let td = Denorm { mean: tg.norm.mean, std: tg.norm.std, depth: tg.norm.depth };
+        for row in transient.iter_mut().take(transient_ticks) {
+            let batch = tg.next_batch(1);
+            let dims = [1, 3, batch.ny, batch.nx];
+            let x0 =
+                Tensor::<Back, 1>::from_floats(batch.states[0].as_slice(), &device).reshape(dims);
+            let x1 =
+                Tensor::<Back, 1>::from_floats(batch.states[1].as_slice(), &device).reshape(dims);
+            let e0: f32 = energy(&x0, &td, params.g).into_scalar();
+            let e1: f32 = energy(&x1, &td, params.g).into_scalar();
+            if e0 > 1e-9 {
+                row.push(e1 / e0);
+            }
+        }
+    }
+
+    println!(
+        "backend: {BACKEND}, pool {pool}, ticks {ticks}, nu {nu}, 70/30 mixture (extended_fraction {extended_fraction})\n"
+    );
+    let (rmin, rp50, rp99, rmax) = distribution(&mut all_ratios);
+    println!("all-tick ratio r_t = E_{{t+1}}/E_t, {} samples:", all_ratios.len());
+    println!("| min | p50 | p99 | max |\n|---:|---:|---:|---:|");
+    println!("| {rmin:.6} | {rp50:.6} | {rp99:.6} | {rmax:.6} |\n");
+
+    let (emin, ep50, ep99, emax) = distribution(&mut all_energy);
+    println!("E (physical units), {} samples:", all_energy.len());
+    println!("| min | p50 | p99 | max |\n|---:|---:|---:|---:|");
+    println!("| {emin:.6} | {ep50:.6} | {ep99:.6} | {emax:.6} |\n");
+
+    println!("initial transient (fresh drop, ticks 1..{transient_ticks}):");
+    println!("| tick | min | p50 | p99 | max | n |\n|---:|---:|---:|---:|---:|---:|");
+    for (k, row) in transient.iter_mut().enumerate() {
+        let (min, p50, p99, max) = distribution(row);
+        println!("| {} | {min:.6} | {p50:.6} | {p99:.6} | {max:.6} | {} |", k + 1, row.len());
+    }
+
+    let r_max = rmax * (1.0 + 1e-4);
+    println!("\nsuggested --r-max (measured max * (1 + 1e-4)): {r_max:.6}");
+}
+
+/// Write an 8-bit grayscale PGM (binary P5), min-max normalized per frame.
+/// Row `y=0` is written last (bottom of the image), matching the box
+/// convention (`y=0` is the floor).
+fn write_pgm(path: &Path, field: &[f32], nx: usize, ny: usize) {
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    for &v in field {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let range = (hi - lo).max(1e-6);
+    let mut bytes = Vec::with_capacity(nx * ny);
+    for y in (0..ny).rev() {
+        for x in 0..nx {
+            let v = field[y * nx + x];
+            bytes.push((((v - lo) / range) * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    let mut out = format!("P5\n{nx} {ny}\n255\n").into_bytes();
+    out.extend_from_slice(&bytes);
+    std::fs::write(path, out).unwrap();
+}
+
+/// Task D9 step 3: SPH dam-break solver-truth PGM frames at t = 0, 10, 25
+/// (model ticks, `train::lagrangian::SPH_STEPS_PER_TICK` SPH steps each).
+fn pictures_cmd(lagrangian: bool, out_dir: &Path) {
+    if !lagrangian {
+        println!("pictures: only --lagrangian is implemented so far");
+        return;
+    }
+    std::fs::create_dir_all(out_dir).unwrap();
+    let sph_params = solvers::sph::Params::default();
+    let mut sph = solvers::sph::Sph::new(sph_params, solvers::sph::Initial::DamBreak);
+    let rho0 = sph_params.rest_density;
+    let mut written = 0;
+    for &tick in &[0usize, 10, 25] {
+        while written < tick {
+            sph.steps(train::lagrangian::SPH_STEPS_PER_TICK);
+            written += 1;
+        }
+        let field = solvers::splat::splat(
+            &sph, sph_params.nx, sph_params.ny, sph_params.dx, sph_params.h, rho0,
+        );
+        let path = out_dir.join(format!("sph-dambreak-solver-t{tick}.pgm"));
+        write_pgm(&path, &field.h, sph_params.nx, sph_params.ny);
+        println!("wrote {}", path.display());
+    }
 }

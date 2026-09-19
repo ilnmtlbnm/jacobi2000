@@ -57,26 +57,29 @@ pub fn energy<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32) -> Tensor<B, 2> 
     potential + kinetic
 }
 
-/// Project onto the energy inequality `E_new <= E_prev * (1 - c*nu*dt)`
-/// (`nu == 0` collapses that to `E_new <= E_prev`), scaling the velocity
-/// field `(u, v)` uniformly per batch member down to the bound when it is
-/// exceeded. Potential energy (`h`) is left untouched: `h` already carries
-/// its own hard constraint (`project_mass`), and scaling it here would fight
-/// that projection. Never scales up: `E_new <= bound` already is the
-/// identity (CONCEPT sec. 4, step 2: propose, then project onto the
-/// admissible set; this is the inequality half, `project_mass` is the
-/// equality half).
+/// Project onto the energy inequality `E_new <= E_prev * r_max`, scaling the
+/// velocity field `(u, v)` uniformly per batch member down to the bound when
+/// it is exceeded. `r_max` is a per-tick total-energy ratio measured from the
+/// solver's own trajectories on the training distribution (`energy-stats`,
+/// docs/runs/2026-09-19-energy-stats.md), not assumed from a formula: the
+/// earlier coded bound `1 - c*nu*dt` (see `train::fit::fallback_r_max`, kept
+/// as a documented fallback) was far tighter than the solver's real per-tick
+/// dissipation and stripped kinetic energy every step
+/// (docs/runs/2026-09-19-energy-smoke-2.md). Potential energy (`h`) is left
+/// untouched: `h` already carries its own hard constraint (`project_mass`),
+/// and scaling it here would fight that projection. Never scales up:
+/// `E_new <= bound` already is the identity (CONCEPT sec. 4, step 2: propose,
+/// then project onto the admissible set; this is the inequality half,
+/// `project_mass` is the equality half).
 pub fn project_energy<B: Backend>(
     x: Tensor<B, 4>,
     prev_energy: Tensor<B, 2>,
     d: &Denorm,
     g: f32,
-    nu: f32,
-    dt: f32,
-    c: f32,
+    r_max: f32,
 ) -> Tensor<B, 4> {
     let [b, _, _, _] = x.dims();
-    let bound = prev_energy * (1.0 - c * nu * dt);
+    let bound = prev_energy * r_max;
     let (potential, kinetic) = potential_kinetic(&x, d, g);
     // scale^2 * kinetic + potential <= bound. budget = 0 when potential
     // alone already exceeds the bound (kills all velocity); ratio >= 1 when
@@ -185,7 +188,7 @@ mod tests {
         let bound = Tensor::<B, 2>::from_floats([[100.0f32]], &device);
         let m0 = mass(&x);
 
-        let y = project_energy(x, bound.clone(), &d, g, 0.0, 0.0, 0.0);
+        let y = project_energy(x, bound.clone(), &d, g, 1.0);
         let e1: f32 = energy(&y, &d, g).into_scalar();
         assert!(e1 <= 100.0 + 1e-3, "energy {e1} exceeds the bound");
         assert!(e1 > 99.0, "projection over-corrected: {e1}");
@@ -205,7 +208,7 @@ mod tests {
         // 142.48 actual energy, well inside a 200 bound: nothing to do.
         let bound = Tensor::<B, 2>::from_floats([[200.0f32]], &device);
 
-        let y = project_energy(x.clone(), bound, &d, g, 0.0, 0.0, 0.0);
+        let y = project_energy(x.clone(), bound, &d, g, 1.0);
         y.into_data()
             .assert_approx_eq::<f32>(&x.into_data(), burn::tensor::Tolerance::default());
     }
@@ -229,7 +232,7 @@ mod tests {
         // budget = 0 there; member 1 has a normal, non-tight bound.
         let bound = Tensor::<AB, 2>::from_floats([[0.0f32], [200.0]], &device);
 
-        let y = project_energy(x.clone(), bound, &d, g, 0.0, 0.0, 0.0);
+        let y = project_energy(x.clone(), bound, &d, g, 1.0);
         let loss = y.powi_scalar(2).sum();
         let grads = loss.backward();
 
