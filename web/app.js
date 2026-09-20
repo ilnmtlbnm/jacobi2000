@@ -178,12 +178,12 @@ async function render() {
 function entryLabel(entry) {
   const params = entry.params >= 1e6 ? `${(entry.params / 1e6).toFixed(1)}M` : `${(entry.params / 1e3).toFixed(0)}k`;
   const corr = Number.isFinite(entry.corr50) ? entry.corr50.toFixed(3) : '—';
-  return `${entry.name} · ${params} · corr@50 ${corr}`;
+  return `${entry.name} · ${params} params · corr ${corr} at 50 ticks`;
 }
 
 function renderRecipe(entry) {
   $('model-name').textContent = entry.name;
-  $('recipe').textContent = `${entry.dim}/${entry.layers}, ${entry.params.toLocaleString()} params — ${entry.recipe} — ${entry.note}`;
+  $('recipe').textContent = `${entry.dim}/${entry.layers}, ${entry.params.toLocaleString()} params — ${entry.desc}`;
 }
 
 async function fetchModel(dir) {
