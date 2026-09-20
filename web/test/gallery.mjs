@@ -74,11 +74,17 @@ try {
   check(Number.isFinite(solverPeak) && Number.isFinite(primaryPeak), 'compare: solver/primary field not finite');
   check(secondaryFinite, 'compare: secondary field not finite or empty');
   check(compareMetrics.every((v) => Number.isFinite(v)), `compare metrics not all finite: ${compareMetrics}`);
-  console.log(`COMPARE: PASS (solver peak ${solverPeak.toExponential(2)}, A corr ${compareMetrics[0].toFixed(3)}, B corr ${compareMetrics[3].toFixed(3)})`);
+  // compareMetrics: [corrA, ampA, lagA, corrB, ampB, lagB, biasA, biasB].
+  // model20 (A) is the projection-ON, four-bar-passing checkpoint (rung6);
+  // its bias must be small. model-wide-1 (B) is reported, not gated.
+  const biasA = compareMetrics[6];
+  const biasB = compareMetrics[7];
+  check(Math.abs(biasA) < 0.05, `model20 (A) |bias| expected < 0.05, got ${biasA}`);
+  console.log(`COMPARE: PASS (solver peak ${solverPeak.toExponential(2)}, A corr ${compareMetrics[0].toFixed(3)} bias ${biasA.toFixed(3)}, B corr ${compareMetrics[3].toFixed(3)} bias ${biasB.toFixed(3)})`);
 
   const dir = '<tmp>';
-  await page.screenshot({ path: `${dir}/jacobi-gallery.png` });
-  console.log(`SCREENSHOT: ${dir}/jacobi-gallery.png`);
+  await page.screenshot({ path: `${dir}/jacobi-bias.png` });
+  console.log(`SCREENSHOT: ${dir}/jacobi-bias.png`);
 
   await page.evaluate(() => window.__app.disableCompare());
 } catch (e) {
