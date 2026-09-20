@@ -765,12 +765,13 @@ fn mean_metrics(rows: &[Metrics]) -> Metrics {
         xcorr_lag: rows.iter().map(|r| r.xcorr_lag).sum::<f32>() / n,
         bands,
         global_rmse: rows.iter().map(|r| r.global_rmse).sum::<f32>() / n,
+        bias: rows.iter().map(|r| r.bias).sum::<f32>() / n,
     }
 }
 
 fn metrics_row(label: &str, ticks: usize, m: &Metrics) -> String {
     format!(
-        "| {label} | {ticks} | {:.4} | {:.4} | {:.5} | {:.4} | {:+.3} | {:+.3} | {:.5} | {:.5} | {:.5} | {:.5} |",
+        "| {label} | {ticks} | {:.4} | {:.4} | {:.5} | {:.4} | {:+.3} | {:+.3} | {:.5} | {:.5} | {:.5} | {:.5} | {:+.3} |",
         m.corr,
         m.corr_h,
         m.active_rmse,
@@ -780,7 +781,8 @@ fn metrics_row(label: &str, ticks: usize, m: &Metrics) -> String {
         m.bands[0],
         m.bands[1],
         m.bands[2],
-        m.global_rmse
+        m.global_rmse,
+        m.bias
     )
 }
 
@@ -880,8 +882,8 @@ fn eval_metrics_cmd(
     println!(
         "{used} single-drop trajectories, {skipped} skipped (horizon < {need:.0} ticks)\n"
     );
-    println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (i, t) in horizons.iter().enumerate() {
         println!("{}", metrics_row("model", *t, &mean_metrics(&model_rows[i])));
         println!(
@@ -969,8 +971,8 @@ fn eval_metrics_cmd(
                 spread_sums[i] += spread[i] as f64;
             }
         }
-        println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
-        println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |");
+        println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         for (i, t) in horizons.iter().enumerate() {
             println!("{}", metrics_row("xr ensemble mean", *t, &mean_metrics(&xr_rows[i])));
             println!(
@@ -1025,8 +1027,8 @@ fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool, project_energy
             }
         }
         println!("### {label} (8 trajectories)\n");
-        println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) |");
-        println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        println!("| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |");
+        println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         for (i, t) in horizons.iter().enumerate() {
             println!("{}", metrics_row("model", *t, &mean_metrics(&model_rows[i])));
             println!(
