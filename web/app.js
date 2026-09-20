@@ -100,8 +100,10 @@ function drawHighlightOverlay() {
   ctx.model.restore();
 }
 
-// Blue-white-red, symmetric about zero; scale is fixed so the two panels are
-// directly comparable frame to frame.
+// Blue-white-red, symmetric about zero. `scale` is shared across every
+// panel painted this frame (see `render`'s `colorScale`) so a difference
+// between two models can never look like a difference in colour range.
+let colorScale = 0.05;
 function paint(context, field, scale) {
   const img = context.createImageData(nx, ny);
   for (let i = 0; i < nx * ny; i++) {
@@ -141,21 +143,27 @@ async function render() {
   const s = engine.solver_field();
   const md = await engine.model_and_divergence();
   const n = nx * ny;
-  paint(ctx.solver, s, 0.05);
-  paint(ctx.model, md.subarray(0, n), 0.05);
+
+  let peak = 0;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(s[i]));
+  // Colour scale comes from the SOLVER panel only, and only every 10 ticks
+  // (same cadence as compare_metrics), so amplitude-A-vs-amplitude-B never
+  // shows up as a different colour range between panels.
+  if (engine.ticks() % 10 === 0) colorScale = Math.max(0.05, peak);
+
+  paint(ctx.solver, s, colorScale);
+  paint(ctx.model, md.subarray(0, n), colorScale);
   if (compareOn) {
     const sec = await engine.secondary_field();
-    paint(ctx.div, sec, 0.05);
+    paint(ctx.div, sec, colorScale);
   } else {
-    paint(ctx.div, md.subarray(n, 2 * n), 0.05);
+    paint(ctx.div, md.subarray(n, 2 * n), colorScale);
   }
   drawHighlightOverlay();
   renderCompareMetrics();
 
   if (engine.ticks() === 0) originPeak = await engine.peak_location();
 
-  let peak = 0;
-  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(s[i]));
   $('peak').textContent = peak.toFixed(4);
   $('ticks').textContent = engine.ticks();
   $('ms').textContent = engine.ms_per_tick().toFixed(1);
