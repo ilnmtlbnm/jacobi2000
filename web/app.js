@@ -118,11 +118,17 @@ function fmtMetric(label, v) {
   return `${label} ${Number.isFinite(v) ? v.toFixed(3) : '—'}`;
 }
 
+// bias is a signed constant offset (fraction of the solver field's spread),
+// so it's shown with an explicit sign, e.g. "bias +0.12".
+function fmtBias(v) {
+  return `bias ${Number.isFinite(v) ? (v >= 0 ? '+' : '') + v.toFixed(2) : '—'}`;
+}
+
 function renderCompareMetrics() {
-  const m = engine.compare_metrics(); // [corrA, ampA, lagA, corrB, ampB, lagB]
-  $('metrics-a').textContent = [fmtMetric('corr', m[0]), fmtMetric('amp', m[1]), fmtMetric('lag', m[2])].join('\n');
+  const m = engine.compare_metrics(); // [corrA, ampA, lagA, corrB, ampB, lagB, biasA, biasB]
+  $('metrics-a').textContent = [fmtMetric('corr', m[0]), fmtMetric('amp', m[1]), fmtMetric('lag', m[2]), fmtBias(m[6])].join('\n');
   $('metrics-b').textContent = compareOn
-    ? [fmtMetric('corr', m[3]), fmtMetric('amp', m[4]), fmtMetric('lag', m[5])].join('\n')
+    ? [fmtMetric('corr', m[3]), fmtMetric('amp', m[4]), fmtMetric('lag', m[5]), fmtBias(m[7])].join('\n')
     : '';
 }
 

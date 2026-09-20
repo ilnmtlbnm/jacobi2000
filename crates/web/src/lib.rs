@@ -26,7 +26,7 @@ use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Jacob
 use solvers::{Params, ShallowWater, State};
 use train::checkpoint::Meta;
 use train::data::{meta_of, Normalizer, META_DIM};
-use train::metrics::{correlation, decode_h, peak, radial_profile, xcorr_lag};
+use train::metrics::{bias, correlation, decode_h, peak, radial_profile, xcorr_lag};
 use wasm_bindgen::prelude::*;
 
 type B = burn::backend::Wgpu;
@@ -111,10 +111,12 @@ struct App {
     case: CaseKind,
     mass_projection: bool,
     energy_projection: bool,
-    /// `[corrA, ampA, lagA, corrB, ampB, lagB]` against the solver, refreshed
-    /// every `METRICS_EVERY` ticks (NaN for B when compare mode is off, NaN
-    /// for lag when the field has no variance yet).
-    compare_metrics: [f32; 6],
+    /// `[corrA, ampA, lagA, corrB, ampB, lagB, biasA, biasB]` against the
+    /// solver, refreshed every `METRICS_EVERY` ticks (NaN for B when compare
+    /// mode is off, NaN for lag when the field has no variance yet). bias is
+    /// appended rather than interleaved so existing A/B indices stay stable
+    /// for callers.
+    compare_metrics: [f32; 8],
 }
 
 /// Wave speed in cells/tick: `sqrt(g * depth) * dt / dx`.
@@ -238,7 +240,7 @@ fn apply_case(app: &mut App) {
             .map(|&(x, y)| horizon_ticks(p, x, y))
             .fold(f32::INFINITY, f32::min)
     };
-    app.compare_metrics = [f32::NAN; 6];
+    app.compare_metrics = [f32::NAN; 8];
 }
 
 #[wasm_bindgen]
@@ -279,7 +281,7 @@ pub async fn init(weights: Vec<u8>, meta_json: String, name: String) -> Result<(
             case: CaseKind::Drop,
             mass_projection: true,
             energy_projection: false,
-            compare_metrics: [f32::NAN; 6],
+            compare_metrics: [f32::NAN; 8],
         });
     });
     Ok(())
@@ -469,7 +471,7 @@ fn apply_drop(app: &mut App, x: f32, y: f32, amp: f32, sigma: f32) {
     app.errors = vec![f32::NAN; CHECKPOINTS.len()];
     app.persistence = vec![f32::NAN; CHECKPOINTS.len()];
     app.horizon = app.horizon.min(horizon_ticks(&app.params, x, y));
-    app.compare_metrics = [f32::NAN; 6];
+    app.compare_metrics = [f32::NAN; 8];
 }
 
 fn apply_reset(app: &mut App) {
@@ -649,7 +651,9 @@ async fn refresh_compare_metrics() {
     let amp_a = peak(&ph) / peak(&solver_h).max(1e-12);
     let lag_a = xcorr_lag(&pr, &sr, 10);
 
-    let (corr_b, amp_b, lag_b) = if let Some((sx, snorm)) = secondary {
+    let bias_a = bias(&ph, &solver_h);
+
+    let (corr_b, amp_b, lag_b, bias_b) = if let Some((sx, snorm)) = secondary {
         let sdata = sx.into_data_async().await.unwrap();
         let sh = decode_h(sdata.as_slice::<f32>().unwrap(), &snorm, n);
         let sh_radial = radial_profile(&sh, nx, ny, cx, cy);
@@ -657,12 +661,14 @@ async fn refresh_compare_metrics() {
             correlation(&sh, &solver_h),
             peak(&sh) / peak(&solver_h).max(1e-12),
             xcorr_lag(&sh_radial, &sr, 10),
+            bias(&sh, &solver_h),
         )
     } else {
-        (f32::NAN, f32::NAN, f32::NAN)
+        (f32::NAN, f32::NAN, f32::NAN, f32::NAN)
     };
     APP.with(|a| {
-        a.borrow_mut().as_mut().unwrap().compare_metrics = [corr_a, amp_a, lag_a, corr_b, amp_b, lag_b];
+        a.borrow_mut().as_mut().unwrap().compare_metrics =
+            [corr_a, amp_a, lag_a, corr_b, amp_b, lag_b, bias_a, bias_b];
     });
 }
 
@@ -730,8 +736,8 @@ pub async fn secondary_field() -> Vec<f32> {
     decode_h(data.as_slice::<f32>().unwrap(), &norm, n)
 }
 
-/// `[corrA, ampA, lagA, corrB, ampB, lagB]`, NaN for the B slots when compare
-/// mode is off. See `refresh_compare_metrics`.
+/// `[corrA, ampA, lagA, corrB, ampB, lagB, biasA, biasB]`, NaN for the B
+/// slots when compare mode is off. See `refresh_compare_metrics`.
 #[wasm_bindgen]
 pub fn compare_metrics() -> Vec<f32> {
     APP.with(|a| a.borrow().as_ref().unwrap().compare_metrics.to_vec())
