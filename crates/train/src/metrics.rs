@@ -55,6 +55,12 @@ pub struct Metrics {
     pub bands: [f32; BANDS],
     /// The number that lied: RMSE over the whole field.
     pub global_rmse: f32,
+    /// Constant offset correlation cannot see: `(mean(h_model) -
+    /// mean(h_solver)) / amplitude(h_solver)`, amplitude = the solver h
+    /// field's standard deviation. A uniform color-shifted panel with a
+    /// near-1.0 corr (the author's model-wide-1/-2 gallery report) is this: an
+    /// additive constant, invisible to Pearson correlation.
+    pub bias: f32,
 }
 
 pub fn rmse(a: &[f32], b: &[f32]) -> f32 {
@@ -118,6 +124,23 @@ pub fn masked_rmse(pred: &[f32], truth: &[f32], mask: &[bool]) -> f32 {
 
 pub fn peak(f: &[f32]) -> f32 {
     f.iter().fold(0.0f32, |a, &x| a.max(x.abs()))
+}
+
+pub fn mean(f: &[f32]) -> f32 {
+    f.iter().sum::<f32>() / f.len() as f32
+}
+
+/// Standard deviation, used as `bias`'s amplitude normalizer.
+pub fn std_dev(f: &[f32]) -> f32 {
+    let m = mean(f);
+    (f.iter().map(|x| (x - m).powi(2)).sum::<f32>() / f.len() as f32).sqrt()
+}
+
+/// `(mean(model) - mean(solver)) / std(solver)`: a constant additive offset
+/// as a fraction of the solver field's own spread. 0 when the two fields
+/// share a mean; correlation cannot see this at all.
+pub fn bias(model: &[f32], solver: &[f32]) -> f32 {
+    (mean(model) - mean(solver)) / std_dev(solver).max(1e-12)
 }
 
 /// Azimuthally-averaged `|f|` profile about `(cx, cy)`, one value per
@@ -331,6 +354,7 @@ pub fn score(
         xcorr_lag: xcorr_lag(&mprof, &tprof, 8),
         bands: band_errors(&pred[..n], &truth[..n], p.nx, p.ny),
         global_rmse: rmse(pred, truth),
+        bias: bias(&ph, &th),
     }
 }
 
