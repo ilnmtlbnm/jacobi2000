@@ -18,6 +18,9 @@ let modelMeta = null;
 // Current receptive-field highlight ({cells, radius, dilation, headReach}),
 // or null. A second click on the model canvas clears it.
 let highlightState = null;
+// Peak location captured at tick 0 (right after a drop/reset), so a later
+// "rewind 20" can report how close it lands to where the wave started.
+let originPeak = null;
 
 // Gallery state: web/model/index.json entries, and which are active.
 let gallery = [];
@@ -142,6 +145,8 @@ async function render() {
   }
   drawHighlightOverlay();
   renderCompareMetrics();
+
+  if (engine.ticks() === 0) originPeak = await engine.peak_location();
 
   let peak = 0;
   for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(s[i]));
@@ -354,6 +359,18 @@ $('b-run').addEventListener('click', () => {
 });
 $('b-step').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(1); });
 $('b-step10').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(10); });
+// Task C7: step the reverse model 20 ticks back from here and report how
+// close the peak lands to where the wave started (captured at the last
+// tick-0, i.e. the last drop/reset).
+$('b-rewind20').addEventListener('click', async () => {
+  running = false;
+  $('b-run').textContent = 'run';
+  await engine.rewind(20);
+  await render();
+  const after = await engine.peak_location();
+  const n = originPeak ? Math.hypot(after[0] - originPeak[0], after[1] - originPeak[1]).toFixed(1) : '—';
+  $('rewind-status').textContent = `rewind: 20 ticks back, peak error ${n} cells`;
+});
 
 // Drive the page from the headless test through this, not through DOM clicks.
 window.__app = {
