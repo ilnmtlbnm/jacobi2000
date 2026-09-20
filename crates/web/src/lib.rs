@@ -500,6 +500,11 @@ pub fn drop_at(x: f32, y: f32, amp: f32, sigma: f32) {
     }
     APP.with(|a| {
         if let Some(app) = a.borrow_mut().as_mut() {
+            // Drain anything left over from a step/rewind call that finished
+            // without a following step/rewind to flush it (e.g. drops queued
+            // mid-flight, applied here instead of leaking into whichever
+            // step/rewind call happens to run next).
+            apply_pending(app);
             apply_drop(app, x, y, amp, sigma);
         }
     });
@@ -513,6 +518,7 @@ pub fn reset() {
     }
     APP.with(|a| {
         if let Some(app) = a.borrow_mut().as_mut() {
+            apply_pending(app);
             apply_reset(app);
         }
     });
