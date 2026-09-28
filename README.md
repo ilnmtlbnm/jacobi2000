@@ -2,31 +2,34 @@
 
 # jacobi2000
 
-A learned physics surrogate for 2D shallow water. Instead of stepping a PDE
-solver forward one tick at a time, a small transformer is trained to fill in
-missing values on a spacetime grid: given some values (an initial condition,
-a set of sensor readings, a target state) it fills in the rest by iterating
-to a fixed point. Forward simulation, rewinding a state to see its past, and
-reconstructing hidden fields from sparse measurements are the same operation
-with different values marked as known.
+A method for turning a PDE solver into one masked transformer over the
+whole spacetime grid. Given some values (an initial condition, a set of
+sensor readings, a target state) and blanks for the rest, the model fills
+in the blanks by iterating to a fixed point. Forward simulation, rewinding
+a state to see its past, and reconstructing hidden fields from sparse
+measurements are the same operation with different values marked as known.
 
 Named after Jacobi's iterative method: every point on the grid is updated at
 once from its neighbors, repeated until the field stops changing.
 
+The first system it has been trained and evaluated on is 2D shallow water.
+
 ## What it does
 
-- Simulates 2D shallow water (height and velocity fields) with a reference
-  solver written in Rust that runs natively and in the browser.
-- Trains a transformer on that solver's trajectories to predict future
-  states, with a stencil attention mask so each cell only looks at nearby
-  cells, matching how the underlying physics propagates locally.
+- Trains one transformer on a PDE solver's trajectories, with a stencil
+  attention mask so each cell only looks at nearby cells, matching how the
+  underlying physics propagates locally.
+- Runs that same model forward (simulate ahead), in reverse (rewind a
+  state to reconstruct its past), or filling in unknown regions of a field
+  from partial observations: forward, inverse and rewind are the same call
+  with different values marked as known.
 - Enforces physical constraints (conserved mass, bounded energy) as a
   projection step after each prediction, not as a soft loss term.
-- Runs the same model forward (simulate ahead) or in reverse (rewind a
-  state to reconstruct its past), and can fill in unknown regions of a
-  field from partial observations.
+- On 2D shallow water: simulates height and velocity fields with a
+  reference solver written in Rust that runs natively and in the browser,
+  and trains the transformer on its trajectories.
 
-## Results
+## Results on 2D shallow water
 
 Numbers below are from the run logs under `docs/runs/`, referenced by path.
 
