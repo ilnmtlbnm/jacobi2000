@@ -37,7 +37,7 @@ Numbers below are from the run logs under `docs/runs/`, referenced by path.
   trained with mass and energy projection on) scores correlation 0.9997 at
   10 ticks, 0.9988 at 25 ticks, and 0.9954 at 50 ticks against the solver,
   with an amplitude ratio of 1.03 and a wavefront lag under 0.02 cells at
-  50 ticks (`docs/runs/2026-09-19-acceptance-2.md`).
+  50 ticks (`docs/runs/2026-09-19-rung6.md`).
 - Its maximum relative energy violation along a projected rollout is
   0.000e0, against a bound of 1e-6 (`docs/runs/2026-09-19-acceptance-2.md`).
 - A 5x wider model (256-wide, 6 layers, 5,427,971 parameters) trained on a
