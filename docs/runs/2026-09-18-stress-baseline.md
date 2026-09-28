@@ -63,7 +63,7 @@ Corner drops are the easiest of the three for model15 (correlation 0.98-0.99
 at every horizon) — the domain is small enough and the stencil local enough
 that a wall-adjacent drop is not, by itself, a hard case for this
 checkpoint. The two categories that stress the model are the ones the
-named: single high-amplitude drops and stacked drops both show
+the author named: single high-amplitude drops and stacked drops both show
 correlation dropping into the 0.81-0.88 range by 50 ticks (vs 0.997 on the
 standard held-out set, docs/runs/2026-09-18-rung5-rollout16.md) and
 amplitude ratios drifting further from 1.0 (0.83-1.26 vs 1.03). This is the

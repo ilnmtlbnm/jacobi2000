@@ -242,7 +242,7 @@ matches or exceeds model15's stress-set scores in all three categories, and
 its standard-set regression from model15 (-0.0047) is an order of magnitude
 smaller than model17's (-0.0279). All four GOAL-2026-09-18.md acceptance
 bars pass on model19's standard set (see docs/runs/2026-09-18-17.md /
-acceptance check). **model19 is BEST for the remainder of this queue**
+acceptance check). **model19 is BEST for the remainder of this project**
 (task 9's widened model, if attempted, would supersede it; absent that,
 model19 is the best stencil checkpoint carried into Phase 5 and the
 Acceptance check).

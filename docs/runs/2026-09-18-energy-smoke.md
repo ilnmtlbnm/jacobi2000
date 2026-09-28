@@ -21,12 +21,11 @@ This run enables both projections together for the first time (`--project
 true --project-energy true`) on a checkpoint that has only ever been
 trained/warm-started with mass projection alone.
 
-## Outcome: diverged, killed by the lead
+## Outcome: diverged, process killed
 
 The `train` subcommand does not write its own run-doc file when it exits
 abnormally (it did not exit normally here), so this doc is written by hand
-from the raw stdout log (preserved at `/tmp/energy_smoke.log` and
-`<tmp>/energy_smoke.log`). No checkpoint was
+from the raw stdout log (preserved at `/tmp/energy_smoke.log`). No checkpoint was
 written to `artifacts/model-energy-smoke` (the run never reached a save
 point).
 
@@ -36,7 +35,7 @@ point).
 | 100 | NaN | 186.5s |
 
 Loss is already NaN by step 100. The run was left running past this point
-to see whether it recovered; it did not — the lead killed the process
+to see whether it recovered; it did not — the process was killed
 (~step 150, no further log line printed before then since `log_every =
 100` means the next print would have been step 200) rather than let it run
 to no purpose. **This smoke test fails task 11's convergence criterion
@@ -72,8 +71,8 @@ values; neither exercises the projection inside a backward pass, so this
 gradient singularity was never caught.
 
 This is a plausible, not yet confirmed, diagnosis — no repro test was
-written and no fix was attempted, per the lead's explicit instruction to
-document and stop rather than fix in this step.
+written and no fix was attempted; the decision here was to document and
+stop rather than fix in this step.
 
 ## Suggested fix (for the next attempt, not applied here)
 

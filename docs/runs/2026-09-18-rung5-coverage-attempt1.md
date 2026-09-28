@@ -45,6 +45,6 @@ regardless of the stress-set outcome.
 **Stress set corr@50 (h,u,v), model16 vs model15 baseline:** single
 high-amplitude improved (0.8083 -> 0.9463, +0.1380); stacked improved
 (0.8831 -> 0.9123, +0.0292); corner regressed (0.9837 -> 0.7311, -0.2526).
-The extended-coverage training helped the two categories I named as
+The extended-coverage training helped the two categories the author named as
 failing, but broke the easy corner category and the standard held-out set —
 net regression, not an improvement across the board.

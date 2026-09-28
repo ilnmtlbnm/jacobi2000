@@ -5,7 +5,7 @@ Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
 immediately before this run). Commit: `4e8673b`.
 
 Fresh held-out single-drop pre-reflection trajectories, seed `2026`
-(never used in any training or eval run in this queue — all prior runs
+(never used in any training or eval run in this project so far — all prior runs
 used seed 0 or 5/7/8 for training and seed 0 for eval). 24 trajectories
 requested per model, 20 skipped for horizon < 50 ticks (post-reflection),
 leaving trajectories scored at every requested horizon that reached it
@@ -17,8 +17,8 @@ Models scored independently:
   baseline, docs/runs/2026-09-18-rung4-full.md), reported as baseline, not
   required to pass.
 - (b) **artifacts/model19** — best stencil-trained checkpoint (task 8c,
-  BEST), the model the acceptance bar applies to per the lead's 2026-09-18
-  14:55 amendment ("locality is the thesis").
+  BEST), the model the acceptance bar applies to per the 2026-09-18
+  14:55 amendment ("locality is the thesis", docs/GOAL-2026-09-18.md).
 
 Commands:
 
@@ -66,10 +66,10 @@ The acceptance bar uses the xcorr lag column, not this one.
 ## Verdict: PASS
 
 The bar applies to the best stencil-trained checkpoint (model19), per the
-lead's 2026-09-18 14:55 amendment ("locality is the thesis, not an
-option"). model19 passes all four acceptance bars independently, on fresh
+2026-09-18 14:55 amendment ("locality is the thesis, not an
+option", docs/GOAL-2026-09-18.md). model19 passes all four acceptance bars independently, on fresh
 held-out single-drop pre-reflection trajectories at a seed (2026) never
-used anywhere else in this queue, with the GPU uncontended.
+used anywhere else in this project's runs, with the GPU uncontended.
 
 The full-attention baseline (model12) is reported alongside it as
 required, but is not itself required to pass — and in fact it fails the
