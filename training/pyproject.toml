@@ -1,0 +1,17 @@
+[project]
+name = "jacobi2000-pt"
+version = "0.1.0"
+description = "PyTorch training for jacobi2000, mirroring crates/jacobi2000's architecture; inference stays in Rust."
+requires-python = ">=3.10"
+dependencies = [
+    "torch==2.14.0",
+    "numpy==2.5.3",
+    "safetensors==0.8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["jacobi2000_pt"]

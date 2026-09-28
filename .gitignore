@@ -6,3 +6,7 @@
 /artifacts
 /target-check
 /target-wasm
+/training/.venv
+/training/*.egg-info
+__pycache__/
+*.pyc
