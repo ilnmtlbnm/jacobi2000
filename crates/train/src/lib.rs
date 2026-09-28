@@ -10,7 +10,7 @@ pub mod spectral;
 pub mod xr;
 
 pub use checkpoint::{load, save, Checkpoint, Meta};
-pub use data::{Batch, Generator, GeneratorConfig, Normalizer, META_DIM};
+pub use data::{Batch, Generator, GeneratorConfig, Normalizer, TrajectoryHeader, META_DIM};
 pub use lagrangian::{generate as generate_lagrangian, LagrangianConfig, LagrangianGenerator, LagrangianRecord};
 pub use eval::{rollout_errors, RolloutErrors};
 pub use fit::{fit, FitConfig};

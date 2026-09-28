@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use burn::module::{AutodiffModule, Module};
 use burn::tensor::Tensor;
 use clap::{Parser, Subcommand};
-use jacobi2000::{energy, Denorm, Jacobi2000Config, Mask};
+use jacobi2000::{energy, read_safetensors, write_safetensors, Denorm, Jacobi2000Config, Mask};
 use rand::{Rng, SeedableRng};
 use solvers::{Params, State};
 use train::{
@@ -220,6 +220,59 @@ enum Cmd {
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         lagrangian: bool,
     },
+    /// Dump full single-drop trajectories (raw h, u, v per tick, not just
+    /// the `Record` metadata `gen-data` writes) to `--out`, for the PyTorch
+    /// training side (docs/pytorch-training.md). One-time call: the files
+    /// this writes are the dataset, not regenerated per training run.
+    DumpDataset {
+        #[arg(long, default_value_t = 2000)]
+        pool: usize,
+        #[arg(long, default_value_t = 0.2)]
+        long_fraction: f32,
+        #[arg(long, default_value_t = 0.3)]
+        amplitude_max: f32,
+        #[arg(long, default_value_t = 0.3)]
+        extra_drop_prob: f32,
+        #[arg(long, default_value_t = 0.3)]
+        no_horizon_fraction: f32,
+        #[arg(long, default_value_t = 0.3)]
+        extended_fraction: f32,
+        #[arg(long, default_value_t = 1e-3)]
+        nu: f32,
+        #[arg(long, default_value_t = 20)]
+        seed: u64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Export a Burn checkpoint's weights to safetensors + config.json, for a
+    /// PyTorch-side parity check (docs/pytorch-training.md).
+    ExportWeights {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Import safetensors + config.json (written by the PyTorch export, or
+    /// by `export-weights`) into a Burn checkpoint the Rust CLI and `web/`
+    /// can load unchanged.
+    ImportWeights {
+        #[arg(long)]
+        safetensors: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Run one forward pass on a fixed, deterministic synthetic input and
+    /// dump the raw output (`3*ny*nx` little-endian f32) to `--out`, for a
+    /// cross-language parity check against the same input run through the
+    /// PyTorch model (docs/pytorch-training.md).
+    ForwardProbe {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     EvalMetrics {
         #[arg(long, default_value = "artifacts/model")]
         model: PathBuf,
@@ -415,6 +468,25 @@ fn run(cmd: Cmd) {
                 )
             }
         }
+        Cmd::DumpDataset {
+            pool,
+            long_fraction,
+            amplitude_max,
+            extra_drop_prob,
+            no_horizon_fraction,
+            extended_fraction,
+            nu,
+            seed,
+            out,
+        } => dump_dataset_cmd(
+            pool, long_fraction, amplitude_max, extra_drop_prob,
+            no_horizon_fraction, extended_fraction, nu, seed, &out,
+        ),
+        Cmd::ExportWeights { model, out } => export_weights_cmd(&model, &out),
+        Cmd::ImportWeights { safetensors, config, out } => {
+            import_weights_cmd(&safetensors, &config, &out)
+        }
+        Cmd::ForwardProbe { model, out } => forward_probe_cmd(&model, &out),
         Cmd::EvalMetrics {
             model,
             stress,
@@ -1079,6 +1151,117 @@ fn gen_data_cmd(
     if let Some(dir) = dump {
         println!("dumped to {}", dir.display());
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dump_dataset_cmd(
+    pool: usize,
+    long_fraction: f32,
+    amplitude_max: f32,
+    extra_drop_prob: f32,
+    no_horizon_fraction: f32,
+    extended_fraction: f32,
+    nu: f32,
+    seed: u64,
+    out: &Path,
+) {
+    let cfg = GeneratorConfig {
+        params: Params { nu, ..Params::default() },
+        pool,
+        single_drop: true,
+        long_fraction,
+        amplitude_max,
+        extra_drop_prob,
+        no_horizon_fraction,
+        extended_fraction,
+        seed,
+        ..Default::default()
+    };
+    let headers = train::data::dump_trajectories(&cfg, out);
+    let total_ticks: usize = headers.iter().map(|h| h.ticks).sum();
+    println!(
+        "{} trajectories, {} total ticks, written to {}",
+        headers.len(),
+        total_ticks,
+        out.display()
+    );
+}
+
+fn export_weights_cmd(model: &Path, out: &Path) {
+    let device = Default::default();
+    let (m, meta): (jacobi2000::Jacobi2000<Back>, train::Meta) = load(model, &device);
+    let weights = m.to_weights();
+    std::fs::create_dir_all(out).unwrap();
+    write_safetensors(&out.join("model.safetensors"), &weights);
+    std::fs::write(
+        out.join("config.json"),
+        serde_json::to_string_pretty(&meta).unwrap(),
+    )
+    .unwrap();
+    println!(
+        "exported {} tensors to {}",
+        weights.len(),
+        out.display()
+    );
+}
+
+fn import_weights_cmd(safetensors: &Path, config: &Path, out: &Path) {
+    let device = Default::default();
+    let meta: train::Meta =
+        serde_json::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+    let cfg = Jacobi2000Config::new()
+        .with_nx(meta.nx)
+        .with_ny(meta.ny)
+        .with_patch(meta.patch)
+        .with_dim(meta.dim)
+        .with_layers(meta.layers)
+        .with_heads(meta.heads)
+        .with_ff_mult(meta.ff_mult);
+    let weights = read_safetensors(safetensors);
+    let model = jacobi2000::Jacobi2000::<Back>::from_weights(&cfg, &weights, &device);
+    save(out, &model, &meta);
+    println!("imported into {}", out.display());
+}
+
+/// A fixed, purely deterministic synthetic input (two low-order sinusoids per
+/// channel) that a Python reader can reconstruct from `config.json` alone
+/// (`nx`, `ny`) without calling into Rust at all.
+fn probe_input(nx: usize, ny: usize) -> Vec<f32> {
+    let mut state = vec![0.0f32; 3 * ny * nx];
+    for c in 0..3 {
+        for y in 0..ny {
+            for x in 0..nx {
+                let v = ((c + 1) as f32 * 0.05)
+                    * (std::f32::consts::TAU * (c + 1) as f32 * x as f32 / nx as f32).sin()
+                    * (std::f32::consts::TAU * y as f32 / ny as f32).cos();
+                state[(c * ny + y) * nx + x] = v;
+            }
+        }
+    }
+    state
+}
+
+fn forward_probe_cmd(model: &Path, out: &Path) {
+    let device = Default::default();
+    let (m, meta): (jacobi2000::Jacobi2000<Back>, train::Meta) = load(model, &device);
+    let (nx, ny) = (meta.nx, meta.ny);
+    let state = probe_input(nx, ny);
+    let params = meta.params();
+    let meta_vec = train::data::meta_of(&params);
+
+    let x = Tensor::<Back, 1>::from_floats(state.as_slice(), &device).reshape([1, 3, ny, nx]);
+    let meta_t = Tensor::<Back, 1>::from_floats(meta_vec.as_slice(), &device)
+        .reshape([1, train::META_DIM]);
+    let mask_t = meta.mask.to_tensor::<Back>(&m.grid, &device);
+
+    let out_t = m.forward(x, meta_t, mask_t);
+    let data: Vec<f32> = out_t.into_data().to_vec().unwrap();
+    let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(out, bytes).unwrap();
+    println!("wrote {} floats to {}", data.len(), out.display());
 }
 
 fn gen_data_lagrangian_cmd(pool: usize, batch: usize, nu: f32, seed: u64, dump: Option<&Path>) {

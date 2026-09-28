@@ -478,6 +478,96 @@ pub fn generate(cfg: &GeneratorConfig, dump: Option<&Path>) -> Vec<Record> {
     out
 }
 
+/// One trajectory's shape and solver parameters, dumped alongside its raw
+/// fields so a reader that never links `solvers` (the PyTorch training side)
+/// can reconstruct windows without re-deriving anything from the RNG.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryHeader {
+    pub index: usize,
+    /// Frame count, including tick 0 (the drop's birth, post-warmup).
+    pub ticks: usize,
+    pub nx: usize,
+    pub ny: usize,
+    pub dx: f32,
+    pub dt: f32,
+    pub g: f32,
+    pub depth: f32,
+    pub nu: f32,
+    pub cx: f32,
+    pub cy: f32,
+    pub amp: f32,
+    pub sigma: f32,
+}
+
+/// Dump `cfg.pool` single-drop trajectories' full physical fields (`h`, `u`,
+/// `v`, un-normalized) to `dir`, one `traj-NNNNN.f32` (raw little-endian
+/// `ticks * 3 * nx * ny` floats, channel-major: all of `h`, then all of `u`,
+/// then all of `v`, each tick-major within its channel) plus a matching
+/// `traj-NNNNN.json` header, and a `manifest.json` listing every header.
+///
+/// This is the one-time bridge to the PyTorch training side
+/// (`docs/pytorch-training.md`): the Rust solver stays the sole source of
+/// physics and the sole random-number consumer: this reuses `draw_single_drop`
+/// verbatim, so the trajectory distribution is byte-for-byte the same one
+/// `generate` (the `Record`-only dump used by the Burn trainer) draws, just
+/// with the fields kept instead of thrown away.
+pub fn dump_trajectories(cfg: &GeneratorConfig, dir: &Path) -> Vec<TrajectoryHeader> {
+    let p = cfg.params;
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
+    std::fs::create_dir_all(dir).unwrap();
+    let mut headers = Vec::with_capacity(cfg.pool);
+    for index in 0..cfg.pool {
+        let (mut state, rec, mut pending) = draw_single_drop(cfg, &mut rng);
+        let mut solver = ShallowWater::new(p);
+        let n = p.cells();
+        let mut h_all = Vec::with_capacity((rec.ticks + 1) * n);
+        let mut u_all = Vec::with_capacity((rec.ticks + 1) * n);
+        let mut v_all = Vec::with_capacity((rec.ticks + 1) * n);
+        h_all.extend_from_slice(&state.h);
+        u_all.extend_from_slice(&state.u);
+        v_all.extend_from_slice(&state.v);
+        for t in 1..=rec.ticks {
+            solver.step(&mut state);
+            apply_pending(&mut state, &p, &mut pending, t);
+            h_all.extend_from_slice(&state.h);
+            u_all.extend_from_slice(&state.u);
+            v_all.extend_from_slice(&state.v);
+        }
+        let mut bytes = Vec::with_capacity((h_all.len() + u_all.len() + v_all.len()) * 4);
+        for v in h_all.iter().chain(u_all.iter()).chain(v_all.iter()) {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(dir.join(format!("traj-{index:05}.f32")), &bytes).unwrap();
+        let header = TrajectoryHeader {
+            index,
+            ticks: rec.ticks + 1,
+            nx: p.nx,
+            ny: p.ny,
+            dx: p.dx,
+            dt: p.dt,
+            g: p.g,
+            depth: p.depth,
+            nu: p.nu,
+            cx: rec.cx,
+            cy: rec.cy,
+            amp: rec.amp,
+            sigma: rec.sigma,
+        };
+        std::fs::write(
+            dir.join(format!("traj-{index:05}.json")),
+            serde_json::to_string(&header).unwrap(),
+        )
+        .unwrap();
+        headers.push(header);
+    }
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_string_pretty(&headers).unwrap(),
+    )
+    .unwrap();
+    headers
+}
+
 fn init_trajectory(cfg: &GeneratorConfig, rng: &mut StdRng, t: &mut Trajectory) {
     let p = cfg.params;
     if cfg.single_drop {

@@ -9,6 +9,7 @@ use burn::prelude::*;
 use burn::tensor::activation::softmax;
 
 use crate::grid::Grid;
+use crate::weights::{get, put, Weights};
 
 #[derive(Config, Debug)]
 pub struct Jacobi2000Config {
@@ -129,6 +130,105 @@ impl<B: Backend> Jacobi2000<B> {
             .reshape([b, g.tokens(), g.patch_dim()])
     }
 
+    /// Build a model of `cfg`'s architecture, then overwrite every learnable
+    /// tensor from `weights` (burn's own field names, dotted for nesting:
+    /// `embed.weight`, `embed.bias`, `meta.weight`, `meta.bias`, `pos`,
+    /// `blocks.<i>.{norm1,norm2}.{gamma,beta}`,
+    /// `blocks.<i>.{q,k,v,proj,ff1,ff2}.{weight,bias}`, `norm.{gamma,beta}`,
+    /// `head.{token_mix,to_cells,conv1,conv2}.{weight,bias}`). This is the
+    /// import half of the weight exchange with the PyTorch training side
+    /// (`docs/pytorch-training.md`); the export half is [`Self::to_weights`].
+    pub fn from_weights(cfg: &Jacobi2000Config, weights: &Weights, device: &B::Device) -> Self {
+        let mut m = cfg.init::<B>(device);
+
+        m.embed.weight = Param::from_tensor(get::<2, B>(weights, "embed.weight", device));
+        m.embed.bias = Some(Param::from_tensor(get::<1, B>(weights, "embed.bias", device)));
+        m.meta.weight = Param::from_tensor(get::<2, B>(weights, "meta.weight", device));
+        m.meta.bias = Some(Param::from_tensor(get::<1, B>(weights, "meta.bias", device)));
+        m.pos = Param::from_tensor(get::<3, B>(weights, "pos", device));
+
+        for (i, b) in m.blocks.iter_mut().enumerate() {
+            let p = |s: &str| format!("blocks.{i}.{s}");
+            b.norm1.gamma = Param::from_tensor(get::<1, B>(weights, &p("norm1.gamma"), device));
+            b.norm1.beta = Some(Param::from_tensor(get::<1, B>(weights, &p("norm1.beta"), device)));
+            b.q.weight = Param::from_tensor(get::<2, B>(weights, &p("q.weight"), device));
+            b.q.bias = Some(Param::from_tensor(get::<1, B>(weights, &p("q.bias"), device)));
+            b.k.weight = Param::from_tensor(get::<2, B>(weights, &p("k.weight"), device));
+            b.k.bias = Some(Param::from_tensor(get::<1, B>(weights, &p("k.bias"), device)));
+            b.v.weight = Param::from_tensor(get::<2, B>(weights, &p("v.weight"), device));
+            b.v.bias = Some(Param::from_tensor(get::<1, B>(weights, &p("v.bias"), device)));
+            b.proj.weight = Param::from_tensor(get::<2, B>(weights, &p("proj.weight"), device));
+            b.proj.bias = Some(Param::from_tensor(get::<1, B>(weights, &p("proj.bias"), device)));
+            b.norm2.gamma = Param::from_tensor(get::<1, B>(weights, &p("norm2.gamma"), device));
+            b.norm2.beta = Some(Param::from_tensor(get::<1, B>(weights, &p("norm2.beta"), device)));
+            b.ff1.weight = Param::from_tensor(get::<2, B>(weights, &p("ff1.weight"), device));
+            b.ff1.bias = Some(Param::from_tensor(get::<1, B>(weights, &p("ff1.bias"), device)));
+            b.ff2.weight = Param::from_tensor(get::<2, B>(weights, &p("ff2.weight"), device));
+            b.ff2.bias = Some(Param::from_tensor(get::<1, B>(weights, &p("ff2.bias"), device)));
+        }
+
+        m.norm.gamma = Param::from_tensor(get::<1, B>(weights, "norm.gamma", device));
+        m.norm.beta = Some(Param::from_tensor(get::<1, B>(weights, "norm.beta", device)));
+
+        m.head.token_mix.weight = Param::from_tensor(get::<4, B>(weights, "head.token_mix.weight", device));
+        m.head.token_mix.bias = Some(Param::from_tensor(get::<1, B>(weights, "head.token_mix.bias", device)));
+        m.head.to_cells.weight = Param::from_tensor(get::<4, B>(weights, "head.to_cells.weight", device));
+        m.head.to_cells.bias = Some(Param::from_tensor(get::<1, B>(weights, "head.to_cells.bias", device)));
+        m.head.conv1.weight = Param::from_tensor(get::<4, B>(weights, "head.conv1.weight", device));
+        m.head.conv1.bias = Some(Param::from_tensor(get::<1, B>(weights, "head.conv1.bias", device)));
+        m.head.conv2.weight = Param::from_tensor(get::<4, B>(weights, "head.conv2.weight", device));
+        m.head.conv2.bias = Some(Param::from_tensor(get::<1, B>(weights, "head.conv2.bias", device)));
+
+        m
+    }
+
+    /// The reverse of [`Self::from_weights`]: every learnable tensor this
+    /// model holds, under the same names. Used to export a Burn-trained
+    /// checkpoint (this crate's own training path, or a checkpoint saved by
+    /// `crates/train`) into the exchange format for a PyTorch-side parity
+    /// check.
+    pub fn to_weights(&self) -> Weights {
+        let mut w = Weights::new();
+        put(&mut w, "embed.weight", self.embed.weight.val());
+        put(&mut w, "embed.bias", self.embed.bias.as_ref().unwrap().val());
+        put(&mut w, "meta.weight", self.meta.weight.val());
+        put(&mut w, "meta.bias", self.meta.bias.as_ref().unwrap().val());
+        put(&mut w, "pos", self.pos.val());
+
+        for (i, b) in self.blocks.iter().enumerate() {
+            let p = |s: &str| format!("blocks.{i}.{s}");
+            put(&mut w, &p("norm1.gamma"), b.norm1.gamma.val());
+            put(&mut w, &p("norm1.beta"), b.norm1.beta.as_ref().unwrap().val());
+            put(&mut w, &p("q.weight"), b.q.weight.val());
+            put(&mut w, &p("q.bias"), b.q.bias.as_ref().unwrap().val());
+            put(&mut w, &p("k.weight"), b.k.weight.val());
+            put(&mut w, &p("k.bias"), b.k.bias.as_ref().unwrap().val());
+            put(&mut w, &p("v.weight"), b.v.weight.val());
+            put(&mut w, &p("v.bias"), b.v.bias.as_ref().unwrap().val());
+            put(&mut w, &p("proj.weight"), b.proj.weight.val());
+            put(&mut w, &p("proj.bias"), b.proj.bias.as_ref().unwrap().val());
+            put(&mut w, &p("norm2.gamma"), b.norm2.gamma.val());
+            put(&mut w, &p("norm2.beta"), b.norm2.beta.as_ref().unwrap().val());
+            put(&mut w, &p("ff1.weight"), b.ff1.weight.val());
+            put(&mut w, &p("ff1.bias"), b.ff1.bias.as_ref().unwrap().val());
+            put(&mut w, &p("ff2.weight"), b.ff2.weight.val());
+            put(&mut w, &p("ff2.bias"), b.ff2.bias.as_ref().unwrap().val());
+        }
+
+        put(&mut w, "norm.gamma", self.norm.gamma.val());
+        put(&mut w, "norm.beta", self.norm.beta.as_ref().unwrap().val());
+
+        put(&mut w, "head.token_mix.weight", self.head.token_mix.weight.val());
+        put(&mut w, "head.token_mix.bias", self.head.token_mix.bias.as_ref().unwrap().val());
+        put(&mut w, "head.to_cells.weight", self.head.to_cells.weight.val());
+        put(&mut w, "head.to_cells.bias", self.head.to_cells.bias.as_ref().unwrap().val());
+        put(&mut w, "head.conv1.weight", self.head.conv1.weight.val());
+        put(&mut w, "head.conv1.bias", self.head.conv1.bias.as_ref().unwrap().val());
+        put(&mut w, "head.conv2.weight", self.head.conv2.weight.val());
+        put(&mut w, "head.conv2.bias", self.head.conv2.bias.as_ref().unwrap().val());
+
+        w
+    }
 }
 
 /// Per-cell output head.
