@@ -5,7 +5,7 @@ keeping the Rust model, projections, masks, solver and `web/` unchanged.
 Plan and format in `docs/pytorch-training.md`.
 
 Machines: data generation and all Rust steps on an Apple M2 (native, ndarray
-backend, no GPU needed for CPU inference/eval); PyTorch training on my
+backend, no GPU needed for CPU inference/eval); PyTorch training on the author's
 Linux GPU box (RTX 3080, CUDA 13, `<box>` placeholder for the real host in
 every command below).
 
