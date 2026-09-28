@@ -1,0 +1,29 @@
+gpu free at 00:44, starting reverse sweep
+=== nu=0 -> artifacts/model-rev-nu0 (00:44)
+normalizer: mean [0.00080143043, 0.0004342237, 0.00049231027] std [0.006330339, 0.013779421, 0.013548313]
+warm start: artifacts/model19
+backend: wgpu (Metal), params: 995843, mask: --mask stencil --radius 1 --dilation 1
+step      1  loss 3.455789e-1  2.0s
+step    100  loss 7.464827e-2  48.4s
+step    200  loss 8.861613e-2  95.7s
+wrote artifacts/model-rev-nu0
+reverse: skipping the forward-only solver-rollout eval and run-log write; score with `eval-metrics --reverse --model artifacts/model-rev-nu0`
+=== nu=0.001 -> artifacts/model-rev-nu0.001 (00:46)
+normalizer: mean [0.00080142566, 0.00043419414, 0.0004922769] std [0.0063289637, 0.013776309, 0.013545067]
+warm start: artifacts/model19
+backend: wgpu (Metal), params: 995843, mask: --mask stencil --radius 1 --dilation 1
+step      1  loss 3.335440e-1  1.6s
+step    100  loss 5.745199e-2  48.7s
+step    200  loss 7.495264e-2  96.2s
+wrote artifacts/model-rev-nu0.001
+reverse: skipping the forward-only solver-rollout eval and run-log write; score with `eval-metrics --reverse --model artifacts/model-rev-nu0.001`
+=== nu=0.01 -> artifacts/model-rev-nu0.01 (00:48)
+normalizer: mean [0.0008014224, 0.0004339264, 0.00049197045] std [0.0063166884, 0.01374852, 0.013516142]
+warm start: artifacts/model19
+backend: wgpu (Metal), params: 995843, mask: --mask stencil --radius 1 --dilation 1
+step      1  loss 3.282536e-1  1.5s
+step    100  loss 4.954468e-2  48.3s
+step    200  loss 6.967587e-2  95.7s
+wrote artifacts/model-rev-nu0.01
+reverse: skipping the forward-only solver-rollout eval and run-log write; score with `eval-metrics --reverse --model artifacts/model-rev-nu0.01`
+REVERSE_SWEEP_DONE 00:50
