@@ -2,8 +2,8 @@
 
 The repo's demo page (`index.html` + `app.js`, WASM engine in `crates/web`).
 Self-contained: copy this directory (plus a populated `model/`) to a static
-server and it works. See the demo's rules (template, no
-settings/URL panels outside this gallery, headless-Chromium verification).
+server and it works. Follows the repo's demo template: no settings/URL panels
+outside this gallery, verified headless.
 
 ## models in the gallery
 

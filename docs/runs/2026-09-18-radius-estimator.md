@@ -154,6 +154,5 @@ Reasons, with the numbers above:
 
 The argmax radius-error column should stay in the table (it is cheap, and a
 large disagreement between the two columns is itself diagnostic of a
-bistable profile), but the acceptance criterion in
-`convergence/queues/stay-true-for-longer.md` should be read against
+bistable profile), but the acceptance criterion should be read against
 "wavefront lag (xcorr)" going forward.

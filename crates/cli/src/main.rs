@@ -1201,8 +1201,7 @@ fn distribution(xs: &mut [f32]) -> (f32, f32, f32, f32) {
 }
 
 /// Measure the solver's own per-tick total-energy ratio `r_t = E_{t+1}/E_t`
-/// on the training distribution (task A1/A2 of
-/// convergence/queues/constrained-wider-reversible.md): the coded bound
+/// on the training distribution: the coded bound
 /// `1 - c*nu*dt` turned out far tighter than the solver's real dissipation
 /// (docs/runs/2026-09-19-energy-smoke-2.md), so the energy-projection bound
 /// is measured from data instead of assumed.
