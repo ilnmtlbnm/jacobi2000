@@ -1,5 +1,3 @@
-<!-- DRAFT for the author to edit before publishing. -->
-
 # jacobi2000
 
 A method for turning a PDE solver into one masked transformer over the
