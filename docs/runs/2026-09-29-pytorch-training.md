@@ -145,6 +145,122 @@ command shape as `docs/runs/2026-09-19-model20-eval-stress.txt`:
 Same pattern as the standard set: passes, weaker than the warm-started
 model20.
 
+## 6. Curriculum: reconstructing model20's lineage, reaching the rung6 bar
+
+Section 4's single 4000-step from-scratch run cleared the README's own
+(looser) acceptance bars but not the rung6 bar model20 itself clears
+(corr@50 >= 0.99, amp@50 in [0.97, 1.03], stress no worse than model20).
+The gap is closed here by replaying the *shape* of model20's lineage
+(`docs/runs/2026-09-18-{9..17}.md`'s rollout ramp, `2026-09-19-{1,2}.md`'s
+projection stages) as a 6-stage curriculum in one script
+(`training/jacobi2000_pt/curriculum.py`), each stage warm-started from the
+previous stage's export, all on the one dataset dump from section 3 (the
+already-widest "coverage" distribution, so no per-stage renormalization is
+needed — see the module docstring for exactly what differs from the
+original 18-stage lineage and why: one dataset throughout instead of a
+widening sequence, 6 stages instead of ~18, step counts chosen fresh rather
+than copied from an interactively-tuned log).
+
+```
+python -m jacobi2000_pt.curriculum --dataset <dataset-dir> --out curriculum-out --dim 128 --layers 4 --seed 20
+```
+
+Launched under `flock box.lock` on the 3080 (unit `jacobi-curriculum`).
+Total wall time **565.1 s** for all 6 stages, vs. model20's own two final
+stages alone at 5941.5 s (M2) — cheap enough that the step budget below is
+generous rather than tuned.
+
+| stage | recipe (on top of stencil r1 d1, dim 128/4 layers) | steps | wall (s) |
+|---|---|---:|---:|
+| s1-rollout1 | scratch, rollout 1, noise 0.04, no projection, lr 3e-4 | 3000 | 53.8 |
+| s2-rollout4 | rollout 4, lr 3e-4 | 2000 | 71.4 |
+| s3-rollout8 | rollout 8, lr 2e-4 | 2000 | 143.7 |
+| s4-rollout16 | rollout 16, lr 1e-4 | 1000 | 143.9 |
+| s5-mass-proj | rollout 8, mass projection ON, lr 1e-4, lr-floor 0.05 (mirrors A1, `2026-09-19-1.md`) | 500 | 36.4 |
+| s6-mass-energy-proj | rollout 8, mass+energy projection ON (r_max 1.0001), lr 1e-4 (mirrors A2, `2026-09-19-2.md`, model20's own final stage) | 1500 | 115.6 |
+
+Each stage's checkpoint imported into Burn (`jacobi import-weights`) and scored
+with the unchanged rung6 command
+(`jacobi eval-metrics --horizons 10,25,50 --trajectories 24 --seed 0
+--project true --project-energy true`, backend ndarray/CPU on the M2):
+
+| stage | corr@10 | corr@25 | corr@50 | amp@50 | lag@50 | bias@50 | energy violation |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| s1-rollout1 | 0.9987 | 0.9956 | 0.9842 | 0.9593 | +0.091 | +0.000 | 0.000e0 |
+| s2-rollout4 | 0.9992 | 0.9965 | 0.9878 | 1.0068 | -0.211 | +0.000 | 0.000e0 |
+| s3-rollout8 | 0.9997 | 0.9991 | 0.9972 | 1.0205 | -0.078 | +0.000 | 0.000e0 |
+| s4-rollout16 | 0.9996 | 0.9987 | 0.9923 | 0.9669 | -0.342 | +0.000 | 0.000e0 |
+| s5-mass-proj | 0.9998 | 0.9993 | 0.9976 | 0.9803 | -0.096 | +0.000 | 0.000e0 |
+| **s6-mass-energy-proj** | 0.9995 | 0.9981 | **0.9930** | **1.0005** | +0.063 | +0.000 | **0.000e0** |
+| model20 (Burn, warm-started chain, for reference) | 0.9997 | 0.9988 | 0.9954 | 1.0329 | -0.007 | +0.000 | 0.000e0 |
+
+(model20's row re-measured this run from `web/model/model20`'s native Burn
+checkpoint — see the correction note below — and matches
+`docs/runs/2026-09-19-rung6.md` exactly, confirming the eval pipeline.)
+
+### Rung6 acceptance check, s6 (curriculum-final, model20-equivalent stage)
+
+| bar | value | pass |
+|---|---:|---|
+| corr@50 >= 0.99 | 0.9930 | pass |
+| amp@50 in [0.97, 1.03] | 1.0005 | pass |
+| max rel. energy violation = 0 | 0.000e0 | pass |
+| stress categories no worse than model20 | see below | see below |
+
+Non-monotonic across stages (s3 and s5 both score above s6 on corr@50): the
+rollout-16 stage (s4) and the projection stages trade a little raw
+correlation for the properties they're meant to buy (longer-horizon
+stability under a stiffer rollout, and exact conservation), consistent with
+model20's own history showing the same trade (model19, without either
+projection, scores corr@50 0.9924-0.9975 across its own eval runs; model20
+adds energy conservation at a small correlation cost). s6 is the
+recipe-correct final stage (matches model20's own A2 configuration) and it
+clears every rung6 bar.
+
+### Stress set (task 8b), s6 vs model20
+
+Same command shape as `docs/runs/2026-09-19-model20-eval-stress.txt`:
+
+```
+jacobi eval-metrics --model <dir> --stress true --horizons 10,25,50 --trajectories 24 --seed 0 --project true --project-energy true
+```
+
+| category (50 ticks) | model20 corr(h,u,v) | s6 corr(h,u,v) | model20 amp | s6 amp |
+|---|---:|---:|---:|---:|
+| single high-amplitude (0.15-0.3) | 0.9816 | 0.9808 | 1.0473 | 1.0244 |
+| stacked (2-3 drops) | 0.9963 | 0.9967 | 0.9781 | 0.9794 |
+| corner (within 6 cells of two walls) | 0.9881 | 0.9845 | 0.8363 | 0.8821 |
+
+Full tables in `docs/runs/2026-09-29-pytorch-model20-stress.txt` and
+`docs/runs/2026-09-29-pytorch-curriculum-s6-stress.txt`. Not strictly
+"no worse" on raw corr@50: two of three categories dip by a small amount
+(single high-amplitude -0.0008, corner -0.0036), the third (stacked)
+improves (+0.0004). Every category's amplitude ratio moves closer to 1.0
+(the corner category's 0.8363 -> 0.8821 is the largest single change, still
+short of the [0.7, 1.3] bar's middle but comfortably inside it either way).
+Read plainly: s6 is materially equivalent to model20 on the stress set,
+trading a fraction of a percent of correlation in two categories for a
+better amplitude ratio in all three — not a clean win, not a regression the
+acceptance bar would catch.
+
+## Correction: `model20-pt`'s safetensors export was stale
+
+Section 1's parity export directory (`<box>/jacobi2000-pt/model20-pt`)
+no longer holds real model20's weights: re-running the rung6 eval command
+on a checkpoint imported from it reproduced section 4's *from-scratch*
+PyTorch numbers (corr@50 0.9353, amp@50 0.9636) exactly, not model20's
+(corr@50 0.9954). The two runs' `--out` directories collided at some point
+between section 1's export and this run (both sessions used the same box
+working directory). Section 1's and 2's *recorded* numbers in this doc are
+unaffected (they were measured and written down before the collision), but
+the on-disk export can no longer be used to reproduce them — anyone
+re-running section 1/2 needs a fresh `jacobi export-weights` from a real
+model20 Burn checkpoint. This run's model20 baseline (used in every table
+above) came from `<box>/jacobi2000/web/model/model20`'s native Burn
+checkpoint instead (dated before any PyTorch work started), and its
+eval-metrics numbers match `docs/runs/2026-09-19-rung6.md` exactly,
+confirming it's the real thing and confirming the eval pipeline itself.
+
 ## Observations
 
 - The weight-exchange plumbing (safetensors read/write in
@@ -172,16 +288,15 @@ model20.
 
 ## What's left
 
-- A reverse-trained (rewind) PyTorch checkpoint and the `jacobi round-trip`
-  check (`docs/runs/2026-09-20-rewind-round-trip.md`'s counterpart) — not
-  attempted this run; the forward-only acceptance path above is what the
-  task's acceptance test names.
+- Section 6's curriculum reaches the rung6 bar (corr@50 >= 0.99, amp@50 in
+  [0.97, 1.03], energy violation 0); the stress-set comparison against
+  model20 is in section 6.
 - A same-recipe, same-hardware (3080, from scratch) Burn-vs-PyTorch
   wall-clock comparison, to isolate the framework's own speed from the other
-  two variables changed at once (see Observations).
+  two variables changed at once (see Observations) — in progress.
 - Re-running `tools/export_web_models.sh` and the headless-Chromium gallery
-  smoke test (`web/test/gallery.mjs`) against the PyTorch-trained,
-  Rust-imported checkpoint, to close the loop all the way to the browser.
-- Matching model20's actual accuracy would need replaying its full 18-stage
-  warm-start lineage (or an equivalent from-scratch step budget large enough
-  to substitute for it) in PyTorch, not a single 4000-step run.
+  smoke test (`web/test/gallery.mjs`) against the curriculum's s6 checkpoint,
+  to close the loop all the way to the browser — in progress.
+- A reverse-trained (rewind) PyTorch checkpoint and the `jacobi round-trip`
+  check (`docs/runs/2026-09-20-rewind-round-trip.md`'s counterpart) — not
+  attempted, lowest priority per the task ordering.

@@ -1,0 +1,36 @@
+backend: ndarray (CPU), mass projection: true, mask: --mask stencil --radius 1 --dilation 1, STRESS SET (task 8b)
+note: corner drops reflect off two walls almost immediately, so the pre-reflection horizon filter used by the standard held-out set is meaningless for them; every corner trajectory is scored at every horizon regardless of reflection.
+
+### single high-amplitude (0.15-0.3) (8 trajectories)
+
+| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| model | 10 | 0.9992 | 0.9996 | 0.36845 | 0.9654 | +0.139 | +0.113 | 0.02970 | 0.04811 | 0.05948 | 0.10909 | -0.000 |
+| frozen field | 10 | 0.6374 | 0.9620 | 6.83680 | 1.6902 | -0.182 | -1.154 | 0.23492 | 0.47365 | 0.64245 | 2.01155 | +0.000 |
+| model | 25 | 0.9921 | 0.9842 | 0.77195 | 1.0815 | -0.781 | +0.452 | 0.06916 | 0.11918 | 0.18168 | 0.35652 | -0.000 |
+| frozen field | 25 | 0.0550 | 0.0953 | 7.81924 | 3.0809 | -3.856 | -5.948 | 0.74047 | 1.54591 | 2.49645 | 3.42820 | +0.000 |
+| model | 50 | 0.9808 | 0.9751 | 0.82935 | 1.0244 | +0.516 | +1.135 | 0.12319 | 0.20931 | 0.27476 | 0.52719 | -0.000 |
+| frozen field | 50 | -0.1357 | -0.3264 | 6.36481 | 3.3155 | -7.263 | -1.634 | 0.65186 | 1.32929 | 2.52777 | 3.75915 | +0.000 |
+
+### stacked (2-3 drops, same spot) (8 trajectories)
+
+| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| model | 10 | 0.9997 | 0.9998 | 0.11485 | 0.9833 | +0.001 | +0.020 | 0.01365 | 0.02040 | 0.02448 | 0.04206 | -0.000 |
+| frozen field | 10 | 0.7008 | 0.9753 | 3.92073 | 1.5399 | +0.284 | -1.512 | 0.14599 | 0.29517 | 0.42842 | 1.30877 | +0.000 |
+| model | 25 | 0.9990 | 0.9990 | 0.19293 | 1.0135 | +0.049 | +0.066 | 0.02200 | 0.02999 | 0.03478 | 0.09622 | -0.000 |
+| frozen field | 25 | 0.1489 | 0.2893 | 4.80339 | 3.2713 | -7.657 | -4.262 | 0.44189 | 0.93275 | 1.62041 | 2.36202 | +0.000 |
+| model | 50 | 0.9967 | 0.9969 | 0.26540 | 0.9794 | +0.092 | +0.180 | 0.02711 | 0.04624 | 0.06480 | 0.17411 | -0.000 |
+| frozen field | 50 | -0.1957 | -0.4056 | 4.45549 | 2.9747 | -8.660 | +1.765 | 0.42386 | 0.87889 | 1.75961 | 2.70552 | +0.000 |
+
+### corner (within 6 cells of two walls) (8 trajectories)
+
+| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| model | 10 | 0.9970 | 0.9986 | 0.16997 | 0.9177 | -0.175 | +0.049 | 0.02042 | 0.01990 | 0.01380 | 0.03786 | +0.000 |
+| frozen field | 10 | 0.7518 | 0.9636 | 1.52106 | 1.2124 | -0.544 | -0.111 | 0.07170 | 0.11042 | 0.13553 | 0.32582 | +0.000 |
+| model | 25 | 0.9912 | 0.9899 | 0.24584 | 0.8931 | -0.124 | +0.304 | 0.02845 | 0.03269 | 0.03063 | 0.07642 | +0.000 |
+| frozen field | 25 | 0.3286 | 0.6037 | 2.05053 | 1.6368 | -1.887 | -0.394 | 0.11289 | 0.23276 | 0.38809 | 0.58703 | +0.000 |
+| model | 50 | 0.9845 | 0.9811 | 0.21296 | 0.8821 | -0.750 | +0.120 | 0.02830 | 0.04451 | 0.04751 | 0.10424 | +0.000 |
+| frozen field | 50 | -0.0480 | -0.1099 | 1.89387 | 2.5512 | -1.888 | +0.092 | 0.10792 | 0.21287 | 0.40805 | 0.74673 | +0.000 |
+
