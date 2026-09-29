@@ -288,6 +288,59 @@ The 3080 box's default binary was rebuilt back to `ndarray` (CPU) features
 after this section, so eval-metrics calls elsewhere in this doc are
 unaffected by which feature set was live on the box mid-run.
 
+## 8. Reverse (rewind) model and round-trip
+
+Adds `--reverse` and `--init` to `training/jacobi2000_pt/train.py`: flipping
+the frame order in a sampled window (`window.flip(0)`) mirrors
+`crates/train/src/data.rs`'s `reverse` flag exactly (same mask, same
+solver, only the time axis direction the model is trained on changes), and
+`--init` warm-starts from a previous export via the parity module's own
+loader. On the M2 this training was previously blocked entirely by machine
+contention (`docs/runs/2026-09-19-rewind.md`: killed after 8m46s at 14% CPU
+utilization under a load average of 52); on the idle 3080 it trains in
+under a minute.
+
+```
+python -m jacobi2000_pt.train --dataset <dataset-dir> --out reverse-out \
+  --init curriculum-out/s6-mass-energy-proj --steps 700 --lr 0.0001 --batch 16 \
+  --rollout 8 --rollout-after 0 --noise 0.04 --project true --project-energy true \
+  --r-max 1.0001 --spectral 1 --lr-floor 1 --dim 128 --layers 4 --seed 30 --reverse true
+```
+
+Warm-started from the curriculum's s6 checkpoint (section 6), 700 steps,
+**54.3 s** wall clock on the 3080.
+
+Rewind score (`jacobi eval-metrics --reverse true`, ndarray/CPU on the M2,
+raw output `docs/runs/2026-09-29-pytorch-reverse-eval.txt`):
+
+| ticks | corr (h,u,v) | amplitude ratio | lag (xcorr) |
+|---:|---:|---:|---:|
+| 10 | 0.9961 | 1.0046 | +0.351 |
+| 25 | 0.9867 | 0.9958 | +0.099 |
+| 50 | 0.9418 | 0.9104 | +0.274 |
+
+Round trip (`jacobi round-trip --forward <s6> --reverse <this checkpoint>`,
+raw output `docs/runs/2026-09-29-pytorch-round-trip.txt`): step forward N
+ticks with the curriculum's s6 model, then backward N ticks with this
+reverse checkpoint, score against the *original* state (independent of
+either model's own forward accuracy):
+
+| horizon | corr | amplitude ratio | round-trip RMSE | solver reference RMSE (N-tick physical change) |
+|---:|---:|---:|---:|---:|
+| 10 | 0.9941 | 0.9327 | 0.05723 | 0.42277 |
+| 25 | 0.9833 | 0.9640 | 0.10315 | 0.78787 |
+| 50 | 0.9173 | 0.8811 | 0.19641 | 0.79013 |
+
+At every horizon the round-trip RMSE is well below the solver's own
+N-tick reference RMSE (the scale of how far the physics itself moves in N
+ticks) — the forward-then-backward pair recovers most of the original
+state, not just something in the right ballpark. Not attempted: the
+browser's `rewind()` exhibit and `web/test/gallery.mjs`'s rewind check
+(`docs/runs/2026-09-20-rewind-round-trip.md`'s counterpart) against this
+specific checkpoint — `tools/export_web_models.sh` only wires up a reverse
+checkpoint named `artifacts/model20-reverse`, and this run's checkpoint
+wasn't renamed to fit that convention.
+
 ## Correction: `model20-pt`'s safetensors export was stale
 
 Section 1's parity export directory (`<box>/jacobi2000-pt/model20-pt`)
@@ -341,6 +394,7 @@ confirming it's the real thing and confirming the eval pipeline itself.
 - Re-running `tools/export_web_models.sh` and the headless-Chromium gallery
   smoke test (`web/test/gallery.mjs`) against the curriculum's s6 checkpoint,
   to close the loop all the way to the browser — in progress.
-- A reverse-trained (rewind) PyTorch checkpoint and the `jacobi round-trip`
-  check (`docs/runs/2026-09-20-rewind-round-trip.md`'s counterpart) — not
-  attempted, lowest priority per the task ordering.
+- Section 8 has a reverse-trained (rewind) PyTorch checkpoint and the
+  `jacobi round-trip` check; not attempted is wiring it into the browser's
+  `rewind()` exhibit (needs the `artifacts/model20-reverse` naming
+  convention `tools/export_web_models.sh` expects).

@@ -1,0 +1,23 @@
+backend: ndarray (CPU), mass projection: true, mask: --mask stencil --radius 1 --dilation 1
+24 single-drop trajectories, 22 skipped (horizon < 50 ticks)
+
+| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| model | 10 | 0.9961 | 0.9959 | 0.06645 | 1.0046 | -1.546 | +0.351 | 0.01901 | 0.02082 | 0.02064 | 0.04530 | +0.000 |
+| frozen field | 10 | 0.7732 | 0.7681 | 0.61172 | 1.0489 | +6.526 | +2.060 | 0.05927 | 0.12282 | 0.19959 | 0.35994 | -0.000 |
+| model | 25 | 0.9867 | 0.9862 | 0.13928 | 0.9958 | -0.040 | +0.099 | 0.02158 | 0.02809 | 0.03059 | 0.09020 | -0.000 |
+| frozen field | 25 | 0.1053 | -0.1135 | 1.45541 | 1.0789 | +5.592 | +2.901 | 0.10563 | 0.22142 | 0.37580 | 0.74266 | -0.000 |
+| model | 50 | 0.9418 | 0.9881 | 0.30472 | 0.9104 | +0.005 | +0.274 | 0.02556 | 0.04040 | 0.04659 | 0.14450 | -0.000 |
+| frozen field | 50 | -0.2351 | -0.4485 | 2.18518 | 0.2950 | +10.787 | -0.376 | 0.12834 | 0.26609 | 0.52941 | 0.78102 | -0.000 |
+
+per-trajectory model radius err / xcorr lag (task 8a, docs/runs/2026-09-18-radius-estimator.md):
+
+| ticks | radius err mean | std | min | max | \|err\|>2 | xcorr lag mean | std |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | -1.546 | 3.757 | -11.707 | +0.439 | 4 | +0.351 | 1.596 |
+| 25 | -0.040 | 0.155 | -0.434 | +0.298 | 0 | +0.099 | 0.054 |
+| 50 | +0.005 | 0.015 | +0.000 | +0.057 | 0 | +0.274 | 0.343 |
+
+reverse mode: skipping the forward-solver energy-drift, radial-profile and xr sections below (they assume forward semantics); the corr/amp/lag table above is the rewind score.
+
+[exited with code 0]

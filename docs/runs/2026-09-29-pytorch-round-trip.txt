@@ -1,0 +1,5 @@
+| horizon | corr | amplitude ratio | round-trip RMSE | solver reference RMSE (N-tick physical change) |
+|---:|---:|---:|---:|---:|
+| 10 | 0.9941 | 0.9327 | 0.05723 | 0.42277 |
+| 25 | 0.9833 | 0.9640 | 0.10315 | 0.78787 |
+| 50 | 0.9173 | 0.8811 | 0.19641 | 0.79013 |
