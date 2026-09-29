@@ -243,6 +243,51 @@ trading a fraction of a percent of correlation in two categories for a
 better amplitude ratio in all three — not a clean win, not a regression the
 acceptance bar would catch.
 
+## 7. Controlled framework comparison: Burn/wgpu vs PyTorch, same recipe, same hardware (3080)
+
+Same recipe, both from scratch, both on the 3080, `flock`-serialized (no
+contention): 1000 steps, `stencil r1 d1`, dim 128/4 layers, rollout 8, noise
+0.04, mass+energy projection ON (`r_max` 1.0001), spectral 1, lr 1e-4,
+seed 100, batch 16.
+
+Burn: `cargo build --release -p cli --features wgpu --no-default-features`
+(Vulkan on Linux; the run's own log string still says "wgpu (Metal)",
+a leftover label from Mac development, cosmetic only), then
+
+```
+jacobi train --steps 1000 --lr 0.0001 --batch 16 --pool 64 --single-drop true \
+  --long-fraction 0.2 --amplitude-max 0.3 --extra-drop-prob 0.3 \
+  --no-horizon-fraction 0.3 --extended-fraction 0.3 --rollout 8 --rollout-after 0 \
+  --noise 0.04 --lr-floor 1 --project true --project-energy true --r-max 1.0001 \
+  --spectral 1 --nu 0.001 --seed 100 --layers 4 --dim 128 --mask stencil --radius 1 --dilation 1
+```
+
+PyTorch: same hyperparameters, on the same dataset dump (section 3),
+one process, no curriculum:
+
+```
+python -m jacobi2000_pt.train --dataset <dataset-dir> --out pt-compare \
+  --steps 1000 --lr 0.0001 --batch 16 --rollout 8 --rollout-after 0 --noise 0.04 \
+  --project true --project-energy true --r-max 1.0001 --spectral 1 --lr-floor 1 \
+  --dim 128 --layers 4 --seed 100
+```
+
+| framework | wall clock | s/step | corr@10 | corr@25 | corr@50 | amp@50 |
+|---|---:|---:|---:|---:|---:|---:|
+| Burn/wgpu (Vulkan, 3080) | 472.9 s | 0.473 | 0.9956 | 0.9826 | 0.9446 | 1.1665 |
+| PyTorch/CUDA (3080) | 78.6 s | 0.079 | 0.9972 | 0.9856 | 0.9412 | 0.9648 |
+
+**PyTorch trains this recipe 6.0x faster per step than Burn/wgpu on the same
+3080** (472.9 / 78.6 = 6.02). Both checkpoints are undertrained (1000
+steps, from scratch, no curriculum — neither clears the rung6 bar, nor is
+meant to at this step count); corr@50 is within noise of the two runs
+(0.9446 vs 0.9412), not a meaningful accuracy difference at this budget.
+Raw eval output: `docs/runs/2026-09-29-burn-vs-pytorch-{burn,pt}-eval.txt`.
+
+The 3080 box's default binary was rebuilt back to `ndarray` (CPU) features
+after this section, so eval-metrics calls elsewhere in this doc are
+unaffected by which feature set was live on the box mid-run.
+
 ## Correction: `model20-pt`'s safetensors export was stale
 
 Section 1's parity export directory (`<box>/jacobi2000-pt/model20-pt`)
@@ -291,9 +336,8 @@ confirming it's the real thing and confirming the eval pipeline itself.
 - Section 6's curriculum reaches the rung6 bar (corr@50 >= 0.99, amp@50 in
   [0.97, 1.03], energy violation 0); the stress-set comparison against
   model20 is in section 6.
-- A same-recipe, same-hardware (3080, from scratch) Burn-vs-PyTorch
-  wall-clock comparison, to isolate the framework's own speed from the other
-  two variables changed at once (see Observations) — in progress.
+- Section 7 has the same-recipe, same-hardware (3080, from scratch)
+  Burn-vs-PyTorch wall-clock comparison: PyTorch trains 6.0x faster per step.
 - Re-running `tools/export_web_models.sh` and the headless-Chromium gallery
   smoke test (`web/test/gallery.mjs`) against the curriculum's s6 checkpoint,
   to close the loop all the way to the browser — in progress.

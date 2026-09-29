@@ -1,0 +1,45 @@
+artifacts/burn-compare:
+total 7792
+drwxr-xr-x@  4 tc  staff      128 Sep 29 01:53 .
+drwxr-xr-x@ 11 tc  staff      352 Sep 29 01:53 ..
+-rw-r--r--@  1 tc  staff      508 Sep 29 01:53 meta.json
+-rw-r--r--@  1 tc  staff  3985286 Sep 29 01:53 model.bin
+
+artifacts/pt-compare:
+total 7792
+drwxr-xr-x@  4 tc  staff      128 Sep 29 01:53 .
+drwxr-xr-x@ 11 tc  staff      352 Sep 29 01:53 ..
+-rw-r--r--@  1 tc  staff      510 Sep 29 01:53 meta.json
+-rw-r--r--@  1 tc  staff  3985286 Sep 29 01:53 model.bin
+backend: ndarray (CPU), mass projection: true, mask: --mask stencil --radius 1 --dilation 1
+24 single-drop trajectories, 22 skipped (horizon < 50 ticks)
+
+| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| model | 10 | 0.9956 | 0.9966 | 0.13922 | 1.1158 | -0.004 | -0.120 | 0.02058 | 0.02735 | 0.03445 | 0.05838 | -0.000 |
+| frozen field | 10 | 0.6538 | 0.9687 | 1.39116 | 1.6385 | -0.012 | -1.409 | 0.04748 | 0.09594 | 0.13718 | 0.43246 | +0.000 |
+| model | 25 | 0.9826 | 0.9784 | 0.18572 | 1.1975 | +0.478 | -0.459 | 0.03273 | 0.04021 | 0.05743 | 0.12154 | -0.000 |
+| frozen field | 25 | 0.0586 | 0.1387 | 1.61069 | 3.6404 | -5.195 | -7.666 | 0.14928 | 0.31165 | 0.52941 | 0.76460 | +0.000 |
+| model | 50 | 0.9446 | 0.9350 | 0.25865 | 1.1665 | +4.050 | -0.457 | 0.04637 | 0.06286 | 0.08883 | 0.21583 | +0.000 |
+| frozen field | 50 | -0.2353 | -0.4485 | 1.38846 | 3.7638 | -10.787 | +0.376 | 0.14067 | 0.29165 | 0.58027 | 0.85635 | +0.000 |
+
+per-trajectory model radius err / xcorr lag (task 8a, docs/runs/2026-09-18-radius-estimator.md):
+
+| ticks | radius err mean | std | min | max | \|err\|>2 | xcorr lag mean | std |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | -0.004 | 0.015 | -0.056 | +0.005 | 0 | -0.120 | 0.307 |
+| 25 | +0.478 | 2.234 | -0.691 | +8.556 | 2 | -0.459 | 0.249 |
+| 50 | +4.050 | 7.442 | -8.882 | +16.276 | 8 | -0.457 | 1.830 |
+
+energy drift (physical units), model rollout with energy projection ON vs OFF vs the solver, r_max=1.000100, mean over 24 trajectories:
+
+| ticks | energy ON | energy OFF | energy solver |
+|---:|---:|---:|---:|
+| 10 | 20149.566406 | 20149.566406 | 20149.234375 |
+| 25 | 20149.634766 | 20149.634766 | 20149.224609 |
+| 50 | 20149.673828 | 20149.671875 | 20149.248047 |
+
+max relative energy violation along the projected (ON) rollout: 0.000e0 (bound: <= 1e-6)
+
+
+[exited with code 0]

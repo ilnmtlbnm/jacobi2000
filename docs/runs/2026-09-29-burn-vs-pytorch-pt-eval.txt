@@ -1,0 +1,32 @@
+backend: ndarray (CPU), mass projection: true, mask: --mask stencil --radius 1 --dilation 1
+24 single-drop trajectories, 22 skipped (horizon < 50 ticks)
+
+| field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | radius err (cells) | wavefront lag (xcorr) | band 2-4 | band 4-8 | band 8-16 | global RMSE (previously gameable) | bias |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| model | 10 | 0.9972 | 0.9973 | 0.10045 | 1.0042 | -0.005 | -0.120 | 0.01351 | 0.01804 | 0.02127 | 0.04100 | +0.000 |
+| frozen field | 10 | 0.6537 | 0.9687 | 1.26810 | 1.6385 | -0.012 | -1.409 | 0.04332 | 0.08753 | 0.12516 | 0.39420 | +0.000 |
+| model | 25 | 0.9856 | 0.9859 | 0.14862 | 1.1077 | +0.394 | +0.014 | 0.02467 | 0.02745 | 0.03128 | 0.09049 | +0.000 |
+| frozen field | 25 | 0.0577 | 0.1387 | 1.46868 | 3.6404 | -5.195 | -7.666 | 0.13620 | 0.28434 | 0.48301 | 0.69719 | +0.000 |
+| model | 50 | 0.9412 | 0.9591 | 0.23299 | 0.9648 | -1.065 | -0.490 | 0.04827 | 0.05201 | 0.06160 | 0.17874 | +0.000 |
+| frozen field | 50 | -0.2351 | -0.4485 | 1.26637 | 3.7638 | -10.787 | +0.376 | 0.12834 | 0.26609 | 0.52941 | 0.78102 | +0.000 |
+
+per-trajectory model radius err / xcorr lag (task 8a, docs/runs/2026-09-18-radius-estimator.md):
+
+| ticks | radius err mean | std | min | max | \|err\|>2 | xcorr lag mean | std |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | -0.005 | 0.017 | -0.075 | +0.005 | 0 | -0.120 | 0.333 |
+| 25 | +0.394 | 1.704 | -0.214 | +8.554 | 1 | +0.014 | 0.069 |
+| 50 | -1.065 | 7.332 | -9.442 | +16.652 | 11 | -0.490 | 1.576 |
+
+energy drift (physical units), model rollout with energy projection ON vs OFF vs the solver, r_max=1.000100, mean over 24 trajectories:
+
+| ticks | energy ON | energy OFF | energy solver |
+|---:|---:|---:|---:|
+| 10 | 20149.482422 | 20149.482422 | 20149.234375 |
+| 25 | 20149.423828 | 20149.423828 | 20149.224609 |
+| 50 | 20149.390625 | 20149.390625 | 20149.248047 |
+
+max relative energy violation along the projected (ON) rollout: 0.000e0 (bound: <= 1e-6)
+
+
+[exited with code 0]
