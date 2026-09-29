@@ -128,7 +128,7 @@ cat > web/model/index.json <<'EOF'
     "dim": 128,
     "layers": 4,
     "mask": "stencil r1 d1",
-    "desc": "trained end to end in PyTorch on the 3080 (docs/runs/2026-09-29-pytorch-training.md section 6), a 6-stage curriculum reconstructing model20's rollout-then-projection recipe, imported back into this format unchanged.",
+    "desc": "trained in PyTorch with a six-stage curriculum that follows model20's recipe, then loaded here unchanged.",
     "kind": "eulerian",
     "loadable": true,
     "corr10": 0.9995,
