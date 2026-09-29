@@ -21,7 +21,7 @@ copy() {
   echo "exported $name"
 }
 
-for name in model19 model20 model-wide-1 model-wide-2 model-energy-smoke-2 model-sph-smoke; do
+for name in model19 model20 model-wide-1 model-wide-2 model-energy-smoke-2 model-sph-smoke model-pt-curriculum; do
   copy "$name"
 done
 
@@ -120,6 +120,23 @@ cat > web/model/index.json <<'EOF'
     "amp50": null,
     "lag50": null,
     "energyViolation": null
+  },
+  {
+    "name": "model-pt-curriculum",
+    "dir": "model-pt-curriculum",
+    "params": 995843,
+    "dim": 128,
+    "layers": 4,
+    "mask": "stencil r1 d1",
+    "desc": "trained end to end in PyTorch on the 3080 (docs/runs/2026-09-29-pytorch-training.md section 6), a 6-stage curriculum reconstructing model20's rollout-then-projection recipe, imported back into this format unchanged.",
+    "kind": "eulerian",
+    "loadable": true,
+    "corr10": 0.9995,
+    "corr25": 0.9981,
+    "corr50": 0.9930,
+    "amp50": 1.0005,
+    "lag50": 0.063,
+    "energyViolation": 0.0
   },
   {
     "name": "model-sph-smoke",

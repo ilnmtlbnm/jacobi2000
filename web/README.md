@@ -24,6 +24,7 @@ measured by the script). Run it before opening the page locally:
 | model-wide-2 | 256/6 | 5,427,971 | 0.9986 | 0.9935 | 0.9760 | 1.0467 | 3000 more steps, rollout 8, warm start from model-wide-1 |
 | model-energy-smoke-2 | 128/4 | 995,843 | — | — | — | — | 300-step smoke run only, mass+energy projection ON with an unfit bound; no eval-metrics pass |
 | model-sph-smoke | 128/4 | 995,843 | — | 0.35–0.37 | — | 9.7–15.4x | SPH-splatted (Lagrangian); under-trained, valid only against the SPH cases |
+| model-pt-curriculum | 128/4 | 995,843 | 0.9995 | 0.9981 | 0.9930 | 1.0005 | trained end to end in PyTorch on a 3080 (`docs/runs/2026-09-29-pytorch-training.md` sec. 6), 6-stage rollout+projection curriculum from scratch, imported unchanged |
 
 `model-sph-smoke` loads in the browser (same tensor shapes as the shallow-water
 checkpoints) but should only be run against SPH-splatted cases — running it
