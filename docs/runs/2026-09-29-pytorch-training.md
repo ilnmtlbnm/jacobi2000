@@ -384,17 +384,48 @@ confirming it's the real thing and confirming the eval pipeline itself.
   round-tripped checkpoint scores identically, so the browser path is
   expected to keep working, but this is not itself a browser test.
 
+## 9. Closing the loop to the browser
+
+`wasm-pack build crates/web --target web --out-dir ../../web/pkg --release`
+(clean build, ~3m 30s including `wasm-opt`), then `web/test/gallery.mjs`
+under Playwright's bundled headless Chromium, both locks held
+(`locked browser ... locked gpu ...`, serialized against a concurrent
+worker's own GPU use on this Mac):
+
+```
+GALLERY: 7 entries: model20, model19, model-wide-1, model-wide-2, model-energy-smoke-2, model-pt-curriculum, model-sph-smoke
+LOAD model-pt-curriculum: PASS (peak 1.54e-2, corr@30 0.9986)
+ACCEPTANCE: PASS (model20 > 0.98, model-wide-2 > 0.95)
+COMPARE: PASS (solver peak 1.30e-2, A corr 0.999 bias 0.000, B corr 0.998 bias 0.000)
+```
+
+All 7 gallery entries load and produce finite fields, including the new
+`model-pt-curriculum` entry (corr@30 0.9986, ahead of model20's own 0.9980
+at this horizon — both well inside noise of each other at 30 ticks). Every
+gate the test already checks (per-model load, the model20/model-wide-2
+acceptance floor, compare-mode bias) passes unchanged.
+
+Screenshots (`web/test/screenshot_pair.mjs`, ad hoc, not part of the gate)
+next to model20's, both loaded via `pickModel`/`drop`/`step(30)`, same as
+the gallery test itself:
+`model20.png`,
+`model-pt-curriculum.png`,
+plus the gallery test's own compare-mode screenshot
+(`gallery-compare-model20-vs-model-wide-1.png`, same directory).
+
 ## What's left
 
-- Section 6's curriculum reaches the rung6 bar (corr@50 >= 0.99, amp@50 in
-  [0.97, 1.03], energy violation 0); the stress-set comparison against
-  model20 is in section 6.
-- Section 7 has the same-recipe, same-hardware (3080, from scratch)
-  Burn-vs-PyTorch wall-clock comparison: PyTorch trains 6.0x faster per step.
-- Re-running `tools/export_web_models.sh` and the headless-Chromium gallery
-  smoke test (`web/test/gallery.mjs`) against the curriculum's s6 checkpoint,
-  to close the loop all the way to the browser — in progress.
-- Section 8 has a reverse-trained (rewind) PyTorch checkpoint and the
-  `jacobi round-trip` check; not attempted is wiring it into the browser's
-  `rewind()` exhibit (needs the `artifacts/model20-reverse` naming
-  convention `tools/export_web_models.sh` expects).
+- Every goal in this run's task list has at least one attempt recorded
+  above: section 6 reaches the rung6 bar, section 7 has the controlled
+  Burn-vs-PyTorch comparison, section 8 trains a reverse checkpoint and
+  scores the round trip, section 9 closes the loop through the wasm build
+  and the headless gallery test.
+- Not attempted: wiring the reverse checkpoint into the browser's
+  `rewind()` exhibit specifically (needs the `artifacts/model20-reverse`
+  naming convention `tools/export_web_models.sh` expects) — the gallery
+  test itself already passes with `model-pt-curriculum` in the picker.
+- `docs/pytorch-training.md`'s three-step acceptance test (parity, training,
+  round trip) is satisfied; the remaining open question is upstream of this
+  run's scope: whether a from-scratch curriculum this short is expected to
+  keep matching or exceeding model20 as the acceptance bars get stricter, or
+  whether it was a favorable draw (single seed, single dataset dump).
