@@ -17,6 +17,7 @@ import torch
 from .data import META_DIM, Normalizer, TrajectoryDataset
 from .export import export as export_checkpoint
 from .model import Jacobi2000, Jacobi2000Config, stencil_mask
+from .parity import load_from_export
 from .project import Denorm, energy, project_energy, project_mass
 from .spectral import band_mse
 
@@ -40,6 +41,7 @@ class FitConfig:
     mask_radius: int | None = 1
     mask_dilation: int = 1
     seed: int = 20
+    reverse: bool = False
 
 
 def lr_at(step: int, cfg: FitConfig) -> float:
@@ -73,6 +75,11 @@ def fit(
     for step in range(cfg.steps):
         k = 1 if step < cfg.rollout_after else cfg.rollout
         window = dataset.batch(rng, norm, cfg.batch, k, device)  # [k+1, b, 3, ny, nx]
+        if cfg.reverse:
+            # mirrors `crates/train/src/data.rs`'s `reverse` flag: flip the
+            # frame order so the model learns state(t+1) -> state(t), mask
+            # and solver unchanged.
+            window = window.flip(0)
         b = window.shape[1]
         meta = meta_vec.unsqueeze(0).expand(b, META_DIM).contiguous()
 
@@ -126,6 +133,10 @@ def main():
     ap.add_argument("--dim", type=int, default=128)
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=20)
+    ap.add_argument("--reverse", type=lambda s: s.lower() == "true", default=False,
+                     help="flip the frame order so the model learns state(t+1) -> state(t), "
+                          "mirroring `train --reverse` (docs/runs/2026-09-19-rewind.md)")
+    ap.add_argument("--init", default=None, help="directory from a previous export to warm-start from")
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--log-file", default=None)
     args = ap.parse_args()
@@ -136,8 +147,11 @@ def main():
     dataset = TrajectoryDataset(args.dataset)
     norm = dataset.fit_normalizer()
 
-    cfg = Jacobi2000Config(dim=args.dim, layers=args.layers)
-    model = Jacobi2000(cfg)
+    if args.init is not None:
+        model, _ = load_from_export(args.init)
+    else:
+        cfg = Jacobi2000Config(dim=args.dim, layers=args.layers)
+        model = Jacobi2000(cfg)
     print(f"model: {model.num_params()} params, device {device}")
 
     fit_cfg = FitConfig(
@@ -153,6 +167,7 @@ def main():
         spectral=args.spectral,
         lr_floor=args.lr_floor,
         seed=args.seed,
+        reverse=args.reverse,
     )
 
     log_rows = []
