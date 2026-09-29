@@ -408,8 +408,8 @@ acceptance floor, compare-mode bias) passes unchanged.
 Screenshots (`web/test/screenshot_pair.mjs`, ad hoc, not part of the gate)
 next to model20's, both loaded via `pickModel`/`drop`/`step(30)`, same as
 the gallery test itself:
-`model20.png`,
-`model-pt-curriculum.png`,
+`model20.png` (local screenshots, not committed),
+`model-pt-curriculum.png` (local screenshots, not committed),
 plus the gallery test's own compare-mode screenshot
 (`gallery-compare-model20-vs-model-wide-1.png`, same directory).
 
