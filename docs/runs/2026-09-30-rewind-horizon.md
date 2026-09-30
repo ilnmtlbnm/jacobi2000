@@ -100,3 +100,59 @@ Raw spread curves: `results/rewind-nu0.json`, `results/rewind-nu001.json`,
   spread horizon against the correlation-based rewind horizon
   (`docs/runs/2026-09-20-rewind-round-trip.md`'s approach) on the same
   checkpoints, to see whether the two horizon definitions agree.
+
+## Follow-up (same night, later) — matched training budgets
+
+Retrained the nu=0.001 forward+reverse pair from scratch with the exact same
+recipe, dataset size and step counts as the existing nu=0/nu=0.01 pairs
+(previously nu=0.001 alone reused the fully-converged 6-stage curriculum
+checkpoint; now all three are one 1000-step from-scratch forward run on a
+300-trajectory dataset, one 700-step warm-started reverse run):
+
+```
+./target/release/jacobi dump-dataset --pool 300 --nu 0.001 --seed 20 --out data/sw-nu001-matched
+python -m jacobi2000_pt.train --dataset data/sw-nu001-matched --out results/fwd-nu001-matched \
+  --steps 1000 --lr 1e-4 --rollout 8 --project true --project-energy true --dim 128 --layers 4 --seed 100
+python -m jacobi2000_pt.train --dataset data/sw-nu001-matched --out results/rev-nu001-matched \
+  --init results/fwd-nu001-matched --steps 700 --reverse true --seed 30 [same other flags]
+```
+
+Forward wall: 77.6 s. Reverse wall: 54.8 s (both within noise of nu=0's 77.4
+s / 55.0 s and nu=0.01's 78.2 s / 55.2 s from the first pass -- the three
+pairs are now genuinely matched in compute, not just in step count).
+
+Same ensemble-spread measurement, same threshold (0.08), same held-out
+trajectory and start tick:
+
+| nu | spread @ 10 | @ 20 | @ 40 | @ 60 | @ 80 | rewind horizon (threshold 0.08) |
+|---:|---:|---:|---:|---:|---:|---|
+| 0 | 0.00531 | 0.00799 | 0.01421 | 0.02401 | 0.04054 | not reached by tick 80 |
+| 0.001 (matched) | 0.00530 | 0.00862 | 0.01772 | 0.03300 | 0.06085 | not reached by tick 80 |
+| 0.01 | 0.00494 | 0.00782 | 0.01610 | 0.02844 | 0.05308 | not reached by tick 80 |
+
+Raw spread curves: `results/rewind2-nu0.json`, `results/rewind2-nu001.json`,
+`results/rewind2-nu01.json`. Run log: `results/rewind2-run.log`.
+
+### Does the viscosity effect survive matched budgets?
+
+**No, not cleanly.** The earlier dramatic gap (nu=0.001 crossing threshold
+at tick 62 while nu=0/0.01 didn't reach it by tick 80) is gone once training
+budgets match: none of the three cross the 0.08 threshold within 80 ticks,
+and at tick 80 the ordering is nu=0 (0.0405) < nu=0.01 (0.0531) < nu=0.001
+(0.0609) -- **not monotonic in nu**. If viscosity cleanly controlled
+reversibility the way CONCEPT section 6 predicts ("switch viscosity on: the
+horizon collapses to almost nothing"), nu=0.01 (10x more viscous) should
+show the largest spread, not the middle value. The gaps between all three
+(0.041-0.061 at tick 80) are also small relative to the run-to-run variation
+already visible within a single nu in the first pass (nu=0.001 alone moved
+from 0.102 unmatched to 0.061 matched at tick 80 -- a larger swing than the
+spread between any two nu values here).
+
+Honest reading: at this training budget (1000+700 steps, 300 trajectories,
+one seed, one held-out trajectory), training-run variance is at least as
+large as any viscosity signal. The confound identified in the first pass
+was real and removing it removed the apparent effect, not just its size --
+this run does not support "rewind horizon shrinks with viscosity" as a
+robust finding yet. A larger K, several held-out trajectories averaged, and
+more seeds per nu would be needed to tell a small monotonic effect apart
+from noise at this scale.

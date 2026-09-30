@@ -188,6 +188,10 @@ def main():
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--hidden", type=int, default=64)
     ap.add_argument("--horizons", default="5,10,20,40", type=lambda s: [int(x) for x in s.split(",")])
+    ap.add_argument("--held-out-prefix", default=None,
+                     help="trajectories whose name starts with this string are held out of "
+                          "training and scored separately (e.g. 'drop' holds out the whole "
+                          "drop family, training only on dambreak variants)")
     ap.add_argument("--log-file", default=None)
     args = ap.parse_args()
 
@@ -197,6 +201,16 @@ def main():
     names = [l.strip() for l in (Path(args.data) / "manifest.txt").read_text().splitlines() if l.strip()]
     for name, traj in zip(names, trajs):
         traj.name = name
+
+    if args.held_out_prefix is not None:
+        held_out = [t for t in trajs if t.name.startswith(args.held_out_prefix)]
+        train_trajs = [t for t in trajs if not t.name.startswith(args.held_out_prefix)]
+        assert held_out and train_trajs, "held-out-prefix must split the set into two non-empty groups"
+    else:
+        held_out = []
+        train_trajs = trajs
+    print(f"train trajectories: {[t.name for t in train_trajs]}")
+    print(f"held-out trajectories: {[t.name for t in held_out]}")
 
     model = LagrangianModel(k=args.k, layers=args.layers, hidden=args.hidden)
     print(f"model: {model.num_params()} params, device {device}")
@@ -208,13 +222,22 @@ def main():
         print(f"step {row['step']:6d}  loss {row['loss']:.6f}  {row['secs']:.1f}s", flush=True)
 
     t0 = time.time()
-    fit(model, trajs, args.steps, args.lr, args.rollout, device, on_log)
+    fit(model, train_trajs, args.steps, args.lr, args.rollout, device, on_log)
     wall = time.time() - t0
     print(f"training wall time: {wall:.1f}s")
 
-    eval_rows = evaluate(model, trajs, args.horizons, device)
+    eval_rows = evaluate(model, train_trajs, args.horizons, device)
     for row in eval_rows:
-        print(f"eval {row['traj']:16s} tick {row['tick']:4d}  corr {row['corr']:.4f}  rmse {row['rmse']:.4f}")
+        row["split"] = "train"
+        print(f"eval[train] {row['traj']:16s} tick {row['tick']:4d}  corr {row['corr']:.4f}  rmse {row['rmse']:.4f}")
+
+    held_out_rows = []
+    if held_out:
+        held_out_rows = evaluate(model, held_out, args.horizons, device)
+        for row in held_out_rows:
+            row["split"] = "held_out"
+            print(f"eval[held_out] {row['traj']:16s} tick {row['tick']:4d}  corr {row['corr']:.4f}  rmse {row['rmse']:.4f}")
+    eval_rows = eval_rows + held_out_rows
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
