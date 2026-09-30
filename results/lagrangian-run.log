@@ -1,0 +1,73 @@
+model: 30822 params, device cuda
+step      1  loss 0.003376  0.4s
+step    300  loss 0.000386  7.6s
+step    600  loss 0.000040  14.8s
+step    900  loss 0.000919  24.8s
+step   1200  loss 0.000021  34.9s
+step   1500  loss 0.003007  45.1s
+step   1800  loss 0.002303  54.4s
+step   2100  loss 0.000017  64.2s
+step   2400  loss 0.004240  74.5s
+step   2700  loss 0.000685  84.3s
+step   3000  loss 0.000122  94.5s
+step   3300  loss 0.000678  104.8s
+step   3600  loss 0.000018  114.9s
+step   3900  loss 0.000017  124.9s
+step   4200  loss 0.000228  134.1s
+step   4500  loss 0.000367  143.2s
+step   4800  loss 0.001082  151.4s
+step   5100  loss 0.001258  161.8s
+step   5400  loss 0.000364  172.0s
+step   5700  loss 0.000527  182.2s
+step   6000  loss 0.000321  191.6s
+training wall time: 192.4s
+eval dambreak         tick    5  corr 1.0000  rmse 0.0060
+eval dambreak         tick   10  corr 1.0000  rmse 0.0146
+eval dambreak         tick   20  corr 1.0000  rmse 0.0403
+eval dambreak         tick   40  corr 0.9993  rmse 0.3801
+eval dambreak         tick   59  corr 0.9944  rmse 1.2109
+eval drop             tick    5  corr 1.0000  rmse 0.0073
+eval drop             tick   10  corr 1.0000  rmse 0.0198
+eval drop             tick   20  corr 1.0000  rmse 0.0572
+eval drop             tick   40  corr 0.9993  rmse 1.0677
+eval drop             tick   59  corr 0.9961  rmse 2.8033
+eval dambreak-small   tick    5  corr 1.0000  rmse 0.0066
+eval dambreak-small   tick   10  corr 1.0000  rmse 0.0167
+eval dambreak-small   tick   20  corr 1.0000  rmse 0.0499
+eval dambreak-small   tick   40  corr 0.9981  rmse 0.3902
+eval dambreak-small   tick   59  corr 0.9861  rmse 1.3466
+eval drop-small       tick    5  corr 1.0000  rmse 0.0079
+eval drop-small       tick   10  corr 1.0000  rmse 0.0219
+eval drop-small       tick   20  corr 1.0000  rmse 0.0631
+eval drop-small       tick   40  corr 0.9992  rmse 1.1579
+eval drop-small       tick   59  corr 0.9965  rmse 2.8825
+eval dambreak-v0      tick    5  corr 1.0000  rmse 0.0062
+eval dambreak-v0      tick   10  corr 1.0000  rmse 0.0154
+eval dambreak-v0      tick   20  corr 1.0000  rmse 0.0438
+eval dambreak-v0      tick   40  corr 0.9989  rmse 0.3785
+eval dambreak-v0      tick   59  corr 0.9922  rmse 1.2371
+eval dambreak-v1      tick    5  corr 1.0000  rmse 0.0064
+eval dambreak-v1      tick   10  corr 1.0000  rmse 0.0162
+eval dambreak-v1      tick   20  corr 1.0000  rmse 0.0459
+eval dambreak-v1      tick   40  corr 0.9982  rmse 0.5172
+eval dambreak-v1      tick   59  corr 0.9898  rmse 1.6585
+eval dambreak-v2      tick    5  corr 1.0000  rmse 0.0068
+eval dambreak-v2      tick   10  corr 1.0000  rmse 0.0178
+eval dambreak-v2      tick   20  corr 0.9999  rmse 0.0529
+eval dambreak-v2      tick   40  corr 0.9970  rmse 0.4809
+eval dambreak-v2      tick   59  corr 0.9813  rmse 1.6633
+eval drop-v0          tick    5  corr 1.0000  rmse 0.0075
+eval drop-v0          tick   10  corr 1.0000  rmse 0.0205
+eval drop-v0          tick   20  corr 1.0000  rmse 0.0592
+eval drop-v0          tick   40  corr 0.9992  rmse 1.1098
+eval drop-v0          tick   59  corr 0.9960  rmse 2.8487
+eval drop-v1          tick    5  corr 1.0000  rmse 0.0071
+eval drop-v1          tick   10  corr 1.0000  rmse 0.0193
+eval drop-v1          tick   20  corr 1.0000  rmse 0.0557
+eval drop-v1          tick   40  corr 0.9993  rmse 1.0450
+eval drop-v1          tick   59  corr 0.9962  rmse 2.8099
+eval drop-v2          tick    5  corr 1.0000  rmse 0.0085
+eval drop-v2          tick   10  corr 1.0000  rmse 0.0239
+eval drop-v2          tick   20  corr 1.0000  rmse 0.0677
+eval drop-v2          tick   40  corr 0.9993  rmse 1.1878
+eval drop-v2          tick   59  corr 0.9971  rmse 2.8965
