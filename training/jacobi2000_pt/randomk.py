@@ -57,12 +57,12 @@ def load_from_export_padded_meta(export_dir: str, extra_dims: int = 1):
 def fit_random_k(model: Jacobi2000, dataset: TrajectoryDataset, norm: Normalizer, ks: list[int],
                   steps: int, lr: float, batch: int, mask, device: torch.device,
                   project: bool, project_energy_on: bool, r_max: float,
-                  on_log=lambda row: None):
+                  on_log=lambda row: None, seed: int = 0):
     model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     denorm = Denorm(mean=norm.mean, std=norm.std, depth=norm.depth)
     base_meta = torch.from_numpy(dataset.meta_vector()).to(device)
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
 
     t0 = time.time()
     for step in range(steps):
@@ -148,19 +148,22 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--baseline", required=True, help="export dir to warm-start the body from and compare against")
     ap.add_argument("--ks", default="1,2,4,8", type=lambda s: [int(x) for x in s.split(",")])
-    ap.add_argument("--eval-k", type=int, default=8, help="horizon to condition on for the comparison")
+    ap.add_argument("--eval-ks", default="8", type=lambda s: [int(x) for x in s.split(",")],
+                     help="one or more horizons to condition on and compare against the baseline, "
+                          "each at the same total --eval-horizon")
+    ap.add_argument("--eval-horizon", type=int, default=40)
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--project", type=lambda s: s.lower() == "true", default=True)
     ap.add_argument("--project-energy", type=lambda s: s.lower() == "true", default=True)
     ap.add_argument("--r-max", type=float, default=1.0001)
-    ap.add_argument("--n-repeats", type=int, default=5)
     ap.add_argument("--eval-trajectories", type=int, default=16)
+    ap.add_argument("--seed", type=int, default=0, help="controls minibatch sampling order (which k, which trajectory) during training")
     ap.add_argument("--log-file", default=None)
     args = ap.parse_args()
 
-    torch.manual_seed(0)
+    torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = TrajectoryDataset(args.dataset)
     norm = dataset.fit_normalizer()
@@ -174,7 +177,7 @@ def main():
 
     model, _, base_meta_dim = load_from_export_padded_meta(args.baseline, extra_dims=1)
     print(f"random-k model: {model.num_params()} params, device {device}, "
-          f"meta_dim {base_meta_dim} -> {model.cfg.meta_dim}, ks={args.ks}")
+          f"meta_dim {base_meta_dim} -> {model.cfg.meta_dim}, ks={args.ks}, seed {args.seed}")
 
     log_rows = []
 
@@ -184,7 +187,7 @@ def main():
 
     t0 = time.time()
     fit_random_k(model, dataset, norm, args.ks, args.steps, args.lr, args.batch, mask, device,
-                 args.project, args.project_energy, args.r_max, on_log)
+                 args.project, args.project_energy, args.r_max, on_log, seed=args.seed)
     wall = time.time() - t0
     print(f"training wall time: {wall:.1f}s")
 
@@ -195,25 +198,31 @@ def main():
         energy_r_max=args.r_max, out_dir=args.out,
     )
 
-    rows, horizon = compare(model, baseline_model, dataset, norm, args.eval_k, args.n_repeats, mask, device,
-                             args.eval_trajectories)
-    mean_rk_corr = float(np.mean([r["randomk_corr"] for r in rows]))
-    mean_baseline_corr = float(np.mean([r["baseline_corr"] for r in rows]))
-    mean_rk_rmse = float(np.mean([r["randomk_rmse"] for r in rows]))
-    mean_baseline_rmse = float(np.mean([r["baseline_rmse"] for r in rows]))
-    total_rk_secs = float(np.sum([r["randomk_secs"] for r in rows]))
-    total_baseline_secs = float(np.sum([r["baseline_secs"] for r in rows]))
-    print(f"horizon {horizon} ticks ({args.n_repeats} x random-k(k={args.eval_k}) vs {args.n_repeats * args.eval_k} x baseline-1)")
-    print(f"random-k: mean corr {mean_rk_corr:.4f}  mean rmse {mean_rk_rmse:.4f}  total wall {total_rk_secs:.4f}s")
-    print(f"baseline: mean corr {mean_baseline_corr:.4f}  mean rmse {mean_baseline_rmse:.4f}  total wall {total_baseline_secs:.4f}s")
-
-    if args.log_file:
-        Path(args.log_file).write_text(json.dumps({
-            "rows": log_rows, "compare": rows, "horizon": horizon,
-            "wall_seconds": wall, "params": model.num_params(),
+    by_k = {}
+    for eval_k in args.eval_ks:
+        n_repeats = args.eval_horizon // eval_k
+        rows, horizon = compare(model, baseline_model, dataset, norm, eval_k, n_repeats, mask, device,
+                                 args.eval_trajectories)
+        mean_rk_corr = float(np.mean([r["randomk_corr"] for r in rows]))
+        mean_baseline_corr = float(np.mean([r["baseline_corr"] for r in rows]))
+        mean_rk_rmse = float(np.mean([r["randomk_rmse"] for r in rows]))
+        mean_baseline_rmse = float(np.mean([r["baseline_rmse"] for r in rows]))
+        total_rk_secs = float(np.sum([r["randomk_secs"] for r in rows]))
+        total_baseline_secs = float(np.sum([r["baseline_secs"] for r in rows]))
+        print(f"eval-k={eval_k}  horizon {horizon} ticks ({n_repeats} x random-k(k={eval_k}) vs {horizon} x baseline-1)")
+        print(f"random-k: mean corr {mean_rk_corr:.4f}  mean rmse {mean_rk_rmse:.4f}  total wall {total_rk_secs:.4f}s")
+        print(f"baseline: mean corr {mean_baseline_corr:.4f}  mean rmse {mean_baseline_rmse:.4f}  total wall {total_baseline_secs:.4f}s")
+        by_k[eval_k] = {
+            "rows": rows, "horizon": horizon,
             "mean_randomk_corr": mean_rk_corr, "mean_baseline_corr": mean_baseline_corr,
             "mean_randomk_rmse": mean_rk_rmse, "mean_baseline_rmse": mean_baseline_rmse,
             "total_randomk_secs": total_rk_secs, "total_baseline_secs": total_baseline_secs,
+        }
+
+    if args.log_file:
+        Path(args.log_file).write_text(json.dumps({
+            "rows": log_rows, "by_k": by_k,
+            "wall_seconds": wall, "params": model.num_params(), "seed": args.seed,
         }, indent=2))
 
 

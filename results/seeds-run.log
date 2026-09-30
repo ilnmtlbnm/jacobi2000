@@ -1,0 +1,183 @@
+direct-8 model: 995843 params, device cuda, seed 0
+step      1  loss 0.104972  0.4s
+step    100  loss 0.013252  2.2s
+step    200  loss 0.005411  3.9s
+step    300  loss 0.038775  5.9s
+step    400  loss 0.002061  7.8s
+step    500  loss 0.175744  9.9s
+step    600  loss 0.001192  12.0s
+step    700  loss 0.003017  14.2s
+step    800  loss 0.002877  16.4s
+step    900  loss 0.003814  18.0s
+step   1000  loss 0.008667  20.0s
+step   1100  loss 0.000662  22.1s
+step   1200  loss 0.016823  23.6s
+step   1300  loss 0.000941  25.0s
+step   1400  loss 0.080766  26.8s
+step   1500  loss 0.125635  28.7s
+step   1600  loss 0.005864  30.8s
+step   1700  loss 0.000550  32.9s
+step   1800  loss 0.012524  35.1s
+step   1900  loss 0.002683  37.1s
+step   2000  loss 0.005426  39.1s
+training wall time: 39.7s
+horizon 40 ticks (5 x direct-8 vs 40 x baseline-1)
+direct:   mean corr 0.6917  total wall 0.1948s
+baseline: mean corr 0.7464  total wall 1.3198s
+random-k model: 995971 params, device cuda, meta_dim 5 -> 6, ks=[1, 2, 4, 8], seed 0
+step      1  k 8  loss 0.276148  0.4s
+step    100  k 4  loss 0.010096  2.4s
+step    200  k 2  loss 0.012728  4.3s
+step    300  k 4  loss 0.001692  6.3s
+step    400  k 2  loss 0.002845  8.3s
+step    500  k 2  loss 0.020700  10.3s
+step    600  k 4  loss 0.002002  12.2s
+step    700  k 8  loss 0.029263  14.0s
+step    800  k 4  loss 0.003694  16.0s
+step    900  k 1  loss 0.000208  18.1s
+step   1000  k 8  loss 0.006142  20.1s
+step   1100  k 4  loss 0.021220  22.2s
+step   1200  k 2  loss 0.002335  24.2s
+step   1300  k 1  loss 0.000988  26.2s
+step   1400  k 2  loss 0.000773  28.2s
+step   1500  k 4  loss 0.006048  30.3s
+step   1600  k 1  loss 0.000862  32.2s
+step   1700  k 8  loss 0.012415  34.3s
+step   1800  k 4  loss 0.003007  36.3s
+step   1900  k 8  loss 0.005777  38.3s
+step   2000  k 2  loss 0.000204  40.3s
+training wall time: 40.9s
+eval-k=1  horizon 40 ticks (40 x random-k(k=1) vs 40 x baseline-1)
+random-k: mean corr 0.2892  mean rmse 1.1061  total wall 1.4588s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.4326s
+eval-k=2  horizon 40 ticks (20 x random-k(k=2) vs 40 x baseline-1)
+random-k: mean corr 0.8011  mean rmse 0.4608  total wall 0.7064s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.4071s
+eval-k=4  horizon 40 ticks (10 x random-k(k=4) vs 40 x baseline-1)
+random-k: mean corr 0.6553  mean rmse 0.5938  total wall 0.3424s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3708s
+eval-k=8  horizon 40 ticks (5 x random-k(k=8) vs 40 x baseline-1)
+random-k: mean corr 0.8767  mean rmse 0.3181  total wall 0.1761s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3972s
+direct-8 model: 995843 params, device cuda, seed 1
+step      1  loss 0.218182  0.4s
+step    100  loss 0.025830  2.3s
+step    200  loss 0.008286  3.8s
+step    300  loss 0.001897  5.2s
+step    400  loss 0.013941  7.0s
+step    500  loss 0.014485  9.0s
+step    600  loss 0.004833  11.1s
+step    700  loss 0.000902  13.3s
+step    800  loss 0.001078  15.3s
+step    900  loss 0.099668  17.3s
+step   1000  loss 0.000747  19.3s
+step   1100  loss 0.005346  21.3s
+step   1200  loss 0.001448  23.3s
+step   1300  loss 0.011936  25.3s
+step   1400  loss 0.004111  27.3s
+step   1500  loss 0.010886  29.3s
+step   1600  loss 0.087740  31.2s
+step   1700  loss 0.002074  33.2s
+step   1800  loss 0.001084  35.1s
+step   1900  loss 0.001087  37.0s
+step   2000  loss 0.003319  38.7s
+training wall time: 39.3s
+horizon 40 ticks (5 x direct-8 vs 40 x baseline-1)
+direct:   mean corr 0.4871  total wall 0.1955s
+baseline: mean corr 0.7464  total wall 1.3567s
+random-k model: 995971 params, device cuda, meta_dim 5 -> 6, ks=[1, 2, 4, 8], seed 1
+step      1  k 2  loss 0.001858  0.4s
+step    100  k 8  loss 0.054323  2.3s
+step    200  k 4  loss 0.006095  4.3s
+step    300  k 8  loss 0.054167  6.3s
+step    400  k 2  loss 0.004913  8.3s
+step    500  k 8  loss 0.382424  9.8s
+step    600  k 1  loss 0.000338  11.8s
+step    700  k 8  loss 0.168703  13.8s
+step    800  k 4  loss 0.013433  15.7s
+step    900  k 1  loss 0.008108  17.7s
+step   1000  k 2  loss 0.001377  19.7s
+step   1100  k 2  loss 0.001806  21.6s
+step   1200  k 1  loss 0.000408  23.6s
+step   1300  k 1  loss 0.002665  25.6s
+step   1400  k 4  loss 0.002451  27.6s
+step   1500  k 2  loss 0.000901  29.5s
+step   1600  k 2  loss 0.000685  31.2s
+step   1700  k 8  loss 0.010533  32.9s
+step   1800  k 2  loss 0.002494  34.9s
+step   1900  k 4  loss 0.002044  36.5s
+step   2000  k 2  loss 0.000434  38.0s
+training wall time: 38.7s
+eval-k=1  horizon 40 ticks (40 x random-k(k=1) vs 40 x baseline-1)
+random-k: mean corr 0.8749  mean rmse 0.4215  total wall 1.3479s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3217s
+eval-k=2  horizon 40 ticks (20 x random-k(k=2) vs 40 x baseline-1)
+random-k: mean corr 0.7599  mean rmse 0.4979  total wall 0.6636s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3265s
+eval-k=4  horizon 40 ticks (10 x random-k(k=4) vs 40 x baseline-1)
+random-k: mean corr 0.8556  mean rmse 0.4067  total wall 0.3346s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3356s
+eval-k=8  horizon 40 ticks (5 x random-k(k=8) vs 40 x baseline-1)
+random-k: mean corr 0.9267  mean rmse 0.2393  total wall 0.1687s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3362s
+direct-8 model: 995843 params, device cuda, seed 2
+step      1  loss 0.162708  0.4s
+step    100  loss 0.047383  2.2s
+step    200  loss 0.001743  3.9s
+step    300  loss 0.014390  5.6s
+step    400  loss 0.022017  7.3s
+step    500  loss 0.001182  8.7s
+step    600  loss 0.025855  9.9s
+step    700  loss 0.003765  11.3s
+step    800  loss 0.001034  13.0s
+step    900  loss 0.006863  14.6s
+step   1000  loss 0.025413  16.2s
+step   1100  loss 0.000936  18.2s
+step   1200  loss 0.001450  20.4s
+step   1300  loss 0.138491  22.5s
+step   1400  loss 0.001172  24.6s
+step   1500  loss 0.001555  26.8s
+step   1600  loss 0.000804  29.0s
+step   1700  loss 0.001186  31.2s
+step   1800  loss 0.000751  33.4s
+step   1900  loss 0.001930  35.6s
+step   2000  loss 0.012963  37.8s
+training wall time: 38.4s
+horizon 40 ticks (5 x direct-8 vs 40 x baseline-1)
+direct:   mean corr 0.4918  total wall 0.1991s
+baseline: mean corr 0.7464  total wall 1.3437s
+random-k model: 995971 params, device cuda, meta_dim 5 -> 6, ks=[1, 2, 4, 8], seed 2
+step      1  k 8  loss 0.201607  0.4s
+step    100  k 2  loss 0.005664  2.5s
+step    200  k 8  loss 0.127419  4.5s
+step    300  k 1  loss 0.000366  6.5s
+step    400  k 1  loss 0.003571  8.3s
+step    500  k 2  loss 0.002371  10.1s
+step    600  k 2  loss 0.002871  12.1s
+step    700  k 8  loss 0.002645  14.1s
+step    800  k 2  loss 0.001197  15.5s
+step    900  k 1  loss 0.781065  16.6s
+step   1000  k 4  loss 0.003682  18.5s
+step   1100  k 2  loss 0.002954  20.5s
+step   1200  k 2  loss 0.001034  22.6s
+step   1300  k 8  loss 0.011958  24.6s
+step   1400  k 2  loss 0.000699  26.6s
+step   1500  k 1  loss 0.002922  28.6s
+step   1600  k 2  loss 0.000486  30.5s
+step   1700  k 1  loss 0.034016  32.1s
+step   1800  k 8  loss 0.007898  34.1s
+step   1900  k 2  loss 0.000324  36.2s
+step   2000  k 8  loss 0.012633  37.8s
+training wall time: 38.4s
+eval-k=1  horizon 40 ticks (40 x random-k(k=1) vs 40 x baseline-1)
+random-k: mean corr 0.7828  mean rmse 0.4536  total wall 1.3601s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3339s
+eval-k=2  horizon 40 ticks (20 x random-k(k=2) vs 40 x baseline-1)
+random-k: mean corr 0.7662  mean rmse 0.5183  total wall 0.6695s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3345s
+eval-k=4  horizon 40 ticks (10 x random-k(k=4) vs 40 x baseline-1)
+random-k: mean corr 0.8692  mean rmse 0.3726  total wall 0.3301s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3124s
+eval-k=8  horizon 40 ticks (5 x random-k(k=8) vs 40 x baseline-1)
+random-k: mean corr 0.8820  mean rmse 0.3372  total wall 0.1696s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3435s

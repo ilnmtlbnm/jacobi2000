@@ -35,12 +35,12 @@ from .project import Denorm, energy, project_energy, project_mass
 def fit_direct_k(model: Jacobi2000, dataset: TrajectoryDataset, norm: Normalizer, k: int,
                   steps: int, lr: float, batch: int, mask, device: torch.device,
                   project: bool, project_energy_on: bool, r_max: float,
-                  on_log=lambda row: None):
+                  on_log=lambda row: None, seed: int = 0):
     model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     denorm = Denorm(mean=norm.mean, std=norm.std, depth=norm.depth)
     meta_vec = torch.from_numpy(dataset.meta_vector()).to(device)
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
 
     t0 = time.time()
     for step in range(steps):
@@ -131,10 +131,11 @@ def main():
     ap.add_argument("--init", default=None)
     ap.add_argument("--n-repeats", type=int, default=5, help="how many k-jumps for the comparison horizon")
     ap.add_argument("--eval-trajectories", type=int, default=16)
+    ap.add_argument("--seed", type=int, default=0, help="controls minibatch sampling order during training")
     ap.add_argument("--log-file", default=None)
     args = ap.parse_args()
 
-    torch.manual_seed(0)
+    torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = TrajectoryDataset(args.dataset)
     norm = dataset.fit_normalizer()
@@ -149,7 +150,7 @@ def main():
         model, _ = load_from_export(args.init)
     else:
         model, _ = load_from_export(args.baseline)  # warm start from the same architecture/weights
-    print(f"direct-{args.k} model: {model.num_params()} params, device {device}")
+    print(f"direct-{args.k} model: {model.num_params()} params, device {device}, seed {args.seed}")
 
     log_rows = []
 
@@ -159,7 +160,7 @@ def main():
 
     t0 = time.time()
     fit_direct_k(model, dataset, norm, args.k, args.steps, args.lr, args.batch, mask, device,
-                 args.project, args.project_energy, args.r_max, on_log)
+                 args.project, args.project_energy, args.r_max, on_log, seed=args.seed)
     wall = time.time() - t0
     print(f"training wall time: {wall:.1f}s")
 
