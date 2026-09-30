@@ -1,0 +1,26 @@
+model: 373848 params, device cuda, kx=10 ky=10
+step      1  loss 0.118584  0.3s
+step    200  loss 0.061199  3.5s
+step    400  loss 0.046420  7.0s
+step    600  loss 0.043103  10.5s
+step    800  loss 0.075887  14.0s
+step   1000  loss 0.074822  17.5s
+step   1200  loss 0.203601  20.8s
+step   1400  loss 0.105900  23.5s
+step   1600  loss 0.157649  26.1s
+step   1800  loss 0.149950  28.8s
+step   2000  loss 0.095179  31.4s
+step   2200  loss 0.046699  34.1s
+step   2400  loss 0.026634  36.7s
+step   2600  loss 0.081799  39.8s
+step   2800  loss 0.098086  43.3s
+step   3000  loss 0.081983  46.6s
+step   3200  loss 0.038949  50.0s
+step   3400  loss 0.079985  53.3s
+step   3600  loss 0.026148  56.8s
+step   3800  loss 0.148224  60.2s
+step   4000  loss 0.065964  63.4s
+training wall time: 64.2s
+horizon   10  mean corr 0.8197  mean rmse 0.3116
+horizon   25  mean corr 0.5419  mean rmse 0.6075
+horizon   50  mean corr 0.2091  mean rmse 0.8688
