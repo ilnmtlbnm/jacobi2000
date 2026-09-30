@@ -91,4 +91,49 @@ Full per-trajectory rows: `results/modes-log.json`. Raw run log:
   add but wasn't, for time. Flagged as a gap, not attempted.
 - Not attempted: importing this architecture into the Rust side (would need
   a new `Jacobi2000`-sibling type and a new weights layout, out of scope for
-  one night), a `k` sweep, and picture output.
+  one night), and picture output.
+
+## Follow-up (same night, later) — truncation `k` sweep
+
+Same recipe (4000 steps, rollout 8, batch 16, hidden 256, same dataset), only
+`--k` varied: 4, 10 (original run), 16, 24.
+
+```
+python -m jacobi2000_pt.modes --dataset data/sw-nu001 --out results/modes-k<K> \
+  --steps 4000 --lr 1e-3 --rollout 8 --batch 16 --k <K> --hidden 256 \
+  --horizons 10,25,50 --eval-trajectories 16
+```
+
+| k | params | wall (s) | corr@10 | corr@25 | corr@50 |
+|---:|---:|---:|---:|---:|---:|
+| 4 | 115,296 | 54.6 | 0.7930 | 0.5840 | **0.4926** |
+| 10 (original) | 373,848 | 64.2 | 0.8197 | 0.5419 | 0.2091 |
+| 16 | 854,016 | 52.7 | 0.8002 | 0.4966 | 0.1463 |
+| 24 | 1,838,976 | 59.2 | 0.6477 | 0.1620 | -0.0798 |
+
+Full rows: `results/modes-k4-log.json`, `results/modes-k16-log.json`,
+`results/modes-k24-log.json`. Run log: `results/modes-sweep-run.log`.
+
+### Is truncation the limit?
+
+**No -- the opposite.** Accuracy at every horizon gets *worse* as `k`
+increases (monotonically at horizon 50: 0.4926 -> 0.2091 -> 0.1463 ->
+-0.0798, the last one below zero, i.e. anti-correlated with truth), even
+though a larger `k` keeps strictly more information (a larger truncation is
+a superset of a smaller one -- the model can express everything a smaller-k
+model can, plus more). This rules out the mode-models doc's original
+hypothesis ("the truncation itself... is likely the dominant error source")
+as the dominant effect at this training budget: if truncation were the
+binding constraint, more modes could only help or stay flat, never hurt this
+consistently. The more likely explanation is a fixed 4000-step budget
+becoming steadily less sufficient as the mode-space dimension (and parameter
+count) grows 16x from k=4 to k=24 -- the same MLP depth/width has to fit a
+much higher-dimensional input/output space in the same number of gradient
+steps. Not ablated further tonight (would need a per-k step-count or
+learning-rate sweep to separate "needs more steps" from "the architecture
+doesn't scale to larger k" cleanly).
+- Practical read: k=4 (115K params, the smallest and cheapest model in the
+  sweep) is the best of the four at every horizon shown, including beating
+  the original k=10 choice made without a sweep. If mode models are
+  revisited, k=4 with more training steps is the next thing to try, not a
+  larger k.

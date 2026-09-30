@@ -1,0 +1,78 @@
+model: 115296 params, device cuda, kx=4 ky=4
+step      1  loss 0.104617  0.2s
+step    200  loss 0.057531  2.9s
+step    400  loss 0.043242  5.6s
+step    600  loss 0.039120  8.1s
+step    800  loss 0.068009  10.7s
+step   1000  loss 0.070911  13.4s
+step   1200  loss 0.174821  16.1s
+step   1400  loss 0.098693  18.8s
+step   1600  loss 0.146207  22.2s
+step   1800  loss 0.123940  25.5s
+step   2000  loss 0.096465  27.5s
+step   2200  loss 0.047701  29.6s
+step   2400  loss 0.025411  31.7s
+step   2600  loss 0.082900  33.8s
+step   2800  loss 0.080334  36.0s
+step   3000  loss 0.076049  38.1s
+step   3200  loss 0.041727  40.9s
+step   3400  loss 0.087858  44.0s
+step   3600  loss 0.029591  47.0s
+step   3800  loss 0.138580  50.4s
+step   4000  loss 0.074495  53.9s
+training wall time: 54.6s
+horizon   10  mean corr 0.7930  mean rmse 0.3161
+horizon   25  mean corr 0.5840  mean rmse 0.5696
+horizon   50  mean corr 0.4926  mean rmse 0.6896
+model: 854016 params, device cuda, kx=16 ky=16
+step      1  loss 0.104111  0.2s
+step    200  loss 0.062120  2.8s
+step    400  loss 0.047684  5.4s
+step    600  loss 0.042767  8.1s
+step    800  loss 0.071473  10.6s
+step   1000  loss 0.076095  12.8s
+step   1200  loss 0.201448  14.9s
+step   1400  loss 0.119208  17.7s
+step   1600  loss 0.182037  20.4s
+step   1800  loss 0.148587  23.0s
+step   2000  loss 0.099463  25.6s
+step   2200  loss 0.048976  28.3s
+step   2400  loss 0.025763  30.9s
+step   2600  loss 0.090254  33.5s
+step   2800  loss 0.095734  36.1s
+step   3000  loss 0.093635  38.6s
+step   3200  loss 0.053528  41.2s
+step   3400  loss 0.089670  43.7s
+step   3600  loss 0.027658  46.0s
+step   3800  loss 0.155940  48.9s
+step   4000  loss 0.076983  51.9s
+training wall time: 52.7s
+horizon   10  mean corr 0.8002  mean rmse 0.3272
+horizon   25  mean corr 0.4966  mean rmse 0.6440
+horizon   50  mean corr 0.1463  mean rmse 0.9555
+model: 1838976 params, device cuda, kx=24 ky=24
+step      1  loss 0.109357  0.2s
+step    200  loss 0.062514  3.0s
+step    400  loss 0.048199  5.6s
+step    600  loss 0.045979  8.1s
+step    800  loss 0.072640  10.7s
+step   1000  loss 0.076080  13.2s
+step   1200  loss 0.210027  16.1s
+step   1400  loss 0.128562  19.4s
+step   1600  loss 0.179317  22.8s
+step   1800  loss 0.151833  26.1s
+step   2000  loss 0.111038  29.3s
+step   2200  loss 0.056929  32.2s
+step   2400  loss 0.031948  35.4s
+step   2600  loss 0.099703  38.6s
+step   2800  loss 0.115622  41.9s
+step   3000  loss 0.120569  45.1s
+step   3200  loss 0.083211  47.9s
+step   3400  loss 0.165482  50.6s
+step   3600  loss 0.053181  53.2s
+step   3800  loss 0.226071  55.8s
+step   4000  loss 0.125946  58.5s
+training wall time: 59.2s
+horizon   10  mean corr 0.6477  mean rmse 0.4280
+horizon   25  mean corr 0.1620  mean rmse 0.7979
+horizon   50  mean corr -0.0798  mean rmse 1.0237
