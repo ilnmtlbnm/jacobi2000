@@ -1,0 +1,26 @@
+random-k model: 995971 params, device cuda, meta_dim 5 -> 6, ks=[1, 2, 4, 8]
+step      1  k 8  loss 0.276148  0.4s
+step    100  k 4  loss 0.010040  2.4s
+step    200  k 2  loss 0.019830  4.4s
+step    300  k 4  loss 0.002261  6.4s
+step    400  k 2  loss 0.004396  8.5s
+step    500  k 2  loss 0.007411  10.5s
+step    600  k 4  loss 0.002706  12.2s
+step    700  k 8  loss 0.026875  13.8s
+step    800  k 4  loss 0.003932  15.8s
+step    900  k 1  loss 0.000220  17.8s
+step   1000  k 8  loss 0.009386  19.8s
+step   1100  k 4  loss 0.020894  21.8s
+step   1200  k 2  loss 0.002184  23.8s
+step   1300  k 1  loss 0.001495  25.8s
+step   1400  k 2  loss 0.000765  27.3s
+step   1500  k 4  loss 0.006406  28.4s
+step   1600  k 1  loss 0.000998  29.7s
+step   1700  k 8  loss 0.006554  31.1s
+step   1800  k 4  loss 0.002932  33.1s
+step   1900  k 8  loss 0.006435  35.2s
+step   2000  k 2  loss 0.000755  36.5s
+training wall time: 37.1s
+horizon 40 ticks (5 x random-k(k=8) vs 40 x baseline-1)
+random-k: mean corr 0.8934  mean rmse 0.2892  total wall 0.1926s
+baseline: mean corr 0.7464  mean rmse 0.3957  total wall 1.3365s
