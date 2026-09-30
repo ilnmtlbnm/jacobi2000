@@ -1,0 +1,75 @@
+train trajectories: ['dambreak', 'dambreak-small', 'dambreak-v0', 'dambreak-v1', 'dambreak-v2']
+held-out trajectories: ['drop', 'drop-small', 'drop-v0', 'drop-v1', 'drop-v2']
+model: 30822 params, device cuda
+step      1  loss 0.001588  0.4s
+step    300  loss 0.001068  9.7s
+step    600  loss 0.000061  19.4s
+step    900  loss 0.001023  29.1s
+step   1200  loss 0.000019  37.9s
+step   1500  loss 0.001395  47.7s
+step   1800  loss 0.001171  57.5s
+step   2100  loss 0.000017  67.3s
+step   2400  loss 0.000733  76.6s
+step   2700  loss 0.000609  86.3s
+step   3000  loss 0.000141  96.3s
+step   3300  loss 0.000641  106.3s
+step   3600  loss 0.000022  116.0s
+step   3900  loss 0.000020  125.8s
+step   4200  loss 0.000870  134.1s
+step   4500  loss 0.000516  143.8s
+step   4800  loss 0.000979  153.2s
+step   5100  loss 0.000853  162.9s
+step   5400  loss 0.000501  172.6s
+step   5700  loss 0.000491  182.4s
+step   6000  loss 0.001699  192.2s
+training wall time: 193.0s
+eval[train] dambreak         tick    5  corr 1.0000  rmse 0.0053
+eval[train] dambreak         tick   10  corr 1.0000  rmse 0.0111
+eval[train] dambreak         tick   20  corr 1.0000  rmse 0.0338
+eval[train] dambreak         tick   40  corr 0.9992  rmse 0.3865
+eval[train] dambreak         tick   59  corr 0.9940  rmse 1.2263
+eval[train] dambreak-small   tick    5  corr 1.0000  rmse 0.0057
+eval[train] dambreak-small   tick   10  corr 1.0000  rmse 0.0120
+eval[train] dambreak-small   tick   20  corr 1.0000  rmse 0.0408
+eval[train] dambreak-small   tick   40  corr 0.9977  rmse 0.4088
+eval[train] dambreak-small   tick   59  corr 0.9802  rmse 1.4178
+eval[train] dambreak-v0      tick    5  corr 1.0000  rmse 0.0055
+eval[train] dambreak-v0      tick   10  corr 1.0000  rmse 0.0114
+eval[train] dambreak-v0      tick   20  corr 1.0000  rmse 0.0362
+eval[train] dambreak-v0      tick   40  corr 0.9988  rmse 0.3894
+eval[train] dambreak-v0      tick   59  corr 0.9908  rmse 1.2717
+eval[train] dambreak-v1      tick    5  corr 1.0000  rmse 0.0054
+eval[train] dambreak-v1      tick   10  corr 1.0000  rmse 0.0113
+eval[train] dambreak-v1      tick   20  corr 1.0000  rmse 0.0369
+eval[train] dambreak-v1      tick   40  corr 0.9981  rmse 0.5215
+eval[train] dambreak-v1      tick   59  corr 0.9892  rmse 1.6719
+eval[train] dambreak-v2      tick    5  corr 1.0000  rmse 0.0057
+eval[train] dambreak-v2      tick   10  corr 1.0000  rmse 0.0121
+eval[train] dambreak-v2      tick   20  corr 1.0000  rmse 0.0422
+eval[train] dambreak-v2      tick   40  corr 0.9967  rmse 0.4922
+eval[train] dambreak-v2      tick   59  corr 0.9768  rmse 1.7098
+eval[held_out] drop             tick    5  corr 1.0000  rmse 0.0056
+eval[held_out] drop             tick   10  corr 1.0000  rmse 0.0116
+eval[held_out] drop             tick   20  corr 1.0000  rmse 0.0425
+eval[held_out] drop             tick   40  corr 0.9993  rmse 1.0693
+eval[held_out] drop             tick   59  corr 0.9958  rmse 2.8477
+eval[held_out] drop-small       tick    5  corr 1.0000  rmse 0.0058
+eval[held_out] drop-small       tick   10  corr 1.0000  rmse 0.0120
+eval[held_out] drop-small       tick   20  corr 1.0000  rmse 0.0464
+eval[held_out] drop-small       tick   40  corr 0.9992  rmse 1.1597
+eval[held_out] drop-small       tick   59  corr 0.9962  rmse 2.9166
+eval[held_out] drop-v0          tick    5  corr 1.0000  rmse 0.0056
+eval[held_out] drop-v0          tick   10  corr 1.0000  rmse 0.0117
+eval[held_out] drop-v0          tick   20  corr 1.0000  rmse 0.0437
+eval[held_out] drop-v0          tick   40  corr 0.9992  rmse 1.1116
+eval[held_out] drop-v0          tick   59  corr 0.9957  rmse 2.8891
+eval[held_out] drop-v1          tick    5  corr 1.0000  rmse 0.0055
+eval[held_out] drop-v1          tick   10  corr 1.0000  rmse 0.0115
+eval[held_out] drop-v1          tick   20  corr 1.0000  rmse 0.0415
+eval[held_out] drop-v1          tick   40  corr 0.9993  rmse 1.0467
+eval[held_out] drop-v1          tick   59  corr 0.9959  rmse 2.8545
+eval[held_out] drop-v2          tick    5  corr 1.0000  rmse 0.0060
+eval[held_out] drop-v2          tick   10  corr 1.0000  rmse 0.0124
+eval[held_out] drop-v2          tick   20  corr 1.0000  rmse 0.0492
+eval[held_out] drop-v2          tick   40  corr 0.9993  rmse 1.1875
+eval[held_out] drop-v2          tick   59  corr 0.9970  rmse 2.9181

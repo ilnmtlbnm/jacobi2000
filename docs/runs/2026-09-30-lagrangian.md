@@ -98,7 +98,62 @@ format since this is not the `Jacobi2000` architecture).
 - What's not done: a spatial hash (particle counts here are small enough
   that the brute-force `cdist` neighbor search was fine; CONCEPT's "rebuilt
   each tick, spatial hash" is a scaling concern for larger particle counts,
-  not exercised here), a held-out trajectory split, comparing against a
-  from-scratch grid-splat baseline trained on the same 10 trajectories (the
+  not exercised here -- see the follow-up below), comparing against a
+  from-scratch grid-splat baseline trained on the same trajectories (the
   only fair apples-to-apples comparison), and wiring this into `web/` or
   `eval-metrics` (a new architecture, no Rust-side support).
+
+## Follow-up (same night, later) — held-out split, different initial-condition family
+
+Added `--held-out-prefix` to `lagrangian.py`: trajectories whose name starts
+with the given prefix are excluded from training and scored separately.
+Trained on the 5 dam-break variants only, held out all 5 drop variants
+entirely (a different initial-condition family, not just an unseen seed of
+the same one):
+
+```
+python -m jacobi2000_pt.lagrangian --data data/sph --out results/lagrangian-split \
+  --steps 6000 --lr 1e-3 --rollout 6 --k 10 --layers 3 --hidden 96 \
+  --horizons 5,10,20,40,59 --held-out-prefix drop
+```
+
+30,822 params (unchanged), wall clock **193.0 s** on the 3080 (effectively
+the same as the first pass's 192.4 s -- training set size doesn't change
+per-step cost, since each step draws one trajectory).
+
+Mean correlation and RMSE, train (5 dam-break trajectories) vs. held-out (5
+drop trajectories, never seen during training):
+
+| tick | train corr | held-out corr | train rmse | held-out rmse |
+|---:|---:|---:|---:|---:|
+| 5 | 1.0000 | 1.0000 | 0.0055 | 0.0057 |
+| 10 | 1.0000 | 1.0000 | 0.0116 | 0.0119 |
+| 20 | 1.0000 | 1.0000 | 0.0380 | 0.0447 |
+| 40 | 0.9981 | 0.9993 | 0.4397 | 1.1149 |
+| 59 | 0.9862 | 0.9961 | 1.4595 | 2.8852 |
+
+Full rows: `results/lagrangian-split-log.json`. Run log:
+`results/lagrangian-split-run.log`.
+
+### Observation
+
+Correlation on the held-out drop family is **not worse** than on the
+training dam-break family at any horizon (in fact slightly higher at ticks
+40/59: 0.9993/0.9961 vs 0.9981/0.9862) -- the Newton-III message-passing
+layer generalizes to an initial-condition family it never trained on, at
+least on this correlation metric. **This is not a clean win, and the RMSE
+column shows why**: held-out RMSE is 2-2.5x train RMSE at ticks 40/59
+(1.11 vs 0.44, 2.89 vs 1.46). That gap matches exactly the gap already seen
+in the first pass, when drop trajectories *were* part of training (drop's
+tick-59 RMSE there was 2.80-2.90, dambreak's was 1.24-1.66) -- drop
+trajectories simply involve more particle displacement (a blob falling
+through empty space vs. a column collapsing sideways), so higher RMSE for
+the drop family is a property of that family's motion scale, not evidence
+of worse generalization. Correlation (scale-invariant) is the fairer metric
+here, and by that metric held-out looks as good as train. Kept honest: this
+is a small-N result (5 held-out trajectories, one model, one seed, no
+repeat), and the two families may simply be similar enough in local
+dynamics (both are gravity-driven free-surface flows the same message-
+passing rule handles the same way) that this isn't a hard generalization
+test. `k`-NN neighbor search stayed brute-force (`cdist`, still fine at
+these particle counts); no spatial hash was needed or built tonight.
