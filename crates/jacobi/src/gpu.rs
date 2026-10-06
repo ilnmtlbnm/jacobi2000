@@ -398,7 +398,7 @@ impl GpuPanel {
     /// Bit-sliced panel: the field as row-major values of its plane count.
     pub async fn read_planes(&self, ctx: &GpuCtx, planes: usize) -> Vec<u32> {
         let w = self.read_words(ctx).await;
-        let w64: Vec<u64> = w.chunks_exact(2).map(|p| p[0] as u64 | (p[1] as u64) << 32).collect();
+        let w64: Vec<u64> = w.as_chunks::<2>().0.iter().map(|p| p[0] as u64 | (p[1] as u64) << 32).collect();
         crate::bitsliced::unpack(self.n, planes, &w64)
     }
 
@@ -429,7 +429,7 @@ async fn read_buffer(ctx: &GpuCtx, buf: &wgpu::Buffer, words: usize) -> Vec<u32>
     ctx.device.poll(wgpu::PollType::Wait).expect("device poll failed");
     rx.await.expect("map_async channel dropped").expect("buffer map failed");
     let data = slice.get_mapped_range();
-    let out = data.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let out = data.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
     drop(data);
     staging.unmap();
     out

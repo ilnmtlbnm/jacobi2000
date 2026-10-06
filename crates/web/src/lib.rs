@@ -446,8 +446,8 @@ pub async fn peak_location() -> Vec<f32> {
     let v = data.as_slice::<f32>().unwrap();
     let n = params.cells();
     let (mut best_i, mut best_v) = (0usize, f32::NEG_INFINITY);
-    for i in 0..n {
-        let h = (v[i] * norm.std[0] + norm.mean[0]).abs();
+    for (i, &vi) in v.iter().enumerate().take(n) {
+        let h = (vi * norm.std[0] + norm.mean[0]).abs();
         if h > best_v {
             best_v = h;
             best_i = i;

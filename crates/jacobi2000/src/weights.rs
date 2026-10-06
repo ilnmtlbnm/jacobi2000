@@ -124,8 +124,10 @@ pub fn read_safetensors(path: &Path) -> Weights {
         let start = data_start + offsets[0].as_u64().unwrap() as usize;
         let end = data_start + offsets[1].as_u64().unwrap() as usize;
         let data: Vec<f32> = bytes[start..end]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         out.insert(name.clone(), NamedTensor { shape, data });
     }

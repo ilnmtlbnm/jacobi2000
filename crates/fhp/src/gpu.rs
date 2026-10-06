@@ -296,7 +296,7 @@ impl Gpu {
         self.device.poll(wgpu::PollType::Wait).expect("device poll failed");
         rx.await.expect("map_async channel dropped").expect("buffer map failed");
         let data = slice.get_mapped_range();
-        let out = data.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let out = data.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         drop(data);
         staging.unmap();
         out

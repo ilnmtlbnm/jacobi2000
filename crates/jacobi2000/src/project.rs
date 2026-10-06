@@ -471,6 +471,7 @@ mod tests {
         let prev_t = Tensor::<B, 1>::from_floats(prev.as_slice(), &device).reshape([3, 1]);
 
         let y = project_excess_energy(x.clone(), prev_t, &d, g, DT, EnergyBand::upper(1.0));
+        #[allow(clippy::single_range_in_vec_init)] // burn's Tensor::slice takes a fixed [Range; D], not a Vec
         let member = |t: &Tensor<B, 4>, i: usize| -> Vec<f32> {
             t.clone().slice([i..i + 1]).into_data().to_vec().unwrap()
         };
@@ -511,6 +512,7 @@ mod tests {
             assert!(e1[i] <= prev[i] * band.r_max, "member {i}: {} > {}", e1[i], prev[i] * band.r_max);
             assert!((m1[i] - m0[i]).abs() < 1e-6, "member {i} mass {} -> {}", m0[i], m1[i]);
         }
+        #[allow(clippy::single_range_in_vec_init)] // burn's Tensor::slice takes a fixed [Range; D], not a Vec
         let member = |t: &Tensor<B, 4>, i: usize| -> Vec<f32> {
             t.clone().slice([i..i + 1]).into_data().to_vec().unwrap()
         };

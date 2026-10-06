@@ -751,7 +751,7 @@ fn bandstat(args: &[String]) {
     for f in args.iter().filter(|a| a.ends_with(".f32")) {
         let dims = f.rsplit('-').next().unwrap().trim_end_matches(".f32");
         let (nx, ny) = dims.split_once('x').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())).unwrap();
-        let o: Vec<f32> = std::fs::read(f).unwrap().chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let o: Vec<f32> = std::fs::read(f).unwrap().as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
         let (ext, emax, ratio) = wake_stats(&o, nx, ny, db, dlen, 0.25 * vmax);
         let (tilt, aspect, angle) = wake_orientation(&o, nx, ny, db, dlen);
         println!("{f},{ext:.3},{emax:.3},{ratio:.4},{tilt:+.3},{aspect:.2},{angle:.1}");
