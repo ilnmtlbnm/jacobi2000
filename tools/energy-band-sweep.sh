@@ -22,10 +22,11 @@ if [[ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ]]; then
     exit 1
 fi
 
-# Per-tick band of the cross-term excess energy at nu = 0.001, from 39,411
-# solver ticks of the training mixture: [0.9998135, 1.0003122].
-R_MIN=0.9998
-R_MAX=1.00035
+# Per-tick ratio of the cross-term excess energy at nu = 0.001 on the
+# training mixture: [0.9998135, 1.0003122] over 39,411 dumped ticks,
+# [0.9997747, 1.0003457] over 51,140 generator ticks (energy-stats).
+R_MIN=0.99975
+R_MAX=1.00036
 
 # model-wide-1's recipe (docs/runs/2026-09-19-3.md, the rung6 width comparison),
 # from scratch, for both sizes; train.py's defaults already match it.
