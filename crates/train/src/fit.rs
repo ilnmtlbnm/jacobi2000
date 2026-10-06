@@ -195,6 +195,11 @@ pub fn fit<B: AutodiffBackend>(
         let log_now = (step + 1) % cfg.log_every == 0 || step == 0;
         let mut active = Tensor::<B::InnerBackend, 1>::zeros([1], device);
         for step_k in 0..k {
+            // Excess band relative to the state before noise injection (the
+            // noise carries ~20x the band's width; docs/runs/2026-10-06-energy-band.md).
+            let prev_excess = cfg
+                .project_excess
+                .map(|_| excess_energy(&x, &denorm, params.g, dt_dx));
             if cfg.noise > 0.0 {
                 x = x.clone()
                     + Tensor::<B, 4>::random(
@@ -206,9 +211,6 @@ pub fn fit<B: AutodiffBackend>(
             let prev_energy = cfg
                 .project_energy
                 .then(|| energy(&x, &denorm, params.g));
-            let prev_excess = cfg
-                .project_excess
-                .map(|_| excess_energy(&x, &denorm, params.g, dt_dx));
             x = model.step(x, meta.clone(), mask.clone());
             if cfg.project {
                 x = project_mass(x, mass0.clone());

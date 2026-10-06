@@ -94,12 +94,16 @@ def fit(
         log_now = (step + 1) % cfg.log_every == 0 or step == 0
         outside = 0
         for step_k in range(k):
-            if cfg.noise > 0.0:
-                x = x + torch.randn_like(x) * cfg.noise
-            prev_energy = energy(x, denorm, dataset.g) if cfg.project_energy else None
+            # The excess band is relative to the state before noise injection:
+            # the injected noise carries 0.6 % of E' at p50 (6 % at the tail),
+            # 20x the band's width, and a band measured on the noisy input made
+            # the lower edge lift 95 % of solver targets (docs/runs/2026-10-06-energy-band.md).
             prev_excess = (
                 excess_energy(x, denorm, dataset.g, dt_dx) if cfg.excess_r_max is not None else None
             )
+            if cfg.noise > 0.0:
+                x = x + torch.randn_like(x) * cfg.noise
+            prev_energy = energy(x, denorm, dataset.g) if cfg.project_energy else None
             x = model.step(x, meta, mask)
             if cfg.project:
                 x = project_mass(x, mass0)
