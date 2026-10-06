@@ -1,0 +1,154 @@
+//! wasm-bindgen surface for the dev page: one `page::Page` (FHP-III,
+//! ternary or signed ternary FHP, on the GPU or a CPU engine on one thread or a
+//! wasm-bindgen-rayon pool in the threaded build), plus the coarse-grained
+//! vorticity image. The page's worker only loads, loops and draws.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use wasm_bindgen::prelude::*;
+
+use crate::page::{Model, Page};
+
+#[wasm_bindgen(js_name = fhpInit)]
+pub fn fhp_init() {
+    console_error_panic_hook::set_once();
+}
+
+#[wasm_bindgen]
+pub struct Sim {
+    inner: Rc<RefCell<Page>>,
+}
+
+#[wasm_bindgen]
+impl Sim {
+    /// CPU engine for `model` (fhp3, ternary or signed) on the vortex-street
+    /// setup, inflow speed `u`, `mode` periodic, sponge, randomize or delete
+    /// (ternary and signed: randomize), coarse-graining `block` 8, 16 or 32; the size
+    /// is rounded up to the block (see `street_for`) and checked against the
+    /// CPU memory bound. `refblock` is the signed model's reference block,
+    /// 0 for the default H/64. Errors come back as a message, never a panic.
+    #[wasm_bindgen(js_name = createCpu)]
+    pub fn create_cpu(model: &str, w: usize, h: usize, u: f64, mode: &str, block: usize, refblock: usize) -> Result<Sim, JsValue> {
+        let p = Model::parse(model).and_then(|m| Page::cpu_ref(m, w, h, u, mode, block, refblock)).map_err(|e| JsValue::from_str(&e))?;
+        Ok(Sim { inner: Rc::new(RefCell::new(p)) })
+    }
+
+    /// WebGPU engine, arguments as for `createCpu`.
+    #[cfg(feature = "gpu")]
+    #[wasm_bindgen(js_name = createGpu)]
+    pub async fn create_gpu(model: String, w: usize, h: usize, u: f64, mode: String, block: usize, refblock: usize) -> Result<Sim, JsValue> {
+        let m = Model::parse(&model).map_err(|e| JsValue::from_str(&e))?;
+        let p = Page::gpu_ref(m, w, h, u, &mode, block, refblock).await.map_err(|e| JsValue::from_str(&e))?;
+        Ok(Sim { inner: Rc::new(RefCell::new(p)) })
+    }
+
+    /// Run `n` steps; the last min(n, 50) are sampled every 5 steps into
+    /// the frame's block sums.
+    pub fn advance(&self, n: u32) {
+        self.inner.borrow_mut().advance(n);
+    }
+
+    /// Fold the frame's block sums into the time-averaged field. The worker
+    /// awaits this before its next call, so holding the borrow across the
+    /// readback cannot collide with another borrow.
+    #[cfg(feature = "gpu")]
+    #[allow(clippy::await_holding_refcell_ref)]
+    pub fn sample(&self) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let sums = inner.borrow().take_gpu_sums().await;
+            inner.borrow_mut().fold(sums);
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Fold the frame's block sums into the time-averaged field.
+    #[cfg(not(feature = "gpu"))]
+    pub fn sample(&self) {
+        self.inner.borrow_mut().fold(None);
+    }
+
+    /// RGBA vorticity image, `imageWidth` x `imageHeight`, top row first.
+    pub fn frame(&self) -> Vec<u8> {
+        self.inner.borrow().frame()
+    }
+
+    #[wasm_bindgen(getter, js_name = imageWidth)]
+    pub fn image_width(&self) -> usize {
+        self.inner.borrow().field.nx
+    }
+
+    #[wasm_bindgen(getter, js_name = imageHeight)]
+    pub fn image_height(&self) -> usize {
+        self.inner.borrow().field.ny
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn step(&self) -> u32 {
+        self.inner.borrow().step()
+    }
+
+    /// Lattice width actually used (after rounding).
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> usize {
+        self.inner.borrow().setup.w
+    }
+
+    /// Lattice height actually used (after rounding).
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> usize {
+        self.inner.borrow().setup.h
+    }
+
+    /// The setup in use: periodic, or the outlet's name.
+    #[wasm_bindgen(getter)]
+    pub fn mode(&self) -> String {
+        self.inner.borrow().mode().to_string()
+    }
+
+    /// fhp3, ternary or signed.
+    #[wasm_bindgen(getter)]
+    pub fn model(&self) -> String {
+        self.inner.borrow().model.name().to_string()
+    }
+
+    /// Coarse-graining block size.
+    #[wasm_bindgen(getter)]
+    pub fn block(&self) -> usize {
+        self.inner.borrow().block
+    }
+
+    /// The signed model's reference block, independent of the display
+    /// block (0 for the other models).
+    #[wasm_bindgen(getter, js_name = refBlock)]
+    pub fn ref_block(&self) -> usize {
+        self.inner.borrow().reference_block()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sites(&self) -> f64 {
+        let s = self.inner.borrow();
+        (s.setup.w * s.setup.h) as f64
+    }
+
+    /// Reynolds number of the current mean flow.
+    #[wasm_bindgen(getter)]
+    pub fn reynolds(&self) -> f64 {
+        self.inner.borrow().reynolds()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn adapter(&self) -> String {
+        self.inner.borrow().adapter.clone()
+    }
+
+    /// Threads in the CPU pool (1 without the threaded build).
+    #[wasm_bindgen(getter)]
+    pub fn threads(&self) -> usize {
+        #[cfg(feature = "threads")]
+        return rayon::current_num_threads();
+        #[cfg(not(feature = "threads"))]
+        1
+    }
+}

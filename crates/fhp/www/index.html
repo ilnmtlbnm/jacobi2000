@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FHP lattice gas (dev)</title>
+<link rel="icon" href="data:,">
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  canvas { width: 100%; max-width: 1536px; image-rendering: auto; border: 1px solid #ccc; display: block; }
+  canvas[hidden] { display: none; }
+  #status { font-family: ui-monospace, monospace; margin: 8px 0; white-space: pre-line; }
+</style>
+</head>
+<body>
+<button id="toggle" disabled>Start</button>
+<div id="status">loading</div>
+<canvas id="view0" width="256" height="64"></canvas>
+<canvas id="view1" width="256" height="64" hidden></canvas>
+<canvas id="view2" width="256" height="64" hidden></canvas>
+<script type="module">
+// Dev page: the engine runs in a module worker (worker.js); this page only
+// relays the start/pause button and draws the RGBA frames it posts.
+// ?path=webgpu|threads|single forces a path; ?w=&h= sets the lattice
+// (rounded up by the engine), ?u= the inflow speed, ?mode= the outlet
+// (randomize, sponge, delete) or periodic (the first, forced setup);
+// ?model=fhp3|ternary|signed, ?block=8|16|32 the coarse-graining block
+// (signed has its own reference block, H/64, overridden by ?refblock=),
+// and ?side=1 runs FHP-III (top), ternary (middle) and signed (bottom)
+// together.
+const ENGINE_BUILD = '2026-10-06-physics-engine-01';
+const worker = new Worker(`worker.js?v=${ENGINE_BUILD}`, { type: 'module' });
+const canvases = [0, 1, 2].map((i) => document.getElementById(`view${i}`));
+const ctxs = canvases.map((c) => c.getContext('2d'));
+const button = document.getElementById('toggle');
+const status = document.getElementById('status');
+let running = false;
+window.fhp = { build: ENGINE_BUILD, frames: 0, ready: false, last: null, all: [] };
+
+worker.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === 'ready') {
+    canvases.forEach((c, i) => { c.hidden = i >= m.count; });
+    button.disabled = false;
+    window.fhp.ready = true;
+    window.fhp.path = m.path;
+  } else if (m.type === 'frame') {
+    const canvas = canvases[m.index];
+    if (canvas.width !== m.width || canvas.height !== m.height) {
+      canvas.width = m.width;
+      canvas.height = m.height;
+    }
+    ctxs[m.index].putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
+    if (m.stats) {
+      if (m.index === 0) window.fhp.frames++;
+      if (m.index === 0) window.fhp.last = m.stats;
+      window.fhp.all[m.index] = m.stats;
+    }
+  }
+  if (m.type === 'error') window.fhp.error = m.status;
+  if (m.status) status.textContent = m.status;
+};
+button.onclick = () => {
+  running = !running;
+  button.textContent = running ? 'Pause' : 'Start';
+  worker.postMessage({ type: 'run', running });
+};
+window.fhp.start = () => { if (!running) button.click(); };
+window.fhp.pause = () => { if (running) button.click(); };
+worker.postMessage({ type: 'init', search: location.search });
+</script>
+</body>
+</html>

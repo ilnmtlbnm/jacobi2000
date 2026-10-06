@@ -1,0 +1,58 @@
+[package]
+name = "fhp"
+description = "FHP-III lattice gas (Frisch, Hasslacher, Pomeau 1986): per-site reference, bit-sliced CPU, and wgpu/WGSL engines, native and wasm from one source."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "fhp"
+path = "src/bin/fhp.rs"
+required-features = ["native-bin"]
+
+[[bin]]
+name = "ternary"
+path = "src/bin/ternary.rs"
+required-features = ["native-bin", "threads"]
+
+[[bin]]
+name = "signed"
+path = "src/bin/signed.rs"
+required-features = ["native-bin", "threads"]
+
+[features]
+default = ["native-bin", "gpu", "threads"]
+# wgpu + WGSL engine (Metal natively, WebGPU in the browser).
+gpu = ["dep:wgpu", "dep:futures-channel", "dep:lean-runtime"]
+# Rows of the bit-sliced CPU engine across a rayon pool.
+threads = ["dep:rayon"]
+native-bin = ["dep:pollster", "dep:png"]
+# Single-thread browser build: WebGPU + one-thread CPU (SIMD128).
+web = ["gpu", "wgpu/webgpu", "web-cpu", "dep:wasm-bindgen-futures"]
+# The wasm-bindgen surface without the GPU (the threaded build has no GPU).
+web-cpu = ["dep:wasm-bindgen", "dep:js-sys", "dep:console_error_panic_hook"]
+# Threaded browser build (nightly, atomics): CPU on a wasm-bindgen-rayon pool.
+wasm-mt = ["web-cpu", "threads", "dep:wasm-bindgen-rayon"]
+
+[dependencies]
+lean-runtime = { path = "../lean-runtime", optional = true }
+wgpu = { version = "26", optional = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+futures-channel = { version = "0.3", optional = true }
+rayon = { version = "1", optional = true }
+wasm-bindgen = { version = "=0.2.128", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { version = "0.3", optional = true }
+png = { version = "0.18", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-rayon = { version = "1.3", optional = true }
+
+[dev-dependencies]
+pollster = "0.3"
