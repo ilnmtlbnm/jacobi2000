@@ -188,8 +188,8 @@ To check the estimate early, the first `train d128l4-s20-off` and `eval ...` lin
 carry timestamps.
 
 **Commands.** `<box>` is the GPU host, `<box-dir>` a fresh directory under its agent work area,
-`<venv>` an existing virtualenv there with torch 2.14, `<box-lock>` the lock file the box's GPU jobs serialize on, and `<dump>` the section-3 1000-trajectory
-dump already on the box.
+`<venv>` an existing virtualenv there with torch 2.14, `<box-lock>` the lock file GPU jobs serialize on, and `<dump>` the section-3 1000-trajectory
+dump already there.
 
 ```
 # from this worktree

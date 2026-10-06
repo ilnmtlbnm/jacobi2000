@@ -39,7 +39,7 @@ Numbers below are from the run logs under `docs/runs/`, referenced by path.
 - Its maximum relative energy violation along a projected rollout is
   0.000e0, against a bound of 1e-6 (`docs/runs/2026-09-19-acceptance-2.md`).
 - A 5x wider model (256-wide, 6 layers, 5,427,971 parameters) trained on a
-  separate GPU box does not beat `model20` on this evaluation at matched
+  separate RTX 3080 machine does not beat `model20` on this evaluation at matched
   horizons, despite more parameters and more training steps
   (`docs/runs/2026-09-19-rung6.md`).
 - Rewinding a state works well at short horizons and degrades gracefully:

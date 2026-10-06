@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Model size x excess-energy constraint x seed, matched budget
-# (docs/runs/2026-10-06-energy-band.md). Run from the repo root on the GPU box:
+# (docs/runs/2026-10-06-energy-band.md). Run from the repo root on the RTX 3080 machine:
 #   DATASET=<dump of `jacobi dump-dataset --pool 1000 --nu 0.001 --seed 20`> \
 #   PYTHON=<venv python with torch> JACOBI=<wgpu build of the cli> \
 #   bash tools/energy-band-sweep.sh

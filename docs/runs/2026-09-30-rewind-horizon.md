@@ -1,7 +1,7 @@
 # Roadmap item 4 — negative time, building on the rewind model
 
 Machine: data generation on an Apple M2 (native, CPU); training and eval on
-a Linux desktop with an RTX 3080 (CUDA), under `flock`, no other GPU job
+an RTX 3080 desktop (CUDA), under `flock`, no other GPU job
 running.
 
 ## What this is

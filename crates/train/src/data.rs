@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn extended_single_drop_emits_high_amplitude_and_near_wall_drops() {
-        // Task 8b: I saw divergence on repeated drops (which stack
+        // Task 8b: divergence was seen on repeated drops (which stack
         // past the old 0.08 amplitude cap) and corner drops (which the old
         // generator never produced because it always kept the whole life
         // pre-reflection). Both must be reachable when every birth draws

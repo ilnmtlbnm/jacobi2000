@@ -5,9 +5,9 @@ keeping the Rust model, projections, masks, solver and `web/` unchanged.
 Plan and format in `docs/pytorch-training.md`.
 
 Machines: data generation and all Rust steps on an Apple M2 (native, ndarray
-backend, no GPU needed for CPU inference/eval); PyTorch training on the author's
-Linux GPU box (RTX 3080, CUDA 13, `<box>` placeholder for the real host in
-every command below).
+backend, no GPU needed for CPU inference/eval); PyTorch training on an
+RTX 3080 desktop (CUDA 13, `<box>` placeholder for the real host in every
+command below).
 
 ## 1. Parity: PyTorch forward pass vs Burn forward pass, model20's own weights
 
@@ -89,7 +89,7 @@ python -m jacobi2000_pt.train --dataset <dataset-dir> --out <out-dir> \
 ```
 
 995,843 params (same architecture as model20). Wall clock: **290.5 s (4.8
-min)** on the RTX 3080, under `flock box.lock` with no other GPU job running.
+min)** on the RTX 3080, with no other GPU job running.
 
 ## 5. Acceptance: Rust eval-metrics on the imported PyTorch checkpoint
 
@@ -165,7 +165,7 @@ than copied from an interactively-tuned log).
 python -m jacobi2000_pt.curriculum --dataset <dataset-dir> --out curriculum-out --dim 128 --layers 4 --seed 20
 ```
 
-Launched under `flock box.lock` on the 3080 (unit `jacobi-curriculum`).
+Launched on the RTX 3080 (unit `jacobi-curriculum`).
 Total wall time **565.1 s** for all 6 stages, vs. model20's own two final
 stages alone at 5941.5 s (M2) — cheap enough that the step budget below is
 generous rather than tuned.
@@ -251,7 +251,7 @@ contention): 1000 steps, `stencil r1 d1`, dim 128/4 layers, rollout 8, noise
 seed 100, batch 16.
 
 Burn: `cargo build --release -p cli --features wgpu --no-default-features`
-(Vulkan on Linux; the run's own log string still says "wgpu (Metal)",
+(Vulkan; the run's own log string still says "wgpu (Metal)",
 a leftover label from Mac development, cosmetic only), then
 
 ```
@@ -284,9 +284,9 @@ meant to at this step count); corr@50 is within noise of the two runs
 (0.9446 vs 0.9412), not a meaningful accuracy difference at this budget.
 Raw eval output: `docs/runs/2026-09-29-burn-vs-pytorch-{burn,pt}-eval.txt`.
 
-The 3080 box's default binary was rebuilt back to `ndarray` (CPU) features
+The RTX 3080 machine's default binary was rebuilt back to `ndarray` (CPU) features
 after this section, so eval-metrics calls elsewhere in this doc are
-unaffected by which feature set was live on the box mid-run.
+unaffected by which feature set was live mid-run.
 
 ## 8. Reverse (rewind) model and round-trip
 
@@ -348,7 +348,7 @@ no longer holds real model20's weights: re-running the rung6 eval command
 on a checkpoint imported from it reproduced section 4's *from-scratch*
 PyTorch numbers (corr@50 0.9353, amp@50 0.9636) exactly, not model20's
 (corr@50 0.9954). The two runs' `--out` directories collided at some point
-between section 1's export and this run (both sessions used the same box
+between section 1's export and this run (both sessions used the same
 working directory). Section 1's and 2's *recorded* numbers in this doc are
 unaffected (they were measured and written down before the collision), but
 the on-disk export can no longer be used to reproduce them — anyone

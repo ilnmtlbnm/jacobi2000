@@ -20,7 +20,7 @@ Sources read before moving anything:
 `lean-runtime` isn't pushed to `origin` on llm-web (only `lean-release` is),
 and this session does not push branches or open PRs without explicit
 authorization, so a `git = "...", branch = "lean-runtime"` dependency would
-fail to resolve for anyone else, and a `path = "/absolute/path"` dependency would
+fail to resolve for anyone else, and an absolute local-path dependency would
 leak a local path (the thing gate 5 explicitly flags). The fix: `lean-runtime`
 is copied byte-for-byte into `crates/lean-runtime` of this workspace and
 consumed as an ordinary in-workspace path dependency (`path =
@@ -73,7 +73,7 @@ These are candidates for a later pass once there's time to verify each
 swap against the existing test suite and the headless pages, not skipped
 on judgment about the duplication itself.
 
-## Gate 1: native tests, M2 and the 3080 box
+## Gate 1: native tests, M2 and the RTX 3080 machine
 
 | crate | source branch (passed) | physics-engine (passed) | match |
 |---|---:|---:|---|
@@ -83,23 +83,23 @@ on judgment about the duplication itself.
 `cargo test --release -p fhp -p jacobi`, run separately per crate (a combined
 invocation double-counts shared binary names across the two crates' `grep`
 tallies, a counting artefact, not a real mismatch — verified by running each
-crate alone). 74 total (53 + 21) on both the M2 and the 3080 box (Ryzen
+crate alone). 74 total (53 + 21) on both the M2 and the RTX 3080 machine (Ryzen
 9 3900X / RTX 3080, GPU idle before the run, `0 %, 469 MiB` on
 `nvidia-smi --query-gpu=utilization.gpu,memory.used`). Box run via
 `systemd-run --user --unit=physics-engine-gates`, logs at
 `logs/test.log` (`TEST_EXIT=0`) and `logs/clippy.log` (`CLIPPY_EXIT=0`) under
-the box's own scratch checkout of this branch.
+a scratch checkout of this branch on the RTX 3080 machine.
 
 Note: the debug profile hit a SIGBUS in rustc's DWARF emission on the M2
 compiling `fhp` with `-C debuginfo=2 -C split-debuginfo=unpacked` (not
-reproducible on the box, Rust 1.95 vs the M2's 1.93); release builds (and the
-box's clippy pass, which also uses `--release`) were unaffected, so all gates
+reproducible on the RTX 3080 machine, Rust 1.95 vs the M2's 1.93); release builds (and the
+RTX 3080 machine's clippy pass, which also uses `--release`) were unaffected, so all gates
 here are release-profile.
 
 ## Gate 2: clippy
 
 `cargo clippy --release -p fhp -p jacobi -p lean-runtime --all-targets -- -D
-warnings`: clean on the M2 (rustc 1.93.0) and on the 3080 box (rustc 1.95.0,
+warnings`: clean on the M2 (rustc 1.93.0) and on the RTX 3080 machine (rustc 1.95.0,
 the toolchain that flags `unnecessary_sort_by` on `lean`'s
 `debug_top_buffers` — the reason the 68fe5c0 cherry-pick was needed before
 this would pass).
@@ -141,7 +141,7 @@ wasm URL, sha256'd, matched the local build byte for byte for all three
 files (checked explicitly, not just "should match").
 
 Headless (Playwright's bundled Chromium, `--enable-unsafe-webgpu
---use-angle=metal`, never a personal browser):
+--use-angle=metal`, never the dev browser):
 
 - fhp default (`model` unset → fhp3) and `?model=signed`: both picked the
   `webgpu` backend, `isolated: true`, zero console/page errors, `pass:
