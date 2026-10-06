@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use burn::module::{AutodiffModule, Module};
 use burn::tensor::Tensor;
 use clap::{Parser, Subcommand};
-use jacobi2000::{energy, excess_energy, read_safetensors, write_safetensors, Denorm, Jacobi2000Config, Mask};
+use jacobi2000::{energy, excess_energy, EnergyBand, read_safetensors, write_safetensors, Denorm, Jacobi2000Config, Mask};
 use rand::{Rng, SeedableRng};
 use solvers::{Params, State};
 use train::{
@@ -134,6 +134,11 @@ enum Cmd {
         /// only (not with `--reverse` or `--lagrangian`).
         #[arg(long)]
         project_excess: Option<f32>,
+        /// Lower edge of the excess-energy band, `E'_new >= E'_prev * r_min`
+        /// (catches energy loss too). 0 = upper-only form. Needs
+        /// `--project-excess`.
+        #[arg(long, default_value_t = 0.0)]
+        excess_r_min: f32,
         /// Weight of the wavenumber-banded error term. 0 = plain MSE.
         #[arg(long, default_value_t = 0.0)]
         spectral: f32,
@@ -189,10 +194,15 @@ enum Cmd {
         /// Also project onto the energy inequality (task 11).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         project_energy: bool,
-        /// Excess-energy inequality ratio `r`. Defaults to the checkpoint's
-        /// own (`excess_r` in meta.json, off if absent); `0` turns it off.
+        /// Excess-energy band upper ratio `r_max`. Defaults to the
+        /// checkpoint's own (`excess_r` in meta.json, off if absent); `0`
+        /// turns the projection off.
         #[arg(long)]
         project_excess: Option<f32>,
+        /// Excess-energy band lower ratio `r_min`. Defaults to the
+        /// checkpoint's own (`excess_r_min`, 0 if absent); 0 = upper only.
+        #[arg(long)]
+        excess_r_min: Option<f32>,
     },
     /// Rung-1 metrics (GOAL-2026-09-18 sec. 1) on fresh single-drop
     /// trajectories, scored only before the first wall reflection.
@@ -302,10 +312,15 @@ enum Cmd {
         /// Also project onto the energy inequality (task 11).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         project_energy: bool,
-        /// Excess-energy inequality ratio `r`. Defaults to the checkpoint's
-        /// own (`excess_r` in meta.json, off if absent); `0` turns it off.
+        /// Excess-energy band upper ratio `r_max`. Defaults to the
+        /// checkpoint's own (`excess_r` in meta.json, off if absent); `0`
+        /// turns the projection off.
         #[arg(long)]
         project_excess: Option<f32>,
+        /// Excess-energy band lower ratio `r_min`. Defaults to the
+        /// checkpoint's own (`excess_r_min`, 0 if absent); 0 = upper only.
+        #[arg(long)]
+        excess_r_min: Option<f32>,
         /// xr ensemble at inference (task 10, CONCEPT sec. 4): K jittered
         /// patch-grid offsets, same weights, mean + per-cell spread. K <= 1
         /// disables the ensemble section of the report.
@@ -411,6 +426,7 @@ fn run(cmd: Cmd) {
             project_energy,
             r_max,
             project_excess,
+            excess_r_min,
             spectral,
             nu,
             seed,
@@ -443,7 +459,7 @@ fn run(cmd: Cmd) {
             project,
             project_energy,
             r_max,
-            project_excess,
+            project_excess: project_excess.map(|r_max| EnergyBand { r_min: excess_r_min, r_max }),
             spectral,
             nu,
             seed,
@@ -464,7 +480,10 @@ fn run(cmd: Cmd) {
             project,
             project_energy,
             project_excess,
-        } => eval_cmd(&model, trajectories, seed, project, project_energy, project_excess),
+            excess_r_min,
+        } => eval_cmd(
+            &model, trajectories, seed, project, project_energy, project_excess, excess_r_min,
+        ),
         Cmd::GenData {
             pool,
             batch,
@@ -514,6 +533,7 @@ fn run(cmd: Cmd) {
             project,
             project_energy,
             project_excess,
+            excess_r_min,
             xr,
             reverse,
             lagrangian,
@@ -521,11 +541,13 @@ fn run(cmd: Cmd) {
             if lagrangian {
                 eval_lagrangian_cmd(&model, seed)
             } else if stress {
-                eval_stress_cmd(&model, &horizons, project, project_energy, project_excess)
+                eval_stress_cmd(
+                    &model, &horizons, project, project_energy, (project_excess, excess_r_min),
+                )
             } else {
                 eval_metrics_cmd(
-                    &model, &horizons, trajectories, seed, project, project_energy, project_excess,
-                    xr, reverse,
+                    &model, &horizons, trajectories, seed, project, project_energy,
+                    (project_excess, excess_r_min), xr, reverse,
                 )
             }
         }
@@ -568,7 +590,7 @@ struct TrainArgs {
     project: bool,
     project_energy: bool,
     r_max: Option<f32>,
-    project_excess: Option<f32>,
+    project_excess: Option<EnergyBand>,
     spectral: f32,
     nu: f32,
     seed: u64,
@@ -735,7 +757,8 @@ fn train_cmd(a: TrainArgs) {
         nu: tick_params.nu,
         mask,
         energy_r_max: r_max,
-        excess_r: project_excess,
+        excess_r: project_excess.map(|b| b.r_max),
+        excess_r_min: project_excess.map_or(0.0, |b| b.r_min),
     };
     save(out, &model, &meta);
     println!("wrote {}", out.display());
@@ -784,7 +807,7 @@ fn eval_model(
     project: bool,
     project_energy: bool,
     r_max: f32,
-    excess: Option<f32>,
+    excess: Option<EnergyBand>,
     device: &<Back as burn::tensor::backend::Backend>::Device,
 ) -> Errors {
     let ticks = vec![10usize, 50, 200];
@@ -845,14 +868,17 @@ fn print_errors(e: &Errors) {
     }
 }
 
-/// `--project-excess` resolved against the checkpoint: absent = the
-/// checkpoint's own `excess_r`, `<= 0` = off.
-fn resolve_excess(flag: Option<f32>, meta: &Meta) -> Option<f32> {
-    match flag {
-        None => meta.excess_r,
-        Some(r) if r <= 0.0 => None,
-        Some(r) => Some(r),
-    }
+/// `--project-excess` / `--excess-r-min` resolved against the checkpoint:
+/// an absent flag takes the checkpoint's own value, `r_max <= 0` is off.
+type ExcessFlags = (Option<f32>, Option<f32>);
+
+fn resolve_excess(flags: ExcessFlags, meta: &Meta) -> Option<EnergyBand> {
+    let r_max = match flags.0 {
+        None => meta.excess_r?,
+        Some(r) if r <= 0.0 => return None,
+        Some(r) => r,
+    };
+    Some(EnergyBand { r_min: flags.1.unwrap_or(meta.excess_r_min), r_max })
 }
 
 fn eval_cmd(
@@ -862,10 +888,11 @@ fn eval_cmd(
     project: bool,
     project_energy: bool,
     project_excess: Option<f32>,
+    excess_r_min: Option<f32>,
 ) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
-    let excess = resolve_excess(project_excess, &meta);
+    let excess = resolve_excess((project_excess, excess_r_min), &meta);
     println!(
         "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy} (r_max {}), excess projection: {excess:?}, mask: {}",
         meta.energy_r_max,
@@ -936,7 +963,7 @@ fn eval_metrics_cmd(
     seed: u64,
     project: bool,
     project_energy: bool,
-    project_excess: Option<f32>,
+    project_excess: ExcessFlags,
     xr: usize,
     reverse: bool,
 ) {
@@ -1075,12 +1102,12 @@ fn eval_metrics_cmd(
          (bound: <= 1e-6)"
     );
 
-    if let Some(r) = excess {
+    if let Some(band) = excess {
         let mut rows: Vec<Vec<train::metrics::ExcessRow>> = vec![Vec::new(); horizons.len()];
         let (mut active, mut ticks) = (0usize, 0usize);
         for (init, _drop) in &trajs {
             let (r_rows, a, t) = train::metrics::excess_activity_rollout(
-                &model, &params, &meta.norm, init, &horizons, meta.mask, r, &device,
+                &model, &params, &meta.norm, init, &horizons, meta.mask, band, &device,
             );
             for (i, row) in r_rows.into_iter().enumerate() {
                 rows[i].push(row);
@@ -1089,8 +1116,10 @@ fn eval_metrics_cmd(
             ticks += t;
         }
         println!(
-            "\nexcess energy E'_t/E'_0, model rollout with the excess projection ON (r={r}) vs \
-             OFF vs the solver, mean over {used} trajectories:\n"
+            "\nexcess energy E'_t/E'_0, model rollout with the excess projection ON (band \
+             [{}, {}]) vs \
+             OFF vs the solver, mean over {used} trajectories:\n",
+            band.r_min, band.r_max
         );
         println!("| ticks | ON | OFF | solver |\n|---:|---:|---:|---:|");
         for (i, t) in horizons.iter().enumerate() {
@@ -1099,7 +1128,7 @@ fn eval_metrics_cmd(
             println!("| {t} | {:.6} | {:.6} | {:.6} |", m(|r| r.on), m(|r| r.off), m(|r| r.solver));
         }
         println!(
-            "\nexcess constraint active (proposal over E'_prev * r before projection): {active} of \
+            "\nexcess constraint active (proposal outside the band before projection): {active} of \
              {ticks} ticks ({:.1} %)",
             100.0 * active as f32 / ticks as f32
         );
@@ -1155,7 +1184,7 @@ fn eval_stress_cmd(
     horizons: &[usize],
     project: bool,
     project_energy: bool,
-    project_excess: Option<f32>,
+    project_excess: ExcessFlags,
 ) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
@@ -1411,7 +1440,7 @@ fn write_run_log(
     project: bool,
     project_energy: bool,
     r_max: f32,
-    project_excess: Option<f32>,
+    project_excess: Option<EnergyBand>,
     spectral: f32,
     nu: f32,
     seed: u64,
@@ -1446,7 +1475,7 @@ fn write_run_log(
         .map(|p| format!(" --init {}", p.display()))
         .unwrap_or_default();
     let init_flag = match project_excess {
-        Some(r) => format!(" --project-excess {r}{init_flag}"),
+        Some(b) => format!(" --project-excess {} --excess-r-min {}{init_flag}", b.r_max, b.r_min),
         None => init_flag,
     };
     s.push_str(&format!(
@@ -1639,7 +1668,7 @@ fn energy_stats_cmd(
     println!("per-tick ratio E'_{{t+1}}/E'_t:");
     println!("| form | samples | above 1 | min | p01 | p50 | p99 | p999 | max |");
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
-    let mut r_excess = 0.0f32;
+    let (mut r_excess, mut r_excess_min) = (0.0f32, 0.0f32);
     for (label, ratios) in [("plain (no cross term)", &plain_ratios), ("with cross term", &excess_ratios)] {
         let up = ratios.iter().filter(|r| **r > 1.0).count();
         let mut sorted = ratios.clone();
@@ -1652,8 +1681,10 @@ fn energy_stats_cmd(
             at(0.999)
         );
         r_excess = qmax;
+        r_excess_min = qmin;
     }
     println!("\nsuggested --project-excess (measured max, cross-term form, + 1e-6): {:.7}", r_excess + 1e-6);
+    println!("suggested --excess-r-min (measured min, cross-term form, - 1e-6): {:.7}", r_excess_min - 1e-6);
 
     // Running ratio E'_t / E'_0 from fresh drops (the eval sampler, plus
     // high-amplitude drops), 200 ticks each, both forms.

@@ -5,8 +5,8 @@
 
 use burn::prelude::*;
 use jacobi2000::{
-    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, Jacobi2000,
-    Mask,
+    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, EnergyBand,
+    Jacobi2000, Mask,
 };
 use solvers::{Params, ShallowWater, State};
 
@@ -48,7 +48,7 @@ pub fn rollout_errors<B: Backend>(
     project: bool,
     project_energy_flag: bool,
     r_max: f32,
-    excess: Option<f32>,
+    excess: Option<EnergyBand>,
     device: &B::Device,
 ) -> RolloutErrors {
     let n = params.cells();
@@ -91,8 +91,8 @@ pub fn rollout_errors<B: Backend>(
         if let Some(prev_energy) = prev_energy {
             x = project_energy(x, prev_energy, &denorm, params.g, r_max);
         }
-        if let (Some(r), Some(prev_excess)) = (excess, prev_excess) {
-            x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, r);
+        if let (Some(band), Some(prev_excess)) = (excess, prev_excess) {
+            x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, band);
         }
         if ticks.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];

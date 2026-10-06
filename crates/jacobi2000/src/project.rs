@@ -186,40 +186,68 @@ fn excess_terms<B: Backend>(
 /// term (with `dt_dx = dt/dx`) restores the quantity the scheme actually
 /// conserves (symplectic Euler's modified energy): at `nu = 0.01` it never
 /// rises on a solver trajectory, at `nu = 0` it moves by under 4e-5 per
-/// tick (docs/runs/2026-10-06-energy-inequality.md).
+/// tick (docs/runs/2026-10-06-energy-band.md).
 pub fn excess_energy<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32, dt_dx: f32) -> Tensor<B, 2> {
     let (a, q) = excess_terms(x, d, g, dt_dx);
     a + q
 }
 
-/// Project onto `excess_energy(x) <= prev_excess * r` (energy non-increasing
-/// when `r <= 1`), keeping the box mass exactly. The fluctuation `(eta, u,
-/// v)` is scaled by one `s` in `[0, 1]` per batch member, toward the rest
-/// state `(hbar, 0, 0)`: `eta`'s mean stays 0, so mass is untouched, and the
-/// state is feasible at `s = 0`. With `excess(s) = s^2 a + s^3 q`,
-/// `s = sqrt(bound / (a + max(q, 0)))` is feasible in closed form (for
-/// `q >= 0`, `s^3 q <= s^2 q`; for `q < 0` the cubic term only helps) and
-/// within `(1 - s) |q| / a` of the exact root, negligible since
-/// `|q| / a ~ max|eta| / hbar`. Members already within the bound are
-/// returned bit-for-bit. `s` is detached, as in [`project_energy`].
+/// Per-tick band on the excess energy, `E'_prev * r_min <= E' <= E'_prev *
+/// r_max`. `r_min = 0` is the upper-only form (energy non-increasing for
+/// `r_max <= 1`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnergyBand {
+    pub r_min: f32,
+    pub r_max: f32,
+}
+
+impl EnergyBand {
+    pub fn upper(r_max: f32) -> Self {
+        EnergyBand { r_min: 0.0, r_max }
+    }
+}
+
+/// Project onto the band `prev_excess * r_min <= excess_energy(x) <=
+/// prev_excess * r_max`, keeping the box mass exactly. The fluctuation
+/// `(eta, u, v)` is scaled by one `s` per batch member, toward the rest
+/// state `(hbar, 0, 0)` when the proposal is above the band (`s < 1`) and
+/// away from it when below (`s > 1`, capped at 2): `eta`'s mean stays 0, so
+/// mass is untouched. With `excess(s) = s^2 a + s^3 q`, `s` starts at
+/// `sqrt(T / (a + q))`, exact when `q = 0`, and two Newton steps take it to
+/// the root at f32 precision (`|q| / a ~ max|eta| / hbar`, so the start is
+/// already within 1e-5). The target `T` is the violated edge pulled 1e-6
+/// inside the band, so f32 rounding of the result cannot land outside.
+/// Members inside the band are returned bit-for-bit. `s` is detached, as
+/// in [`project_energy`].
 pub fn project_excess_energy<B: Backend>(
     x: Tensor<B, 4>,
     prev_excess: Tensor<B, 2>,
     d: &Denorm,
     g: f32,
     dt_dx: f32,
-    r: f32,
+    band: EnergyBand,
 ) -> Tensor<B, 4> {
     let [b, _, ny, nx] = x.dims();
-    let bound = prev_excess.detach() * r;
+    let prev = prev_excess.detach();
+    let upper = prev.clone() * band.r_max;
+    let lower = prev * band.r_min;
     let (a, q) = excess_terms(&x, d, g, dt_dx);
     let (a, q) = (a.detach(), q.detach());
-    let active = (a.clone() + q.clone()).greater(bound.clone());
-    let s = (bound / (a + q.clamp_min(0.0)).clamp_min(1e-30))
-        .clamp_min(0.0)
-        .sqrt()
-        .clamp(0.0, 1.0)
-        .reshape([b, 1, 1, 1]);
+    let e = a.clone() + q.clone();
+    let active = e.clone().greater(upper.clone()).float() + e.clone().lower(lower.clone()).float();
+    let active = active.greater_elem(0.5);
+    let target = e
+        .clone()
+        .max_pair(lower * (1.0 + 1e-6))
+        .min_pair(upper * (1.0 - 1e-6));
+    let mut s = (target.clone() / e.clamp_min(1e-30)).clamp_min(0.0).sqrt();
+    for _ in 0..2 {
+        let f = s.clone().powi_scalar(2) * a.clone() + s.clone().powi_scalar(3) * q.clone()
+            - target.clone();
+        let df = s.clone() * a.clone() * 2.0 + s.clone().powi_scalar(2) * q.clone() * 3.0;
+        s = s - f / df.clamp_min(1e-30);
+    }
+    let s = s.clamp(0.0, 2.0).reshape([b, 1, 1, 1]);
 
     let m = mass(&x).reshape([b, 1, 1, 1]);
     let h = x.clone().slice([0..b, 0..1]);
@@ -421,7 +449,7 @@ mod tests {
         let prev_t = Tensor::<B, 1>::from_floats(prev.as_slice(), &device).reshape([4, 1]);
         let m0: Vec<f32> = mass(&x).into_data().to_vec().unwrap();
 
-        let y = project_excess_energy(x, prev_t, &d, g, DT, 1.0);
+        let y = project_excess_energy(x, prev_t, &d, g, DT, EnergyBand::upper(1.0));
         let e1: Vec<f32> = excess_energy(&y, &d, g, DT).into_data().to_vec().unwrap();
         let m1: Vec<f32> = mass(&y).into_data().to_vec().unwrap();
         for i in 0..4 {
@@ -442,7 +470,7 @@ mod tests {
         let prev: Vec<f32> = vec![e[0] * 1.5, e[1] * 0.5, e[2]];
         let prev_t = Tensor::<B, 1>::from_floats(prev.as_slice(), &device).reshape([3, 1]);
 
-        let y = project_excess_energy(x.clone(), prev_t, &d, g, DT, 1.0);
+        let y = project_excess_energy(x.clone(), prev_t, &d, g, DT, EnergyBand::upper(1.0));
         let member = |t: &Tensor<B, 4>, i: usize| -> Vec<f32> {
             t.clone().slice([i..i + 1]).into_data().to_vec().unwrap()
         };
@@ -458,9 +486,34 @@ mod tests {
         let (x, d) = wavy(2, &device);
         let x = Tensor::<AB, 4>::from_data(x.into_data(), &device).require_grad();
         let prev = Tensor::<AB, 2>::from_floats([[0.0f32], [1e9]], &device);
-        let y = project_excess_energy(x.clone(), prev, &d, 9.81, DT, 1.0);
+        let y = project_excess_energy(x.clone(), prev, &d, 9.81, DT, EnergyBand::upper(1.0));
         let grads = y.powi_scalar(2).sum().backward();
         let grad: Vec<f32> = x.grad(&grads).unwrap().into_data().to_vec().unwrap();
         assert!(grad.iter().all(|v| v.is_finite()), "non-finite gradient at budget 0");
+    }
+
+    #[test]
+    fn excess_band_lifts_a_proposal_below_the_band_and_keeps_mass() {
+        let device = Default::default();
+        let (x, d) = wavy(3, &device);
+        let g = 9.81;
+        let e: Vec<f32> = excess_energy(&x, &d, g, DT).into_data().to_vec().unwrap();
+        // prev chosen so member 0 is below the band, 1 inside, 2 above.
+        let band = EnergyBand { r_min: 0.9999, r_max: 1.0004 };
+        let prev: Vec<f32> = vec![e[0] / 0.99, e[1], e[2] / 1.01];
+        let prev_t = Tensor::<B, 1>::from_floats(prev.as_slice(), &device).reshape([3, 1]);
+        let m0: Vec<f32> = mass(&x).into_data().to_vec().unwrap();
+        let y = project_excess_energy(x.clone(), prev_t, &d, g, DT, band);
+        let e1: Vec<f32> = excess_energy(&y, &d, g, DT).into_data().to_vec().unwrap();
+        let m1: Vec<f32> = mass(&y).into_data().to_vec().unwrap();
+        for i in 0..3 {
+            assert!(e1[i] >= prev[i] * band.r_min, "member {i}: {} < {}", e1[i], prev[i] * band.r_min);
+            assert!(e1[i] <= prev[i] * band.r_max, "member {i}: {} > {}", e1[i], prev[i] * band.r_max);
+            assert!((m1[i] - m0[i]).abs() < 1e-6, "member {i} mass {} -> {}", m0[i], m1[i]);
+        }
+        let member = |t: &Tensor<B, 4>, i: usize| -> Vec<f32> {
+            t.clone().slice([i..i + 1]).into_data().to_vec().unwrap()
+        };
+        assert_eq!(member(&y, 1), member(&x, 1));
     }
 }

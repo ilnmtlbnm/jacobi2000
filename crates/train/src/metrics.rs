@@ -12,8 +12,8 @@
 
 use burn::prelude::*;
 use jacobi2000::{
-    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, Jacobi2000,
-    Mask,
+    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, EnergyBand,
+    Jacobi2000, Mask,
 };
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -458,7 +458,7 @@ pub fn score_rollout<B: Backend>(
     project: bool,
     project_energy_flag: bool,
     r_max: f32,
-    excess: Option<f32>,
+    excess: Option<EnergyBand>,
     device: &B::Device,
 ) -> (Vec<Metrics>, Vec<Metrics>) {
     let n = params.cells();
@@ -496,8 +496,8 @@ pub fn score_rollout<B: Backend>(
         if let Some(prev_energy) = prev_energy {
             x = project_energy(x, prev_energy, &denorm, params.g, r_max);
         }
-        if let (Some(r), Some(prev_excess)) = (excess, prev_excess) {
-            x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, r);
+        if let (Some(band), Some(prev_excess)) = (excess, prev_excess) {
+            x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, band);
         }
         if horizons.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];
@@ -752,7 +752,7 @@ pub struct ExcessRow {
 /// Roll the model forward with the excess projection ON and OFF (mass
 /// projection on in both) beside the solver; return `E'_t / E'_0` for all
 /// three at each horizon, and how many of the ON rollout's ticks had a
-/// proposal over the bound `E'_prev * r` before projection, out of how many.
+/// proposal outside the band before projection, out of how many.
 #[allow(clippy::too_many_arguments)]
 pub fn excess_activity_rollout<B: Backend>(
     model: &Jacobi2000<B>,
@@ -761,7 +761,7 @@ pub fn excess_activity_rollout<B: Backend>(
     init: &State,
     horizons: &[usize],
     mask: Mask,
-    r: f32,
+    band: EnergyBand,
     device: &B::Device,
 ) -> (Vec<ExcessRow>, usize, usize) {
     let n = params.cells();
@@ -794,10 +794,11 @@ pub fn excess_activity_rollout<B: Backend>(
         let prev = excess_energy(&x_on, &denorm, params.g, dt_dx);
         let prev_s: f32 = prev.clone().into_scalar().elem();
         x_on = project_mass(model.step(x_on, meta.clone(), mask.clone()), mass0.clone());
-        if ex(&x_on) > prev_s * r {
+        let e = ex(&x_on);
+        if e > prev_s * band.r_max || e < prev_s * band.r_min {
             active += 1;
         }
-        x_on = project_excess_energy(x_on, prev, &denorm, params.g, dt_dx, r);
+        x_on = project_excess_energy(x_on, prev, &denorm, params.g, dt_dx, band);
         x_off = project_mass(model.step(x_off, meta.clone(), mask.clone()), mass0.clone());
         if horizons.contains(&t) {
             norm.encode(&truth, &mut packed);

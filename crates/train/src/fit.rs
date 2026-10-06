@@ -6,8 +6,8 @@ use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use jacobi2000::{
-    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, Jacobi2000,
-    Mask,
+    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, EnergyBand,
+    Jacobi2000, Mask,
 };
 
 use crate::data::{Batch, Generator, Normalizer};
@@ -101,12 +101,12 @@ pub struct FitConfig {
     /// rather than assumed (see `fallback_r_max` for the coded-formula
     /// fallback). Unused when `project_energy` is off.
     pub r_max: f32,
-    /// Excess-energy inequality (`jacobi2000::project_excess_energy`):
-    /// `Some(r)` projects every predicted step onto `E'_new <= E'_prev * r`,
-    /// after the mass projection; `r` is measured from the solver
-    /// (`energy-stats`, docs/runs/2026-10-06-energy-inequality.md). `None`
-    /// is off.
-    pub project_excess: Option<f32>,
+    /// Excess-energy band (`jacobi2000::project_excess_energy`): `Some(band)`
+    /// projects every predicted step onto `E'_prev * r_min <= E'_new <=
+    /// E'_prev * r_max`, after the mass projection; both ratios are measured
+    /// from the solver (`energy-stats`, docs/runs/2026-10-06-energy-band.md).
+    /// `None` is off.
+    pub project_excess: Option<EnergyBand>,
     /// Weight of the wavenumber-banded error term (`spectral::band_mse`) added
     /// to plain MSE. 0 disables it.
     pub spectral: f32,
@@ -143,7 +143,7 @@ pub struct LogRow {
     pub loss: f32,
     pub secs: f64,
     /// Fraction of (batch member, rollout tick) proposals on this step that
-    /// broke the excess-energy bound before projection; `None` when the
+    /// were outside the excess-energy band before projection; `None` when the
     /// excess projection is off.
     pub excess_active: Option<f32>,
 }
@@ -216,15 +216,15 @@ pub fn fit<B: AutodiffBackend>(
             if let Some(prev_energy) = prev_energy {
                 x = project_energy(x, prev_energy, &denorm, params.g, cfg.r_max);
             }
-            if let (Some(r), Some(prev_excess)) = (cfg.project_excess, prev_excess) {
+            if let (Some(band), Some(prev_excess)) = (cfg.project_excess, prev_excess) {
                 if log_now {
-                    let over = excess_energy(&x.clone().inner(), &denorm, params.g, dt_dx)
-                        .greater(prev_excess.clone().inner() * r)
-                        .float()
-                        .sum();
-                    active = active + over;
+                    let e = excess_energy(&x.clone().inner(), &denorm, params.g, dt_dx);
+                    let p = prev_excess.clone().inner();
+                    let out = e.clone().greater(p.clone() * band.r_max).float().sum()
+                        + e.lower(p * band.r_min).float().sum();
+                    active = active + out;
                 }
-                x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, r);
+                x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, band);
             }
             let target = to_field(&batch.states[step_k + 1]);
             let err = x.clone() - target;
@@ -331,8 +331,9 @@ mod tests {
     /// solver itself satisfies: at `nu = 0.01` it never rises from one tick
     /// to the next (beyond f32 summation noise, 1e-5), so projecting each solver state onto `<= previous` is
     /// the identity; the plain excess energy (`dt_dx = 0`) rises on about
-    /// half the ticks. Guards the cross term's sign and flux form against
-    /// `solvers::shallow_water`.
+    /// half the ticks. The band set from the solver's measured per-tick
+    /// swing leaves every state untouched. Guards the cross term's sign and
+    /// flux form against `solvers::shallow_water`.
     #[test]
     fn solver_excess_energy_with_cross_term_never_rises_at_nu_0_01() {
         let device = Default::default();
@@ -352,6 +353,9 @@ mod tests {
         state.add_drop(&params, 24.0, 40.0, 0.05, 4.0);
         let mut x0 = encode(&state);
         let (mut plain_up, mut worst) = (0, 0.0f32);
+        // energy-stats at nu = 0.01: cross-term per-tick ratio in
+        // [0.9997814, 1.0002143] on the training mixture, +-1e-6.
+        let band = EnergyBand { r_min: 0.9997804, r_max: 1.0002153 };
         for _ in 0..200 {
             solver.step(&mut state);
             let x1 = encode(&state);
@@ -362,7 +366,7 @@ mod tests {
             let p0: f32 = excess_energy(&x0, &denorm, params.g, 0.0).into_scalar();
             let p1: f32 = excess_energy(&x1, &denorm, params.g, 0.0).into_scalar();
             plain_up += (p1 > p0) as usize;
-            let projected = project_excess_energy(x1.clone(), e0, &denorm, params.g, dt_dx, 1.0 + 1e-5);
+            let projected = project_excess_energy(x1.clone(), e0, &denorm, params.g, dt_dx, band);
             assert_eq!(
                 projected.into_data().to_vec::<f32>().unwrap(),
                 x1.clone().into_data().to_vec::<f32>().unwrap()
