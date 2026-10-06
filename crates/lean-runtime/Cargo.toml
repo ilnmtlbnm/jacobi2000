@@ -1,0 +1,23 @@
+[package]
+name = "lean-runtime"
+description = "Shared wgpu and wasm runtime: device acquisition, buffers, pipelines, the backend ladder and the wasm threads pool, with no model or physics types."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# performance.now() for clock::now_ms in a browser.
+web = ["dep:wasm-bindgen"]
+# Threaded wasm build: the wasm-bindgen-rayon pool, built once per worker.
+wasm-mt = ["web", "dep:js-sys", "dep:wasm-bindgen-rayon"]
+
+[dependencies]
+wgpu = { version = "26", features = ["fragile-send-sync-non-atomic-wasm"] }
+bytemuck = "1.25"
+futures-channel = "0.3"
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-rayon = { version = "1.3", optional = true }

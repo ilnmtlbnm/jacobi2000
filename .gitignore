@@ -1,6 +1,9 @@
 /target
 /web/node_modules
 /web/pkg
+/crates/fhp/pkg
+/crates/fhp/pkg-mt
+/crates/jacobi/pkg
 *.mpk
 /web/model
 /artifacts

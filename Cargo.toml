@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cli", "crates/web", "crates/jacobi2000", "crates/solvers", "crates/train"]
+members = ["crates/cli", "crates/web", "crates/jacobi2000", "crates/solvers", "crates/train", "crates/fhp", "crates/jacobi", "crates/lean-runtime"]
 resolver = "2"
 
 [workspace.package]
@@ -17,4 +17,10 @@ serde_json = "1.0"
 [profile.release]
 lto = true
 codegen-units = 1
+opt-level = 3
+
+# fhp and jacobi's parity tests evaluate bit-sliced circuits over millions of
+# lanes; unoptimized they take minutes (carried over from their source
+# workspace in tritsliced).
+[profile.test]
 opt-level = 3
