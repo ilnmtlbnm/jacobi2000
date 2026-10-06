@@ -40,6 +40,12 @@ pub struct Meta {
     /// existed, none of which used the energy projection anyway.
     #[serde(default = "default_r_max")]
     pub energy_r_max: f32,
+    /// Excess-energy inequality ratio `r` this checkpoint was trained with
+    /// (`train --project-excess`, `jacobi2000::project_excess_energy`);
+    /// `None` when trained without it. `eval`/`eval-metrics` apply it by
+    /// default.
+    #[serde(default)]
+    pub excess_r: Option<f32>,
 }
 
 fn default_mask() -> Mask {
@@ -126,6 +132,7 @@ mod tests {
             nu: 1e-3,
             mask: Mask::Full,
             energy_r_max: 1.0,
+            excess_r: None,
         }
     }
 

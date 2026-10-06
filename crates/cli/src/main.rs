@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use burn::module::{AutodiffModule, Module};
 use burn::tensor::Tensor;
 use clap::{Parser, Subcommand};
-use jacobi2000::{energy, read_safetensors, write_safetensors, Denorm, Jacobi2000Config, Mask};
+use jacobi2000::{energy, excess_energy, read_safetensors, write_safetensors, Denorm, Jacobi2000Config, Mask};
 use rand::{Rng, SeedableRng};
 use solvers::{Params, State};
 use train::{
@@ -127,6 +127,13 @@ enum Cmd {
         /// measurement exists for this `nu`.
         #[arg(long)]
         r_max: Option<f32>,
+        /// Excess-energy inequality: project every predicted step onto
+        /// `E'_new <= E'_prev * r` (`jacobi2000::project_excess_energy`),
+        /// after the mass projection. `r` from `energy-stats` (suggested
+        /// `--project-excess`). Off when not given. Forward shallow water
+        /// only (not with `--reverse` or `--lagrangian`).
+        #[arg(long)]
+        project_excess: Option<f32>,
         /// Weight of the wavenumber-banded error term. 0 = plain MSE.
         #[arg(long, default_value_t = 0.0)]
         spectral: f32,
@@ -182,6 +189,10 @@ enum Cmd {
         /// Also project onto the energy inequality (task 11).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         project_energy: bool,
+        /// Excess-energy inequality ratio `r`. Defaults to the checkpoint's
+        /// own (`excess_r` in meta.json, off if absent); `0` turns it off.
+        #[arg(long)]
+        project_excess: Option<f32>,
     },
     /// Rung-1 metrics (GOAL-2026-09-18 sec. 1) on fresh single-drop
     /// trajectories, scored only before the first wall reflection.
@@ -291,6 +302,10 @@ enum Cmd {
         /// Also project onto the energy inequality (task 11).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
         project_energy: bool,
+        /// Excess-energy inequality ratio `r`. Defaults to the checkpoint's
+        /// own (`excess_r` in meta.json, off if absent); `0` turns it off.
+        #[arg(long)]
+        project_excess: Option<f32>,
         /// xr ensemble at inference (task 10, CONCEPT sec. 4): K jittered
         /// patch-grid offsets, same weights, mean + per-cell spread. K <= 1
         /// disables the ensemble section of the report.
@@ -395,6 +410,7 @@ fn run(cmd: Cmd) {
             project,
             project_energy,
             r_max,
+            project_excess,
             spectral,
             nu,
             seed,
@@ -427,6 +443,7 @@ fn run(cmd: Cmd) {
             project,
             project_energy,
             r_max,
+            project_excess,
             spectral,
             nu,
             seed,
@@ -446,7 +463,8 @@ fn run(cmd: Cmd) {
             seed,
             project,
             project_energy,
-        } => eval_cmd(&model, trajectories, seed, project, project_energy),
+            project_excess,
+        } => eval_cmd(&model, trajectories, seed, project, project_energy, project_excess),
         Cmd::GenData {
             pool,
             batch,
@@ -495,6 +513,7 @@ fn run(cmd: Cmd) {
             seed,
             project,
             project_energy,
+            project_excess,
             xr,
             reverse,
             lagrangian,
@@ -502,10 +521,11 @@ fn run(cmd: Cmd) {
             if lagrangian {
                 eval_lagrangian_cmd(&model, seed)
             } else if stress {
-                eval_stress_cmd(&model, &horizons, project, project_energy)
+                eval_stress_cmd(&model, &horizons, project, project_energy, project_excess)
             } else {
                 eval_metrics_cmd(
-                    &model, &horizons, trajectories, seed, project, project_energy, xr, reverse,
+                    &model, &horizons, trajectories, seed, project, project_energy, project_excess,
+                    xr, reverse,
                 )
             }
         }
@@ -548,6 +568,7 @@ struct TrainArgs {
     project: bool,
     project_energy: bool,
     r_max: Option<f32>,
+    project_excess: Option<f32>,
     spectral: f32,
     nu: f32,
     seed: u64,
@@ -581,6 +602,7 @@ fn train_cmd(a: TrainArgs) {
         project,
         project_energy,
         r_max,
+        project_excess,
         spectral,
         nu,
         seed,
@@ -594,6 +616,10 @@ fn train_cmd(a: TrainArgs) {
         lagrangian,
         reverse,
     } = a;
+    assert!(
+        project_excess.is_none() || !(lagrangian || reverse),
+        "--project-excess is for forward shallow water only (energy rises in reverse time)"
+    );
     let (out, log_dir) = (out.as_path(), log_dir.as_path());
     let device = Default::default();
     let params = Params { nu, ..Params::default() };
@@ -671,14 +697,21 @@ fn train_cmd(a: TrainArgs) {
         project,
         project_energy,
         r_max,
+        project_excess,
         spectral,
         mask,
         ..Default::default()
     };
     let mut rows = Vec::new();
     let model = fit(model, gen.as_mut(), &fcfg, &device, |row| {
-        println!("step {:>6}  loss {:.6e}  {:.1}s", row.step, row.loss, row.secs);
-        rows.push((row.step, row.loss, row.secs));
+        match row.excess_active {
+            Some(a) => println!(
+                "step {:>6}  loss {:.6e}  {:.1}s  excess active {:.3}",
+                row.step, row.loss, row.secs, a
+            ),
+            None => println!("step {:>6}  loss {:.6e}  {:.1}s", row.step, row.loss, row.secs),
+        }
+        rows.push((row.step, row.loss, row.secs, row.excess_active));
     });
     let train_secs = rows.last().map(|r| r.2).unwrap_or(0.0);
 
@@ -702,6 +735,7 @@ fn train_cmd(a: TrainArgs) {
         nu: tick_params.nu,
         mask,
         energy_r_max: r_max,
+        excess_r: project_excess,
     };
     save(out, &model, &meta);
     println!("wrote {}", out.display());
@@ -723,12 +757,14 @@ fn train_cmd(a: TrainArgs) {
         return;
     }
 
-    let errs = eval_model(&model, &meta, 4, seed + 1000, project, project_energy, r_max, &device);
+    let errs = eval_model(
+        &model, &meta, 4, seed + 1000, project, project_energy, r_max, project_excess, &device,
+    );
     print_errors(&errs);
     write_run_log(
         log_dir, steps, lr, batch, pool, single_drop, long_fraction, amplitude_max,
         extra_drop_prob, no_horizon_fraction, extended_fraction, rollout, rollout_after, noise,
-        lr_floor, project, project_energy, r_max, spectral, nu, seed, layers, dim, &rows,
+        lr_floor, project, project_energy, r_max, project_excess, spectral, nu, seed, layers, dim, &rows,
         train_secs, &errs, note, model.num_params(), init, mask,
     );
 }
@@ -748,6 +784,7 @@ fn eval_model(
     project: bool,
     project_energy: bool,
     r_max: f32,
+    excess: Option<f32>,
     device: &<Back as burn::tensor::backend::Backend>::Device,
 ) -> Errors {
     let ticks = vec![10usize, 50, 200];
@@ -767,6 +804,7 @@ fn eval_model(
             project,
             project_energy,
             r_max,
+            excess,
             device,
         );
         for i in 0..ticks.len() {
@@ -807,16 +845,35 @@ fn print_errors(e: &Errors) {
     }
 }
 
-fn eval_cmd(dir: &Path, trajectories: usize, seed: u64, project: bool, project_energy: bool) {
+/// `--project-excess` resolved against the checkpoint: absent = the
+/// checkpoint's own `excess_r`, `<= 0` = off.
+fn resolve_excess(flag: Option<f32>, meta: &Meta) -> Option<f32> {
+    match flag {
+        None => meta.excess_r,
+        Some(r) if r <= 0.0 => None,
+        Some(r) => Some(r),
+    }
+}
+
+fn eval_cmd(
+    dir: &Path,
+    trajectories: usize,
+    seed: u64,
+    project: bool,
+    project_energy: bool,
+    project_excess: Option<f32>,
+) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
+    let excess = resolve_excess(project_excess, &meta);
     println!(
-        "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy} (r_max {}), mask: {}",
+        "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy} (r_max {}), excess projection: {excess:?}, mask: {}",
         meta.energy_r_max,
         mask_flags(meta.mask)
     );
     let e = eval_model(
-        &model, &meta, trajectories, seed, project, project_energy, meta.energy_r_max, &device,
+        &model, &meta, trajectories, seed, project, project_energy, meta.energy_r_max, excess,
+        &device,
     );
     print_errors(&e);
 }
@@ -879,11 +936,13 @@ fn eval_metrics_cmd(
     seed: u64,
     project: bool,
     project_energy: bool,
+    project_excess: Option<f32>,
     xr: usize,
     reverse: bool,
 ) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
+    let excess = if reverse { None } else { resolve_excess(project_excess, &meta) };
     let params = meta.params();
     let mut horizons = horizons.to_vec();
     horizons.sort_unstable();
@@ -923,7 +982,7 @@ fn eval_metrics_cmd(
         } else {
             score_rollout(
                 &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
-                project_energy, meta.energy_r_max, &device,
+                project_energy, meta.energy_r_max, excess, &device,
             )
         };
         for i in 0..horizons.len() {
@@ -948,7 +1007,7 @@ fn eval_metrics_cmd(
     }
 
     println!(
-        "backend: {BACKEND}, mass projection: {project}, mask: {}",
+        "backend: {BACKEND}, mass projection: {project}, energy projection: {project_energy}, excess projection: {excess:?}, mask: {}",
         mask_flags(meta.mask)
     );
     println!(
@@ -1016,6 +1075,36 @@ fn eval_metrics_cmd(
          (bound: <= 1e-6)"
     );
 
+    if let Some(r) = excess {
+        let mut rows: Vec<Vec<train::metrics::ExcessRow>> = vec![Vec::new(); horizons.len()];
+        let (mut active, mut ticks) = (0usize, 0usize);
+        for (init, _drop) in &trajs {
+            let (r_rows, a, t) = train::metrics::excess_activity_rollout(
+                &model, &params, &meta.norm, init, &horizons, meta.mask, r, &device,
+            );
+            for (i, row) in r_rows.into_iter().enumerate() {
+                rows[i].push(row);
+            }
+            active += a;
+            ticks += t;
+        }
+        println!(
+            "\nexcess energy E'_t/E'_0, model rollout with the excess projection ON (r={r}) vs \
+             OFF vs the solver, mean over {used} trajectories:\n"
+        );
+        println!("| ticks | ON | OFF | solver |\n|---:|---:|---:|---:|");
+        for (i, t) in horizons.iter().enumerate() {
+            let n = rows[i].len() as f32;
+            let m = |f: fn(&train::metrics::ExcessRow) -> f32| rows[i].iter().map(f).sum::<f32>() / n;
+            println!("| {t} | {:.6} | {:.6} | {:.6} |", m(|r| r.on), m(|r| r.off), m(|r| r.solver));
+        }
+        println!(
+            "\nexcess constraint active (proposal over E'_prev * r before projection): {active} of \
+             {ticks} ticks ({:.1} %)",
+            100.0 * active as f32 / ticks as f32
+        );
+    }
+
     for (traj_i, traj) in profiles.iter().enumerate() {
         for (t, mprof, tprof) in traj {
             println!("\nradial |h| profile, trajectory {traj_i}, {t} ticks (model vs solver):\n");
@@ -1061,15 +1150,22 @@ fn eval_metrics_cmd(
 
 /// Task 8b stress set: single high-amplitude, stacked and corner drops, 8
 /// trajectories each, seed 0 fixed per category so the set is reproducible.
-fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool, project_energy: bool) {
+fn eval_stress_cmd(
+    dir: &Path,
+    horizons: &[usize],
+    project: bool,
+    project_energy: bool,
+    project_excess: Option<f32>,
+) {
     let device = <Back as burn::tensor::backend::Backend>::Device::default();
     let (model, meta): (jacobi2000::Jacobi2000<Back>, Meta) = load(dir, &device);
+    let excess = resolve_excess(project_excess, &meta);
     let params = meta.params();
     let mut horizons = horizons.to_vec();
     horizons.sort_unstable();
 
     println!(
-        "backend: {BACKEND}, mass projection: {project}, mask: {}, STRESS SET (task 8b)",
+        "backend: {BACKEND}, mass projection: {project}, excess projection: {excess:?}, mask: {}, STRESS SET (task 8b)",
         mask_flags(meta.mask)
     );
     println!(
@@ -1091,7 +1187,7 @@ fn eval_stress_cmd(dir: &Path, horizons: &[usize], project: bool, project_energy
             let (init, drop) = sample_stress_drop(kind, &params, &mut rng);
             let (m, f) = score_rollout(
                 &model, &params, &meta.norm, &init, &drop, &horizons, meta.mask, project,
-                project_energy, meta.energy_r_max, &device,
+                project_energy, meta.energy_r_max, excess, &device,
             );
             for i in 0..horizons.len() {
                 model_rows[i].push(m[i]);
@@ -1315,12 +1411,13 @@ fn write_run_log(
     project: bool,
     project_energy: bool,
     r_max: f32,
+    project_excess: Option<f32>,
     spectral: f32,
     nu: f32,
     seed: u64,
     layers: usize,
     dim: usize,
-    rows: &[(usize, f32, f64)],
+    rows: &[(usize, f32, f64, Option<f32>)],
     train_secs: f64,
     e: &Errors,
     note: Option<String>,
@@ -1348,6 +1445,10 @@ fn write_run_log(
     let init_flag = init
         .map(|p| format!(" --init {}", p.display()))
         .unwrap_or_default();
+    let init_flag = match project_excess {
+        Some(r) => format!(" --project-excess {r}{init_flag}"),
+        None => init_flag,
+    };
     s.push_str(&format!(
         "- command: `cargo run --release -p cli{} -- train --steps {steps} --lr {lr} --batch {batch} --pool {pool} --single-drop {single_drop} --long-fraction {long_fraction} --amplitude-max {amplitude_max} --extra-drop-prob {extra_drop_prob} --no-horizon-fraction {no_horizon_fraction} --extended-fraction {extended_fraction} --rollout {rollout} --rollout-after {rollout_after} --noise {noise} --lr-floor {lr_floor} --project {project} --project-energy {project_energy} --r-max {r_max} --spectral {spectral} --nu {nu} --seed {seed} --layers {layers} --dim {dim} {}{init_flag}`\n",
         if cfg!(feature = "wgpu") { " --features wgpu --no-default-features" } else { "" },
@@ -1358,9 +1459,16 @@ fn write_run_log(
     if let Some(note) = note {
         s.push_str(&format!("- note: {note}\n"));
     }
-    s.push_str("\n## Loss\n\n| step | loss | s |\n|---:|---:|---:|\n");
-    for (step, loss, secs) in rows {
-        s.push_str(&format!("| {step} | {loss:.6e} | {secs:.1} |\n"));
+    if project_excess.is_some() {
+        s.push_str("\n## Loss\n\n| step | loss | s | excess active |\n|---:|---:|---:|---:|\n");
+    } else {
+        s.push_str("\n## Loss\n\n| step | loss | s |\n|---:|---:|---:|\n");
+    }
+    for (step, loss, secs, active) in rows {
+        match active {
+            Some(a) => s.push_str(&format!("| {step} | {loss:.6e} | {secs:.1} | {a:.3} |\n")),
+            None => s.push_str(&format!("| {step} | {loss:.6e} | {secs:.1} |\n")),
+        }
     }
     s.push_str("\n## Rollout error (RMSE, normalized units, 4 held-out trajectories)\n\n");
     s.push_str("| ticks | model | frozen field |\n|---:|---:|---:|\n");
@@ -1420,6 +1528,11 @@ fn energy_stats_cmd(
     let denorm = Denorm { mean: gen.norm.mean, std: gen.norm.std, depth: gen.norm.depth };
     let mut all_ratios = Vec::new();
     let mut all_energy = Vec::new();
+    let dt_dx = params.dt / params.dx;
+    let mut excess_ratios = Vec::new();
+    let mut plain_ratios = Vec::new();
+    let mut all_excess = Vec::new();
+    let mut injected = 0usize;
     for _ in 0..ticks {
         let batch = gen.next_batch(1);
         let b = batch.batch;
@@ -1432,6 +1545,25 @@ fn energy_stats_cmd(
             all_energy.push(e0[i]);
             if e0[i] > 1e-9 {
                 all_ratios.push(e1[i] / e0[i]);
+            }
+        }
+        // Excess energy, skipping windows where the generator injected a
+        // drop mid-window (mass jumps; the solver did not produce that step).
+        let x0e: Vec<f32> = excess_energy(&x0, &denorm, params.g, dt_dx).into_data().to_vec().unwrap();
+        let x1e: Vec<f32> = excess_energy(&x1, &denorm, params.g, dt_dx).into_data().to_vec().unwrap();
+        let p0: Vec<f32> = excess_energy(&x0, &denorm, params.g, 0.0).into_data().to_vec().unwrap();
+        let p1: Vec<f32> = excess_energy(&x1, &denorm, params.g, 0.0).into_data().to_vec().unwrap();
+        let m0: Vec<f32> = jacobi2000::mass(&x0).into_data().to_vec().unwrap();
+        let m1: Vec<f32> = jacobi2000::mass(&x1).into_data().to_vec().unwrap();
+        for i in 0..b {
+            if (m1[i] - m0[i]).abs() > 1e-3 {
+                injected += 1;
+                continue;
+            }
+            all_excess.push(x0e[i]);
+            if x0e[i] > 1e-12 {
+                excess_ratios.push(x1e[i] / x0e[i]);
+                plain_ratios.push(p1[i] / p0[i]);
             }
         }
     }
@@ -1496,6 +1628,87 @@ fn energy_stats_cmd(
 
     let r_max = rmax * (1.0 + 1e-4);
     println!("\nsuggested --r-max (measured max * (1 + 1e-4)): {r_max:.6}");
+
+    println!(
+        "\nexcess energy E' = sum 1/2 g (h - hbar)^2 + 1/2 h |u|^2 - (dt/dx)(g/2) sum (h - hbar) div(h u), {} windows ({injected} skipped: drop injected mid-window):",
+        all_excess.len()
+    );
+    let (xmin, xp50, xp99, xmax) = distribution(&mut all_excess);
+    println!("| E' min | p50 | p99 | max |\n|---:|---:|---:|---:|");
+    println!("| {xmin:.6} | {xp50:.6} | {xp99:.6} | {xmax:.6} |\n");
+    println!("per-tick ratio E'_{{t+1}}/E'_t:");
+    println!("| form | samples | above 1 | min | p01 | p50 | p99 | p999 | max |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+    let mut r_excess = 0.0f32;
+    for (label, ratios) in [("plain (no cross term)", &plain_ratios), ("with cross term", &excess_ratios)] {
+        let up = ratios.iter().filter(|r| **r > 1.0).count();
+        let mut sorted = ratios.clone();
+        let n_r = sorted.len();
+        let (qmin, qp50, qp99, qmax) = distribution(&mut sorted);
+        let at = |p: f32| sorted[((p * (n_r - 1) as f32).round() as usize).min(n_r - 1)];
+        println!(
+            "| {label} | {n_r} | {up} | {qmin:.7} | {:.7} | {qp50:.7} | {qp99:.7} | {:.7} | {qmax:.7} |",
+            at(0.01),
+            at(0.999)
+        );
+        r_excess = qmax;
+    }
+    println!("\nsuggested --project-excess (measured max, cross-term form, + 1e-6): {:.7}", r_excess + 1e-6);
+
+    // Running ratio E'_t / E'_0 from fresh drops (the eval sampler, plus
+    // high-amplitude drops), 200 ticks each, both forms.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let norm = gen.norm;
+    for (label, kind) in [
+        ("eval single drop (amp 0.03-0.07)", None),
+        ("high amplitude (0.15-0.3)", Some(train::metrics::StressKind::HighAmp)),
+    ] {
+        let mut rows: [Vec<Vec<f32>>; 2] = [vec![Vec::new(); 3], vec![Vec::new(); 3]];
+        for _ in 0..pool {
+            let (mut st, _) = match kind {
+                None => sample_single_drop(&params, &mut rng),
+                Some(k) => sample_stress_drop(k, &params, &mut rng),
+            };
+            let mut sw = solvers::ShallowWater::new(params);
+            let mut packed = vec![0.0f32; 3 * params.cells()];
+            let mut at = |st: &State| -> [f32; 2] {
+                norm.encode(st, &mut packed);
+                let x = Tensor::<Back, 1>::from_floats(packed.as_slice(), &device)
+                    .reshape([1, 3, params.ny, params.nx]);
+                [
+                    excess_energy(&x, &denorm, params.g, 0.0).into_scalar(),
+                    excess_energy(&x, &denorm, params.g, dt_dx).into_scalar(),
+                ]
+            };
+            let e0 = at(&st);
+            let mut m = [0.0f32; 2];
+            for t in 1..=200 {
+                sw.step(&mut st);
+                let e = at(&st);
+                for f in 0..2 {
+                    let r = e[f] / e0[f];
+                    m[f] = m[f].max(r);
+                    if t == 50 {
+                        rows[f][1].push(r);
+                    }
+                    if t == 200 {
+                        rows[f][2].push(r);
+                    }
+                }
+            }
+            for f in 0..2 {
+                rows[f][0].push(m[f]);
+            }
+        }
+        println!("\n{label}, {pool} trajectories x 200 ticks:");
+        println!("| form | quantity | min | p50 | max |\n|---|---|---:|---:|---:|");
+        for (f, form) in ["plain", "cross term"].iter().enumerate() {
+            for (q, name) in ["max_t E'_t/E'_0", "E'_50/E'_0", "E'_200/E'_0"].iter().enumerate() {
+                let (a, b, _, d) = distribution(&mut rows[f][q]);
+                println!("| {form} | {name} | {a:.6} | {b:.6} | {d:.6} |");
+            }
+        }
+    }
 }
 
 /// Write an 8-bit grayscale PGM (binary P5), min-max normalized per frame.

@@ -11,7 +11,10 @@
 //! the field the drop actually lives in.
 
 use burn::prelude::*;
-use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
+use jacobi2000::{
+    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, Jacobi2000,
+    Mask,
+};
 use rand::rngs::StdRng;
 use rand::Rng;
 use solvers::{Params, ShallowWater, State};
@@ -455,6 +458,7 @@ pub fn score_rollout<B: Backend>(
     project: bool,
     project_energy_flag: bool,
     r_max: f32,
+    excess: Option<f32>,
     device: &B::Device,
 ) -> (Vec<Metrics>, Vec<Metrics>) {
     let n = params.cells();
@@ -468,6 +472,7 @@ pub fn score_rollout<B: Backend>(
         depth: norm.depth,
     };
 
+    let dt_dx = params.dt / params.dx;
     let mut truth = init.clone();
     let mut solver = ShallowWater::new(*params);
 
@@ -483,12 +488,16 @@ pub fn score_rollout<B: Backend>(
     for t in 1..=last {
         solver.step(&mut truth);
         let prev_energy = project_energy_flag.then(|| energy(&x, &denorm, params.g));
+        let prev_excess = excess.map(|_| excess_energy(&x, &denorm, params.g, dt_dx));
         x = model.step(x, meta.clone(), mask.clone());
         if project {
             x = project_mass(x, mass0.clone());
         }
         if let Some(prev_energy) = prev_energy {
             x = project_energy(x, prev_energy, &denorm, params.g, r_max);
+        }
+        if let (Some(r), Some(prev_excess)) = (excess, prev_excess) {
+            x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, r);
         }
         if horizons.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];
@@ -729,6 +738,80 @@ pub fn energy_drift_rollout<B: Backend>(
     }
     let violation = max_relative_violation(&on_energies, r_max);
     (rows, violation)
+}
+
+/// One horizon's excess energy relative to tick 0, `E'_t / E'_0`.
+#[derive(Debug, Clone, Copy)]
+pub struct ExcessRow {
+    pub tick: usize,
+    pub on: f32,
+    pub off: f32,
+    pub solver: f32,
+}
+
+/// Roll the model forward with the excess projection ON and OFF (mass
+/// projection on in both) beside the solver; return `E'_t / E'_0` for all
+/// three at each horizon, and how many of the ON rollout's ticks had a
+/// proposal over the bound `E'_prev * r` before projection, out of how many.
+#[allow(clippy::too_many_arguments)]
+pub fn excess_activity_rollout<B: Backend>(
+    model: &Jacobi2000<B>,
+    params: &Params,
+    norm: &Normalizer,
+    init: &State,
+    horizons: &[usize],
+    mask: Mask,
+    r: f32,
+    device: &B::Device,
+) -> (Vec<ExcessRow>, usize, usize) {
+    let n = params.cells();
+    let grid = model.grid;
+    let mask = mask.to_tensor::<B>(&grid, device);
+    let meta =
+        Tensor::<B, 1>::from_floats(meta_of(params).as_slice(), device).reshape([1, META_DIM]);
+    let denorm = Denorm {
+        mean: norm.mean,
+        std: norm.std,
+        depth: norm.depth,
+    };
+    let dt_dx = params.dt / params.dx;
+    let ex = |x: &Tensor<B, 4>| -> f32 { excess_energy(x, &denorm, params.g, dt_dx).into_scalar().elem() };
+
+    let mut truth = init.clone();
+    let mut solver = ShallowWater::new(*params);
+    let mut packed = vec![0.0f32; 3 * n];
+    norm.encode(init, &mut packed);
+    let mut x_on = Tensor::<B, 1>::from_floats(packed.as_slice(), device)
+        .reshape([1, 3, params.ny, params.nx]);
+    let mut x_off = x_on.clone();
+    let mass0 = jacobi2000::mass(&x_on);
+    let e0 = ex(&x_on);
+
+    let (mut rows, mut active) = (Vec::new(), 0usize);
+    let last = *horizons.last().unwrap();
+    for t in 1..=last {
+        solver.step(&mut truth);
+        let prev = excess_energy(&x_on, &denorm, params.g, dt_dx);
+        let prev_s: f32 = prev.clone().into_scalar().elem();
+        x_on = project_mass(model.step(x_on, meta.clone(), mask.clone()), mass0.clone());
+        if ex(&x_on) > prev_s * r {
+            active += 1;
+        }
+        x_on = project_excess_energy(x_on, prev, &denorm, params.g, dt_dx, r);
+        x_off = project_mass(model.step(x_off, meta.clone(), mask.clone()), mass0.clone());
+        if horizons.contains(&t) {
+            norm.encode(&truth, &mut packed);
+            let target = Tensor::<B, 1>::from_floats(packed.as_slice(), device)
+                .reshape([1, 3, params.ny, params.nx]);
+            rows.push(ExcessRow {
+                tick: t,
+                on: ex(&x_on) / e0,
+                off: ex(&x_off) / e0,
+                solver: ex(&target) / e0,
+            });
+        }
+    }
+    (rows, active, last)
 }
 
 /// Like `score_rollout`, but returns the raw azimuthally-averaged `|h|`

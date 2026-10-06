@@ -5,7 +5,10 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
+use jacobi2000::{
+    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, Jacobi2000,
+    Mask,
+};
 
 use crate::data::{Batch, Generator, Normalizer};
 use crate::lagrangian::LagrangianGenerator;
@@ -98,6 +101,12 @@ pub struct FitConfig {
     /// rather than assumed (see `fallback_r_max` for the coded-formula
     /// fallback). Unused when `project_energy` is off.
     pub r_max: f32,
+    /// Excess-energy inequality (`jacobi2000::project_excess_energy`):
+    /// `Some(r)` projects every predicted step onto `E'_new <= E'_prev * r`,
+    /// after the mass projection; `r` is measured from the solver
+    /// (`energy-stats`, docs/runs/2026-10-06-energy-inequality.md). `None`
+    /// is off.
+    pub project_excess: Option<f32>,
     /// Weight of the wavenumber-banded error term (`spectral::band_mse`) added
     /// to plain MSE. 0 disables it.
     pub spectral: f32,
@@ -120,6 +129,7 @@ impl Default for FitConfig {
             project: true,
             project_energy: false,
             r_max: 1.0,
+            project_excess: None,
             spectral: 0.0,
             log_every: 100,
             lr_floor: 0.05,
@@ -132,6 +142,10 @@ pub struct LogRow {
     pub step: usize,
     pub loss: f32,
     pub secs: f64,
+    /// Fraction of (batch member, rollout tick) proposals on this step that
+    /// broke the excess-energy bound before projection; `None` when the
+    /// excess projection is off.
+    pub excess_active: Option<f32>,
 }
 
 pub fn fit<B: AutodiffBackend>(
@@ -154,6 +168,7 @@ pub fn fit<B: AutodiffBackend>(
         depth: norm.depth,
     };
 
+    let dt_dx = params.dt / params.dx;
     let t0 = std::time::Instant::now();
     let mut running = 0.0f32;
     let mut counted = 0usize;
@@ -177,6 +192,8 @@ pub fn fit<B: AutodiffBackend>(
         let mut x = to_field(&batch.states[0]);
         let mass0 = jacobi2000::mass(&x);
         let mut loss = Tensor::<B, 1>::zeros([1], device);
+        let log_now = (step + 1) % cfg.log_every == 0 || step == 0;
+        let mut active = Tensor::<B::InnerBackend, 1>::zeros([1], device);
         for step_k in 0..k {
             if cfg.noise > 0.0 {
                 x = x.clone()
@@ -189,12 +206,25 @@ pub fn fit<B: AutodiffBackend>(
             let prev_energy = cfg
                 .project_energy
                 .then(|| energy(&x, &denorm, params.g));
+            let prev_excess = cfg
+                .project_excess
+                .map(|_| excess_energy(&x, &denorm, params.g, dt_dx));
             x = model.step(x, meta.clone(), mask.clone());
             if cfg.project {
                 x = project_mass(x, mass0.clone());
             }
             if let Some(prev_energy) = prev_energy {
                 x = project_energy(x, prev_energy, &denorm, params.g, cfg.r_max);
+            }
+            if let (Some(r), Some(prev_excess)) = (cfg.project_excess, prev_excess) {
+                if log_now {
+                    let over = excess_energy(&x.clone().inner(), &denorm, params.g, dt_dx)
+                        .greater(prev_excess.clone().inner() * r)
+                        .float()
+                        .sum();
+                    active = active + over;
+                }
+                x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, r);
             }
             let target = to_field(&batch.states[step_k + 1]);
             let err = x.clone() - target;
@@ -220,10 +250,15 @@ pub fn fit<B: AutodiffBackend>(
             let l: f32 = loss.into_scalar().elem();
             running += l;
             counted += 1;
+            let excess_active = cfg.project_excess.map(|_| {
+                let n: f32 = active.into_scalar().elem();
+                n / (b * k) as f32
+            });
             on_log(&LogRow {
                 step: step + 1,
                 loss: l,
                 secs: t0.elapsed().as_secs_f64(),
+                excess_active,
             });
         }
     }
@@ -290,5 +325,51 @@ mod tests {
                 .into_data()
                 .assert_approx_eq::<f32>(&x1.into_data(), burn::tensor::Tolerance::default());
         }
+    }
+
+    /// The excess energy with the scheme's cross term is the inequality the
+    /// solver itself satisfies: at `nu = 0.01` it never rises from one tick
+    /// to the next (beyond f32 summation noise, 1e-5), so projecting each solver state onto `<= previous` is
+    /// the identity; the plain excess energy (`dt_dx = 0`) rises on about
+    /// half the ticks. Guards the cross term's sign and flux form against
+    /// `solvers::shallow_water`.
+    #[test]
+    fn solver_excess_energy_with_cross_term_never_rises_at_nu_0_01() {
+        let device = Default::default();
+        let params = Params { nu: 1e-2, ..Params::default() };
+        let dt_dx = params.dt / params.dx;
+        let denorm = Denorm { mean: [0.0; 3], std: [1.0; 3], depth: 0.0 };
+        let dims = [1, 3, params.ny, params.nx];
+        let encode = |s: &State| {
+            let mut v = Vec::with_capacity(3 * params.cells());
+            v.extend_from_slice(&s.h);
+            v.extend_from_slice(&s.u);
+            v.extend_from_slice(&s.v);
+            Tensor::<B, 1>::from_floats(v.as_slice(), &device).reshape(dims)
+        };
+        let mut solver = ShallowWater::new(params);
+        let mut state = State::flat(&params);
+        state.add_drop(&params, 24.0, 40.0, 0.05, 4.0);
+        let mut x0 = encode(&state);
+        let (mut plain_up, mut worst) = (0, 0.0f32);
+        for _ in 0..200 {
+            solver.step(&mut state);
+            let x1 = encode(&state);
+            let e0 = excess_energy(&x0, &denorm, params.g, dt_dx);
+            let e1: f32 = excess_energy(&x1, &denorm, params.g, dt_dx).into_scalar();
+            let e0s: f32 = e0.clone().into_scalar();
+            worst = worst.max(e1 / e0s);
+            let p0: f32 = excess_energy(&x0, &denorm, params.g, 0.0).into_scalar();
+            let p1: f32 = excess_energy(&x1, &denorm, params.g, 0.0).into_scalar();
+            plain_up += (p1 > p0) as usize;
+            let projected = project_excess_energy(x1.clone(), e0, &denorm, params.g, dt_dx, 1.0 + 1e-5);
+            assert_eq!(
+                projected.into_data().to_vec::<f32>().unwrap(),
+                x1.clone().into_data().to_vec::<f32>().unwrap()
+            );
+            x0 = x1;
+        }
+        assert!(worst <= 1.0 + 1e-5, "cross-term excess energy rose by {worst}");
+        assert!(plain_up > 50, "plain excess energy rose on only {plain_up}/200 ticks");
     }
 }

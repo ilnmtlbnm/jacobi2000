@@ -4,7 +4,10 @@
 //! channels are comparable and the numbers are dimensionless.
 
 use burn::prelude::*;
-use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Mask};
+use jacobi2000::{
+    energy, excess_energy, project_energy, project_excess_energy, project_mass, Denorm, Jacobi2000,
+    Mask,
+};
 use solvers::{Params, ShallowWater, State};
 
 use crate::data::{meta_of, Normalizer, META_DIM};
@@ -45,6 +48,7 @@ pub fn rollout_errors<B: Backend>(
     project: bool,
     project_energy_flag: bool,
     r_max: f32,
+    excess: Option<f32>,
     device: &B::Device,
 ) -> RolloutErrors {
     let n = params.cells();
@@ -58,6 +62,7 @@ pub fn rollout_errors<B: Backend>(
         depth: norm.depth,
     };
 
+    let dt_dx = params.dt / params.dx;
     let mut truth = init.clone();
     let mut solver = ShallowWater::new(*params);
 
@@ -78,12 +83,16 @@ pub fn rollout_errors<B: Backend>(
     for t in 1..=last {
         solver.step(&mut truth);
         let prev_energy = project_energy_flag.then(|| energy(&x, &denorm, params.g));
+        let prev_excess = excess.map(|_| excess_energy(&x, &denorm, params.g, dt_dx));
         x = model.step(x, meta.clone(), mask.clone());
         if project {
             x = project_mass(x, mass0.clone());
         }
         if let Some(prev_energy) = prev_energy {
             x = project_energy(x, prev_energy, &denorm, params.g, r_max);
+        }
+        if let (Some(r), Some(prev_excess)) = (excess, prev_excess) {
+            x = project_excess_energy(x, prev_excess, &denorm, params.g, dt_dx, r);
         }
         if ticks.contains(&t) {
             let mut target = vec![0.0f32; 3 * n];
