@@ -104,9 +104,12 @@ done
     echo "|---|---|---:|---:|---:|---|"
     for f in "$OUT"/*.eval-*.txt; do
         b=$(basename "$f" .txt)
-        row=$(grep -E '^\| 50 \| [0-9.]+ \| [0-9.]+ \| [0-9.]+ \|$' "$f" | tail -1 | cut -d'|' -f3-5)
+        # The E' section exists only when a projection is on (absent from eval-off).
+        row=$( (grep -E '^\| 50 \| [0-9.]+ \| [0-9.]+ \| [0-9.]+ \|$' "$f" || true) | tail -1 | cut -d'|' -f3-5)
         act=$(grep -oE '[0-9]+ of [0-9]+ ticks \([0-9.]+ %\)' "$f" || true)
-        [[ -n "$row" ]] && echo "| ${b%%.eval-*} | ${b##*.eval-} |$row| $act |"
+        if [[ -n "$row" ]]; then
+            echo "| ${b%%.eval-*} | ${b##*.eval-} |$row| $act |"
+        fi
     done
 } > "$OUT/summary.md"
 echo "$(date '+%FT%T') done"
