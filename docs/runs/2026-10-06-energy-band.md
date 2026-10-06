@@ -219,3 +219,134 @@ The constraint earns its place if either holds:
 
 If every difference sits inside the seed std, energy drift is not what holds the wider model
 back, and the next suspect is the training budget itself.
+
+## 7. Results of the 3080 sweep (run 2026-10-06, 1 h 12 min wall)
+
+Raw outputs are in `results/band/`: per-run eval outputs, training logs, the training-log
+JSONs, and `summary.md`. The box path in the training logs' "exported to" line is replaced by
+`<box-dir>`.
+
+The script died in its summary tail. With `set -euo pipefail`, the grep for the `E'` section
+returned nonzero on `*.eval-off.txt` files. That is fixed in `89b5eef`. `summary.md` was
+regenerated locally from the raw files with the fixed tail; nothing was rerun.
+
+The table below is at 50 ticks, mean ± sd over seeds 20/21/22: 24 held-out trajectories per
+eval, the rung6 protocol.
+
+| size | train | inference | n | corr@50 | active RMSE@50 | amp@50 | global RMSE@50 | E'_50/E'_0 (ON) | active ticks % |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 128/4 | off | off | 3 | 0.9817 ± 0.0074 | 0.1312 ± 0.0250 | 1.043 ± 0.033 | 0.1077 ± 0.0183 | – | – |
+| 128/4 | off | upper | 3 | 0.9810 ± 0.0076 | 0.1199 ± 0.0199 | 0.996 ± 0.014 | 0.1006 ± 0.0160 | 1.0154 ± 0.0019 | 92.7 ± 4.8 |
+| 128/4 | off | band | 3 | 0.9810 ± 0.0076 | 0.1199 ± 0.0199 | 0.997 ± 0.014 | 0.1006 ± 0.0160 | 1.0162 ± 0.0010 | 95.5 ± 2.4 |
+| 128/4 | upper | off | 3 | 0.9913 ± 0.0012 | 0.1138 ± 0.0344 | 1.034 ± 0.078 | 0.0839 ± 0.0195 | – | – |
+| 128/4 | upper | upper | 3 | 0.9912 ± 0.0011 | 0.0943 ± 0.0078 | 0.997 ± 0.018 | 0.0720 ± 0.0065 | 0.9775 ± 0.0403 | 41.0 ± 49.1 |
+| 128/4 | band | off | 3 | 0.0679 ± 0.0060 | 0.8841 ± 0.0002 | 0.146 ± 0.003 | 0.5520 ± 0.0003 | – | – |
+| 128/4 | band | band | 3 | 0.0083 ± 0.0010 | 0.9148 ± 0.0057 | 16.054 ± 7.536 | 0.7833 ± 0.0402 | 0.9881 ± 0.0000 | 100.0 ± 0.0 |
+| 256/6 | off | off | 3 | 0.9822 ± 0.0151 | 0.1470 ± 0.0711 | 1.029 ± 0.027 | 0.1205 ± 0.0674 | – | – |
+| 256/6 | off | upper | 3 | 0.9813 ± 0.0163 | 0.1305 ± 0.0717 | 0.974 ± 0.033 | 0.1095 ± 0.0667 | 1.0078 ± 0.0135 | 76.6 ± 31.8 |
+| 256/6 | off | band | 3 | 0.9813 ± 0.0163 | 0.1304 ± 0.0718 | 0.976 ± 0.036 | 0.1095 ± 0.0666 | 1.0124 ± 0.0073 | 88.8 ± 14.9 |
+| 256/6 | upper | off | 3 | 0.9866 ± 0.0060 | 0.1361 ± 0.0583 | 1.029 ± 0.059 | 0.1083 ± 0.0454 | – | – |
+| 256/6 | upper | upper | 3 | 0.9859 ± 0.0070 | 0.1222 ± 0.0368 | 0.984 ± 0.010 | 0.0999 ± 0.0326 | 1.0037 ± 0.0113 | 62.1 ± 31.4 |
+| 256/6 | band | off | 3 | 0.0647 ± 0.0094 | 0.8846 ± 0.0005 | 0.149 ± 0.009 | 0.5523 ± 0.0008 | – | – |
+| 256/6 | band | band | 3 | 0.0057 ± 0.0012 | 0.9111 ± 0.0055 | 11.180 ± 3.325 | 0.8187 ± 0.0394 | 0.9881 ± 0.0000 | 100.0 ± 0.0 |
+
+`E'_50/E'_0 (ON)` is the excess energy of the projected rollout; the solver's own value is
+1.0005. "Active ticks" counts the ticks whose proposal was outside the bound before projection.
+
+### 7a. The band-trained checkpoints collapse: a training bug, fixed
+
+The symptoms appear on all 6 band-trained runs:
+- corr@50 is 0.004-0.009 under band inference, and the amplitude ratio is 7.4-24.4.
+- The raw model (inference off) is down to an amplitude ratio of 0.15 and `E'_50/E'_0` of
+  0.0004-0.005.
+- Under band inference `E'` sits exactly on the lower edge every tick (0.99975^48 = 0.98807)
+  and the projection acts on 100 % of ticks.
+- Training did not diverge: the loss curves match the off and upper arms
+  (`results/band/*-band.train.log`).
+- The constraint was active on 88-100 % of training proposals at the first log row and on
+  100 % from step 100 on. In the upper arm, activity wandered between 0 % and 100 % from one
+  log row to the next.
+
+Cause: `train.py` (and the Rust `fit`) measured the band's reference energy `E'_prev` after
+the input-noise injection (`--noise 0.04`). That noise carries 0.6 % of `E'` at p50 and up to
+6 % at the tail, about 20 times the band's width (6e-4). Measured on 256 training windows,
+95 % of the true next states fall below `0.99975 · E'(noisy input)`, against 0 % below
+`0.99975 · E'(clean input)`.
+
+So the lower edge lifted almost every target-matching prediction. The model learned to emit an
+energy-starved field and leave the amplitude to the lift: the uniform up-scaling makes the loss
+blind to the proposal's amplitude whenever it binds. At inference, the lift multiplies whatever
+the model does not damp by `s > 1` every tick, and that grows into the spike.
+
+It is not a sign or ratio bug in the band itself:
+- the off-trained checkpoints under band inference match upper inference (table above);
+- the projection tests pass, gradient finiteness included;
+- with the fix below, the same band in training no longer collapses (B).
+
+Fix (`1dc2138`): measure `E'_prev` on the state before noise is added, in both `train.py` and
+`fit.rs`. The upper arm was affected the same way, but mildly: a noisy reference only loosens
+an upper bound.
+
+Local reproduction on the M2 (CPU, 1000 steps, 128/4, seed 20, 300-trajectory dump
+`--nu 0.001 --seed 11`, otherwise the sweep recipe):
+
+| run | inference | corr@50 | active RMSE@50 | amp@50 | global RMSE@50 | `E'_50/E'_0` raw / ON | active ticks |
+|---|---|---:|---:|---:|---:|---:|---:|
+| A: band, reference after noise (old) | off | 0.0692 | 0.9960 | 0.199 | 0.6223 | | |
+| A | band | 0.7393 | 0.3987 | 2.142 | 0.4356 | 0.0031 / 0.9881 | 100 % |
+| B: band, reference before noise (fixed) | off | 0.9468 | 0.4047 | 0.662 | 0.2700 | | |
+| B | band | **0.9624** | **0.2081** | **0.968** | **0.1764** | 0.435 / 0.9881 | 100 % |
+| C: constraint off in training | off | 0.9573 | 0.2720 | 1.028 | 0.2316 | | |
+| C | upper | 0.9554 | 0.2582 | 0.942 | 0.2193 | 1.214 / 1.0130 | 94.9 % |
+| C | band | 0.9556 | 0.2580 | 0.944 | 0.2192 | 1.214 / 1.0163 | 98.8 % |
+
+A reproduces the collapse already at 1000 steps. With the fix (B), the band-trained model is
+the best of the three on active RMSE@50 (0.208 vs 0.258-0.272), global RMSE and corr@50. This
+is one seed and one short budget.
+
+B still leans on the lift: its raw rollout keeps only 43 % of the energy by tick 50, and the
+projection acts on every tick. The band does its job at inference, but the model is not
+learning energy conservation on its own.
+
+### 7b. Verdict (off and upper only, since the band arms of this sweep are invalid)
+
+**Does the constraint make the small model as good as the large one?** The small model was
+already as good: 128/4 off matches 256/6 off (corr@50 0.982 vs 0.982, active RMSE 0.131 vs
+0.147). The upper bound in training makes the small model better than both:
+- corr@50 0.9913 ± 0.0011, against 0.9817 ± 0.0074 trained without it;
+- active RMSE@50 0.094 ± 0.008 with upper at inference, against 0.131 ± 0.025 off/off (−28 %);
+- global RMSE 0.072 against 0.108;
+- seed-to-seed sd shrinks 3-7x.
+
+**Does width help once the constraint is on?** No. 256/6 trained with the upper bound scores
+corr@50 0.9859 ± 0.0070 and active RMSE 0.122 ± 0.037, worse than 128/4 with the same
+constraint, and its seed spread stays large. As in rung6, width does not help at this budget;
+the constraint does, for the small model.
+
+Applying the constraint at inference only (off-trained checkpoints) trims active RMSE by about
+10 % and pulls amp@50 to 0.97-1.00, but leaves corr unchanged. Most of the gain comes from
+training with it.
+
+Caveats:
+- 3 seeds, 24 trajectories per eval.
+- The upper arm's reference energy was the noisy one (a slightly looser bound than intended).
+- Activity in upper/upper varies a lot between seeds (1-96 %): seed 22 at 128/4 hardly ever
+  touched the bound, and its model loses energy (`E'_50/E'_0` 0.94).
+
+### 7c. Next run (prepared, not launched)
+
+Rerun the upper and band arms with the fixed reference: 12 trainings plus 24 evals, about
+40-50 min at this sweep's measured pace. The script is resumable, so deleting those outputs
+reruns just them:
+
+```
+rsync -az --delete --exclude target/ --exclude target-wgpu/ --exclude results/ --exclude data/ \
+  --exclude web/pkg/ --exclude web/node_modules/ ./ <box>:<box-dir>/
+ssh <box> 'cd <box-dir> && rm -rf results/band/*-upper* results/band/*-band* results/band/summary.md'
+ssh <box> 'cd <box-dir> && systemd-run --user --unit=jacobi-band2 --same-dir --collect --property=Type=simple \
+  --setenv=DATASET=<dump> --setenv=PYTHON=<venv>/bin/python --setenv=JACOBI=./target-wgpu/release/jacobi \
+  /usr/bin/flock <box-lock> /bin/bash tools/energy-band-sweep.sh'
+```
+
+The Rust binary needs no rebuild for this. `fit.rs` changed, but the sweep trains in PyTorch,
+and the eval and import paths are unchanged.

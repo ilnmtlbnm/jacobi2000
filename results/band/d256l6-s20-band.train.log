@@ -1,0 +1,34 @@
+model: 5427971 params, device cuda
+step      1  loss 0.009482  0.6s  excess active 1.000
+step    100  loss 0.003758  3.3s  excess active 0.938
+step    200  loss 0.004627  6.1s  excess active 1.000
+step    300  loss 0.008911  14.7s  excess active 1.000
+step    400  loss 0.008130  23.3s  excess active 1.000
+step    500  loss 0.007987  31.8s  excess active 1.000
+step    600  loss 0.006543  40.4s  excess active 1.000
+step    700  loss 0.006785  49.0s  excess active 1.000
+step    800  loss 0.005228  57.6s  excess active 1.000
+step    900  loss 0.004220  66.2s  excess active 1.000
+step   1000  loss 0.003988  74.8s  excess active 1.000
+step   1100  loss 0.004944  83.4s  excess active 1.000
+step   1200  loss 0.007708  92.0s  excess active 1.000
+step   1300  loss 0.036622  100.6s  excess active 1.000
+step   1400  loss 0.026624  109.2s  excess active 1.000
+step   1500  loss 0.035881  117.8s  excess active 1.000
+step   1600  loss 0.004922  126.5s  excess active 1.000
+step   1700  loss 0.005561  135.1s  excess active 1.000
+step   1800  loss 0.087650  143.7s  excess active 1.000
+step   1900  loss 0.002498  152.3s  excess active 1.000
+step   2000  loss 0.002301  160.9s  excess active 1.000
+step   2100  loss 0.006266  169.5s  excess active 1.000
+step   2200  loss 0.005022  178.1s  excess active 1.000
+step   2300  loss 0.003157  186.8s  excess active 1.000
+step   2400  loss 0.004102  195.4s  excess active 1.000
+step   2500  loss 0.004849  204.0s  excess active 1.000
+step   2600  loss 0.011780  212.6s  excess active 1.000
+step   2700  loss 0.011768  221.2s  excess active 1.000
+step   2800  loss 0.003052  229.9s  excess active 1.000
+step   2900  loss 0.003676  238.5s  excess active 1.000
+step   3000  loss 0.004259  247.1s  excess active 1.000
+training wall time: 247.9s
+exported to <box-dir>/results/band/d256l6-s20-band

@@ -1,0 +1,34 @@
+model: 995843 params, device cuda
+step      1  loss 0.039701  0.4s
+step    100  loss 0.006431  2.4s
+step    200  loss 0.003436  4.2s
+step    300  loss 0.008201  7.9s
+step    400  loss 0.007181  11.6s
+step    500  loss 0.005389  15.2s
+step    600  loss 0.005901  18.8s
+step    700  loss 0.005609  22.5s
+step    800  loss 0.004904  26.1s
+step    900  loss 0.004673  29.8s
+step   1000  loss 0.006250  33.4s
+step   1100  loss 0.009514  37.0s
+step   1200  loss 0.004308  40.7s
+step   1300  loss 0.003320  44.3s
+step   1400  loss 0.004628  47.9s
+step   1500  loss 0.002254  51.5s
+step   1600  loss 0.001968  55.2s
+step   1700  loss 0.002262  58.8s
+step   1800  loss 0.001850  62.5s
+step   1900  loss 0.002833  66.2s
+step   2000  loss 0.001617  69.8s
+step   2100  loss 0.001652  73.5s
+step   2200  loss 0.002459  77.1s
+step   2300  loss 0.001374  80.8s
+step   2400  loss 0.001849  84.4s
+step   2500  loss 0.001391  88.1s
+step   2600  loss 0.001737  91.8s
+step   2700  loss 0.001294  95.4s
+step   2800  loss 0.001148  99.0s
+step   2900  loss 0.001842  102.7s
+step   3000  loss 0.001328  106.3s
+training wall time: 107.0s
+exported to <box-dir>/results/band/d128l4-s22-off

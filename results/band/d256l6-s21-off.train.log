@@ -1,0 +1,34 @@
+model: 5427971 params, device cuda
+step      1  loss 0.018452  0.6s
+step    100  loss 0.003682  2.9s
+step    200  loss 0.003180  5.3s
+step    300  loss 0.012565  13.6s
+step    400  loss 0.008152  21.9s
+step    500  loss 0.005976  30.2s
+step    600  loss 0.005198  38.5s
+step    700  loss 0.005762  46.9s
+step    800  loss 0.004286  55.3s
+step    900  loss 0.003828  63.6s
+step   1000  loss 0.008737  72.0s
+step   1100  loss 0.005172  80.3s
+step   1200  loss 0.003188  88.7s
+step   1300  loss 0.003540  97.1s
+step   1400  loss 0.003537  105.4s
+step   1500  loss 0.003324  113.8s
+step   1600  loss 0.002580  122.2s
+step   1700  loss 0.002960  130.5s
+step   1800  loss 0.002366  138.9s
+step   1900  loss 0.002512  147.3s
+step   2000  loss 0.002225  155.6s
+step   2100  loss 0.002972  164.0s
+step   2200  loss 0.002792  172.4s
+step   2300  loss 0.009614  180.8s
+step   2400  loss 0.003156  189.1s
+step   2500  loss 0.001966  197.5s
+step   2600  loss 0.002467  205.9s
+step   2700  loss 0.002044  214.2s
+step   2800  loss 0.002037  222.6s
+step   2900  loss 0.079931  231.0s
+step   3000  loss 0.004505  239.4s
+training wall time: 240.1s
+exported to <box-dir>/results/band/d256l6-s21-off
