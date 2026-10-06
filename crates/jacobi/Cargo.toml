@@ -1,0 +1,37 @@
+[package]
+name = "jacobi"
+description = "2D Laplace by Jacobi iteration as a bit-sliced gate circuit at b bits (4, 8, 12, 16): integer and f32 references, bit-sliced CPU and wgpu/WGSL engines, native and wasm from one source."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "jacobi"
+path = "src/bin/jacobi.rs"
+required-features = ["native-bin"]
+
+[features]
+default = ["native-bin", "gpu"]
+# wgpu + WGSL engine (Metal natively, WebGPU in the browser).
+gpu = ["dep:wgpu", "dep:futures-channel", "dep:lean-runtime"]
+native-bin = ["dep:pollster"]
+# Browser build: WebGPU, and the single-thread bit-sliced CPU engine as fallback.
+web = ["gpu", "wgpu/webgpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:console_error_panic_hook"]
+
+[dependencies]
+lean-runtime = { path = "../lean-runtime", optional = true }
+wgpu = { version = "26", optional = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+futures-channel = { version = "0.3", optional = true }
+wasm-bindgen = { version = "=0.2.128", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { version = "0.3", optional = true }
+
+[dev-dependencies]
+pollster = "0.3"
