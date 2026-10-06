@@ -1072,35 +1072,39 @@ fn eval_metrics_cmd(
         return;
     }
 
-    let mut energy_rows: Vec<Vec<EnergyRow>> = vec![Vec::new(); horizons.len()];
-    let mut max_violation = 0.0f32;
-    for (init, _drop) in &trajs {
-        let (rows, violation) = energy_drift_rollout(
-            &model, &params, &meta.norm, init, &horizons, meta.mask, meta.energy_r_max, &device,
-        );
-        for (i, row) in rows.into_iter().enumerate() {
-            energy_rows[i].push(row);
+    // The total-energy drift section costs two extra rollouts per
+    // trajectory; it is only informative when that projection is in use.
+    if project_energy {
+        let mut energy_rows: Vec<Vec<EnergyRow>> = vec![Vec::new(); horizons.len()];
+        let mut max_violation = 0.0f32;
+        for (init, _drop) in &trajs {
+            let (rows, violation) = energy_drift_rollout(
+                &model, &params, &meta.norm, init, &horizons, meta.mask, meta.energy_r_max, &device,
+            );
+            for (i, row) in rows.into_iter().enumerate() {
+                energy_rows[i].push(row);
+            }
+            max_violation = max_violation.max(violation);
         }
-        max_violation = max_violation.max(violation);
+        println!(
+            "\nenergy drift (physical units), model rollout with energy projection ON vs OFF vs \
+             the solver, r_max={:.6}, mean over {used} trajectories:\n",
+            meta.energy_r_max
+        );
+        println!("| ticks | energy ON | energy OFF | energy solver |");
+        println!("|---:|---:|---:|---:|");
+        for (i, t) in horizons.iter().enumerate() {
+            let n = energy_rows[i].len() as f32;
+            let on: f32 = energy_rows[i].iter().map(|r| r.energy_on).sum::<f32>() / n;
+            let off: f32 = energy_rows[i].iter().map(|r| r.energy_off).sum::<f32>() / n;
+            let solver: f32 = energy_rows[i].iter().map(|r| r.energy_solver).sum::<f32>() / n;
+            println!("| {t} | {on:.6} | {off:.6} | {solver:.6} |");
+        }
+        println!(
+            "\nmax relative energy violation along the projected (ON) rollout: {max_violation:.3e} \
+             (bound: <= 1e-6)"
+        );
     }
-    println!(
-        "\nenergy drift (physical units), model rollout with energy projection ON vs OFF vs \
-         the solver, r_max={:.6}, mean over {used} trajectories:\n",
-        meta.energy_r_max
-    );
-    println!("| ticks | energy ON | energy OFF | energy solver |");
-    println!("|---:|---:|---:|---:|");
-    for (i, t) in horizons.iter().enumerate() {
-        let n = energy_rows[i].len() as f32;
-        let on: f32 = energy_rows[i].iter().map(|r| r.energy_on).sum::<f32>() / n;
-        let off: f32 = energy_rows[i].iter().map(|r| r.energy_off).sum::<f32>() / n;
-        let solver: f32 = energy_rows[i].iter().map(|r| r.energy_solver).sum::<f32>() / n;
-        println!("| {t} | {on:.6} | {off:.6} | {solver:.6} |");
-    }
-    println!(
-        "\nmax relative energy violation along the projected (ON) rollout: {max_violation:.3e} \
-         (bound: <= 1e-6)"
-    );
 
     if let Some(band) = excess {
         let mut rows: Vec<Vec<train::metrics::ExcessRow>> = vec![Vec::new(); horizons.len()];
