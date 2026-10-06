@@ -125,32 +125,70 @@ fn anomaly_parts<B: Backend>(
     (hbar, eta, u, v)
 }
 
-/// The three per-member sums the excess energy is built from, `[batch, 1]`
-/// each: `a = sum 1/2 g eta^2 + 1/2 hbar |u|^2`, `q = sum 1/2 eta |u|^2`,
-/// so that `excess = a + q` and scaling `(eta, u, v)` by `s` gives
-/// `s^2 a + s^3 q`.
-fn excess_terms<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32) -> (Tensor<B, 2>, Tensor<B, 2>) {
+/// Net outflow of the face fluxes `1/4 (f_a + f_b)(u_a + u_b)` (x faces)
+/// and the same with `v` (y faces), wall faces zero, per cell, without the
+/// `1/dx`: the shallow-water solver's continuity flux when `f = h`
+/// (`solvers::shallow_water`). Bilinear in `(f, u, v)`.
+fn face_outflow<B: Backend>(f: &Tensor<B, 4>, u: &Tensor<B, 4>, v: &Tensor<B, 4>) -> Tensor<B, 4> {
+    let [b, _, ny, nx] = f.dims();
+    let device = f.device();
+    let fx = (f.clone().slice([0..b, 0..1, 0..ny, 0..nx - 1]) + f.clone().slice([0..b, 0..1, 0..ny, 1..nx]))
+        * (u.clone().slice([0..b, 0..1, 0..ny, 0..nx - 1]) + u.clone().slice([0..b, 0..1, 0..ny, 1..nx]))
+        * 0.25;
+    let fy = (f.clone().slice([0..b, 0..1, 0..ny - 1, 0..nx]) + f.clone().slice([0..b, 0..1, 1..ny, 0..nx]))
+        * (v.clone().slice([0..b, 0..1, 0..ny - 1, 0..nx]) + v.clone().slice([0..b, 0..1, 1..ny, 0..nx]))
+        * 0.25;
+    let zx = Tensor::<B, 4>::zeros([b, 1, ny, 1], &device);
+    let zy = Tensor::<B, 4>::zeros([b, 1, 1, nx], &device);
+    let fx = Tensor::cat(vec![zx.clone(), fx, zx], 3);
+    let fy = Tensor::cat(vec![zy.clone(), fy, zy], 2);
+    fx.clone().slice([0..b, 0..1, 0..ny, 1..nx + 1]) - fx.slice([0..b, 0..1, 0..ny, 0..nx])
+        + fy.clone().slice([0..b, 0..1, 1..ny + 1, 0..nx])
+        - fy.slice([0..b, 0..1, 0..ny, 0..nx])
+}
+
+/// The two per-member sums the excess energy is built from, `[batch, 1]`
+/// each, such that scaling `(eta, u, v)` by `s` gives `s^2 a + s^3 q`:
+/// `a` holds every term quadratic in the fluctuation, `q` every cubic one
+/// (the `eta |u|^2` part of the kinetic energy and the `eta`-flux part of
+/// the cross term).
+fn excess_terms<B: Backend>(
+    x: &Tensor<B, 4>,
+    d: &Denorm,
+    g: f32,
+    dt_dx: f32,
+) -> (Tensor<B, 2>, Tensor<B, 2>) {
     let [b, _, ny, nx] = x.dims();
     let n = ny * nx;
     let (hbar, eta, u, v) = anomaly_parts(x, d);
     let sum = |t: Tensor<B, 4>| t.reshape([b, n]).sum_dim(1);
-    let speed2 = u.powi_scalar(2) + v.powi_scalar(2);
-    let potential = sum(eta.clone().powi_scalar(2)) * (0.5 * g);
-    let s2 = sum(speed2.clone());
-    let a = potential + hbar * s2 * 0.5;
-    let q = sum(eta * speed2) * 0.5;
+    let speed2 = u.clone().powi_scalar(2) + v.clone().powi_scalar(2);
+    let mut a = sum(eta.clone().powi_scalar(2)) * (0.5 * g) + hbar.clone() * sum(speed2.clone()) * 0.5;
+    let mut q = sum(eta.clone() * speed2) * 0.5;
+    if dt_dx != 0.0 {
+        let k = -0.5 * g * dt_dx;
+        let ones = Tensor::<B, 4>::ones([b, 1, ny, nx], &x.device());
+        a = a + hbar * sum(eta.clone() * face_outflow(&ones, &u, &v)) * k;
+        q = q + sum(eta.clone() * face_outflow(&eta, &u, &v)) * k;
+    }
     (a, q)
 }
 
-/// Excess (available) energy per batch member, `[batch, 1]`, physical units:
-/// `sum 1/2 g (h - hbar)^2 + 1/2 h (u^2 + v^2)`. With the box mean `hbar`
-/// held fixed by [`project_mass`], total energy is this plus the constant
-/// `1/2 g hbar^2 N`, so the two have the same per-tick increments; but this
-/// one is the part that dissipates, about 1e-4 of the total on the training
-/// distribution, where the total's own f32 rounding is the size of the
-/// signal (docs/runs/2026-10-06-energy-inequality.md).
-pub fn excess_energy<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32) -> Tensor<B, 2> {
-    let (a, q) = excess_terms(x, d, g);
+/// Excess energy per batch member, `[batch, 1]`, physical units, cell area
+/// 1: `sum 1/2 g (h - hbar)^2 + 1/2 h |u|^2 - (dt/dx) (g/2) sum (h - hbar)
+/// div(h u)`, `div(h u)` being the solver's own continuity flux.
+///
+/// With `dt_dx = 0` this is the plain excess energy, total energy minus
+/// the constant `1/2 g hbar^2 N` once [`project_mass`] holds `hbar`. That
+/// one is not monotone on the solver's own trajectories at any viscosity
+/// trained: it swings +-0.3 % per tick, because the forward-backward scheme
+/// conserves a time-staggered energy, not the collocated one. The cross
+/// term (with `dt_dx = dt/dx`) restores the quantity the scheme actually
+/// conserves (symplectic Euler's modified energy): at `nu = 0.01` it never
+/// rises on a solver trajectory, at `nu = 0` it moves by under 4e-5 per
+/// tick (docs/runs/2026-10-06-energy-inequality.md).
+pub fn excess_energy<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32, dt_dx: f32) -> Tensor<B, 2> {
+    let (a, q) = excess_terms(x, d, g, dt_dx);
     a + q
 }
 
@@ -158,10 +196,10 @@ pub fn excess_energy<B: Backend>(x: &Tensor<B, 4>, d: &Denorm, g: f32) -> Tensor
 /// when `r <= 1`), keeping the box mass exactly. The fluctuation `(eta, u,
 /// v)` is scaled by one `s` in `[0, 1]` per batch member, toward the rest
 /// state `(hbar, 0, 0)`: `eta`'s mean stays 0, so mass is untouched, and the
-/// state is always feasible at `s = 0`. With `excess(s) = s^2 a + s^3 q`,
+/// state is feasible at `s = 0`. With `excess(s) = s^2 a + s^3 q`,
 /// `s = sqrt(bound / (a + max(q, 0)))` is feasible in closed form (for
 /// `q >= 0`, `s^3 q <= s^2 q`; for `q < 0` the cubic term only helps) and
-/// within `(1 - s) |q| / a` of the exact root, which is negligible since
+/// within `(1 - s) |q| / a` of the exact root, negligible since
 /// `|q| / a ~ max|eta| / hbar`. Members already within the bound are
 /// returned bit-for-bit. `s` is detached, as in [`project_energy`].
 pub fn project_excess_energy<B: Backend>(
@@ -169,11 +207,12 @@ pub fn project_excess_energy<B: Backend>(
     prev_excess: Tensor<B, 2>,
     d: &Denorm,
     g: f32,
+    dt_dx: f32,
     r: f32,
 ) -> Tensor<B, 4> {
     let [b, _, ny, nx] = x.dims();
     let bound = prev_excess.detach() * r;
-    let (a, q) = excess_terms(&x, d, g);
+    let (a, q) = excess_terms(&x, d, g, dt_dx);
     let (a, q) = (a.detach(), q.detach());
     let active = (a.clone() + q.clone()).greater(bound.clone());
     let s = (bound / (a + q.clamp_min(0.0)).clamp_min(1e-30))
@@ -189,7 +228,11 @@ pub fn project_excess_energy<B: Backend>(
     let v = x.clone().slice([0..b, 2..3]) * d.std[2] + d.mean[2];
     let u = (u * s.clone() - d.mean[1]) / d.std[1];
     let v = (v * s - d.mean[2]) / d.std[2];
-    let projected = x.clone().slice_assign([0..b, 0..1], h).slice_assign([0..b, 1..2], u).slice_assign([0..b, 2..3], v);
+    let projected = x
+        .clone()
+        .slice_assign([0..b, 0..1], h)
+        .slice_assign([0..b, 1..2], u)
+        .slice_assign([0..b, 2..3], v);
     let active = active.reshape([b, 1, 1, 1]).expand([b, 3, ny, nx]);
     x.mask_where(active, projected)
 }
@@ -332,6 +375,9 @@ mod tests {
         );
     }
 
+    /// model20's `dt / dx`.
+    const DT: f32 = 0.0903;
+
     /// A `[b, 3, 8, 8]` state in normalized units, deterministic, with a
     /// different amplitude per member, decoded with model20's normalizer
     /// (`h` anomalies ~6e-3, speeds ~1e-2 around depth 1).
@@ -359,7 +405,7 @@ mod tests {
         let g = 9.81;
         let x2 = project_mass(x.clone() * 0.5, mass(&x));
         let de: f32 = (energy(&x2, &d, g) - energy(&x, &d, g)).into_scalar();
-        let dx: f32 = (excess_energy(&x2, &d, g) - excess_energy(&x, &d, g)).into_scalar();
+        let dx: f32 = (excess_energy(&x2, &d, g, 0.0) - excess_energy(&x, &d, g, 0.0)).into_scalar();
         assert!((de - dx).abs() < 2e-3 * dx.abs(), "dE {de} vs dE' {dx}");
     }
 
@@ -368,15 +414,15 @@ mod tests {
         let device = Default::default();
         let (x, d) = wavy(4, &device);
         let g = 9.81;
-        let e: Vec<f32> = excess_energy(&x, &d, g).into_data().to_vec().unwrap();
+        let e: Vec<f32> = excess_energy(&x, &d, g, DT).into_data().to_vec().unwrap();
         // Bounds at 0, 10 %, 90 % and 99.99 % of each member's own excess.
         let fr = [0.0f32, 0.1, 0.9, 0.9999];
         let prev: Vec<f32> = e.iter().zip(fr).map(|(e, f)| e * f).collect();
         let prev_t = Tensor::<B, 1>::from_floats(prev.as_slice(), &device).reshape([4, 1]);
         let m0: Vec<f32> = mass(&x).into_data().to_vec().unwrap();
 
-        let y = project_excess_energy(x, prev_t, &d, g, 1.0);
-        let e1: Vec<f32> = excess_energy(&y, &d, g).into_data().to_vec().unwrap();
+        let y = project_excess_energy(x, prev_t, &d, g, DT, 1.0);
+        let e1: Vec<f32> = excess_energy(&y, &d, g, DT).into_data().to_vec().unwrap();
         let m1: Vec<f32> = mass(&y).into_data().to_vec().unwrap();
         for i in 0..4 {
             assert!(e1[i] <= prev[i] * (1.0 + 1e-5) + 1e-12, "member {i}: {} > {}", e1[i], prev[i]);
@@ -391,12 +437,12 @@ mod tests {
         let device = Default::default();
         let (x, d) = wavy(3, &device);
         let g = 9.81;
-        let e: Vec<f32> = excess_energy(&x, &d, g).into_data().to_vec().unwrap();
+        let e: Vec<f32> = excess_energy(&x, &d, g, DT).into_data().to_vec().unwrap();
         // Member 1 is over its bound, members 0 and 2 are inside theirs.
         let prev: Vec<f32> = vec![e[0] * 1.5, e[1] * 0.5, e[2]];
         let prev_t = Tensor::<B, 1>::from_floats(prev.as_slice(), &device).reshape([3, 1]);
 
-        let y = project_excess_energy(x.clone(), prev_t, &d, g, 1.0);
+        let y = project_excess_energy(x.clone(), prev_t, &d, g, DT, 1.0);
         let member = |t: &Tensor<B, 4>, i: usize| -> Vec<f32> {
             t.clone().slice([i..i + 1]).into_data().to_vec().unwrap()
         };
@@ -412,7 +458,7 @@ mod tests {
         let (x, d) = wavy(2, &device);
         let x = Tensor::<AB, 4>::from_data(x.into_data(), &device).require_grad();
         let prev = Tensor::<AB, 2>::from_floats([[0.0f32], [1e9]], &device);
-        let y = project_excess_energy(x.clone(), prev, &d, 9.81, 1.0);
+        let y = project_excess_energy(x.clone(), prev, &d, 9.81, DT, 1.0);
         let grads = y.powi_scalar(2).sum().backward();
         let grad: Vec<f32> = x.grad(&grads).unwrap().into_data().to_vec().unwrap();
         assert!(grad.iter().all(|v| v.is_finite()), "non-finite gradient at budget 0");
