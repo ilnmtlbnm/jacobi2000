@@ -350,3 +350,25 @@ ssh <box> 'cd <box-dir> && systemd-run --user --unit=jacobi-band2 --same-dir --c
 
 The Rust binary needs no rebuild for this. `fit.rs` changed, but the sweep trains in PyTorch,
 and the eval and import paths are unchanged.
+
+## 8. Rerun with the fixed reference energy (2026-10-06, unit jacobi-band2, 47 min)
+
+Upper and band arms retrained with E'_prev measured before noise (commit 1dc2138); off arms kept from the first run. 50 ticks, mean ± sd over seeds 20/21/22, 24 trajectories.
+
+| size | train | inference | corr | active RMSE | amp | global RMSE |
+|---|---|---|---:|---:|---:|---:|
+| 128/4 | off | off | 0.9817 ± 0.0074 | 0.131 ± 0.025 | 1.043 ± 0.033 | 0.108 ± 0.018 |
+| 128/4 | off | upper | 0.9810 ± 0.0076 | 0.120 ± 0.020 | 0.996 ± 0.014 | 0.101 ± 0.016 |
+| 128/4 | upper (fixed) | upper | 0.9657 ± 0.0349 | 0.151 ± 0.054 | 0.985 ± 0.032 | 0.131 ± 0.056 |
+| 128/4 | band (fixed) | band | 0.9614 ± 0.0242 | 0.167 ± 0.051 | 0.952 ± 0.027 | 0.143 ± 0.056 |
+| 256/6 | off | off | 0.9822 ± 0.0151 | 0.147 ± 0.071 | 1.029 ± 0.027 | 0.121 ± 0.067 |
+| 256/6 | off | upper | 0.9813 ± 0.0163 | 0.131 ± 0.072 | 0.974 ± 0.033 | 0.110 ± 0.067 |
+| 256/6 | upper (fixed) | upper | 0.9702 ± 0.0198 | 0.143 ± 0.043 | 0.995 ± 0.017 | 0.120 ± 0.038 |
+| 256/6 | band (fixed) | band | 0.9732 ± 0.0204 | 0.138 ± 0.037 | 0.966 ± 0.024 | 0.113 ± 0.039 |
+
+Revised verdict:
+- The band no longer collapses (corr 0.96-0.97 instead of 0.007), so the fix works.
+- With the tight (fixed) reference, training with either constraint is worse and noisier across seeds than training without it. The section 7 result (upper-trained 128/4 at corr 0.9913 ± 0.0011, active RMSE 0.094) came from the noisy reference, i.e. a bound loosened by about 20x the band width. The slack of the bound during training matters; the tight bound hurts.
+- The robust gain is the constraint at inference on unconstrained checkpoints: active RMSE -8 to -11 %, amplitude to 0.97-1.00, correlation unchanged, at both sizes.
+- Width still does not help.
+- Next: sweep the training slack (r_max from tight to the effective looseness of the first run) with more seeds, keeping inference-time projection.
