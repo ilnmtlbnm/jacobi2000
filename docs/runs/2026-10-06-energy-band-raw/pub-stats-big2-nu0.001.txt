@@ -1,0 +1,56 @@
+backend: ndarray (CPU), pool 128, ticks 400, nu 0.001, 70/30 mixture (extended_fraction 0.3)
+
+all-tick ratio r_t = E_{t+1}/E_t, 51200 samples:
+| min | p50 | p99 | max |
+|---:|---:|---:|---:|
+| 0.985471 | 1.000000 | 1.000001 | 1.022212 |
+
+E (physical units), 51200 samples:
+| min | p50 | p99 | max |
+|---:|---:|---:|---:|
+| 19490.517578 | 20119.941406 | 20519.855469 | 20771.390625 |
+
+initial transient (fresh drop, ticks 1..5):
+| tick | min | p50 | p99 | max | n |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.995565 | 1.000000 | 1.000002 | 1.005300 | 128 |
+| 2 | 0.999998 | 1.000000 | 1.000002 | 1.000003 | 128 |
+| 3 | 0.999998 | 1.000000 | 1.000002 | 1.000003 | 128 |
+| 4 | 0.999997 | 1.000000 | 1.000001 | 1.000003 | 128 |
+| 5 | 0.999998 | 1.000000 | 1.000002 | 1.000002 | 128 |
+
+suggested --r-max (measured max * (1 + 1e-4)): 1.022315
+
+excess energy E' = sum 1/2 g (h - hbar)^2 + 1/2 h |u|^2 - (dt/dx)(g/2) sum (h - hbar) div(h u), 51140 windows (60 skipped: drop injected mid-window):
+| E' min | p50 | p99 | max |
+|---:|---:|---:|---:|
+| 0.042895 | 0.416221 | 33.626350 | 44.022377 |
+
+per-tick ratio E'_{t+1}/E'_t:
+| form | samples | above 1 | min | p01 | p50 | p99 | p999 | max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| plain (no cross term) | 51140 | 24491 | 0.9928467 | 0.9959452 | 0.9999885 | 1.0014343 | 1.0040505 | 1.0088921 |
+| with cross term | 51140 | 23895 | 0.9997747 | 0.9999427 | 0.9999989 | 1.0001179 | 1.0002326 | 1.0003457 |
+
+suggested --project-excess (measured max, cross-term form, + 1e-6): 1.0003467
+suggested --excess-r-min (measured min, cross-term form, - 1e-6): 0.9997737
+
+eval single drop (amp 0.03-0.07), 128 trajectories x 200 ticks:
+| form | quantity | min | p50 | max |
+|---|---|---:|---:|---:|
+| plain | max_t E'_t/E'_0 | 1.019600 | 1.026918 | 1.037788 |
+| plain | E'_50/E'_0 | 0.995587 | 1.001872 | 1.008947 |
+| plain | E'_200/E'_0 | 0.995357 | 1.000176 | 1.008322 |
+| cross term | max_t E'_t/E'_0 | 1.000198 | 1.000955 | 1.002384 |
+| cross term | E'_50/E'_0 | 1.000049 | 1.000500 | 1.001119 |
+| cross term | E'_200/E'_0 | 0.998899 | 1.000757 | 1.002384 |
+
+high amplitude (0.15-0.3), 128 trajectories x 200 ticks:
+| form | quantity | min | p50 | max |
+|---|---|---:|---:|---:|
+| plain | max_t E'_t/E'_0 | 1.019560 | 1.026693 | 1.038410 |
+| plain | E'_50/E'_0 | 0.994906 | 1.002999 | 1.015829 |
+| plain | E'_200/E'_0 | 0.993278 | 1.006796 | 1.022491 |
+| cross term | max_t E'_t/E'_0 | 1.000061 | 1.008192 | 1.022386 |
+| cross term | E'_50/E'_0 | 0.997262 | 1.002323 | 1.008562 |
+| cross term | E'_200/E'_0 | 0.997450 | 1.008192 | 1.022386 |
