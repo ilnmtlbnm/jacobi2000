@@ -1585,7 +1585,7 @@ fn energy_stats_cmd(
         let m0: Vec<f32> = jacobi2000::mass(&x0).into_data().to_vec().unwrap();
         let m1: Vec<f32> = jacobi2000::mass(&x1).into_data().to_vec().unwrap();
         for i in 0..b {
-            if (m1[i] - m0[i]).abs() > 1e-3 {
+            if (m1[i] - m0[i]).abs() * gen.norm.std[0] > 1e-6 {
                 injected += 1;
                 continue;
             }

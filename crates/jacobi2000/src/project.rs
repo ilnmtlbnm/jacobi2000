@@ -215,7 +215,7 @@ impl EnergyBand {
 /// mass is untouched. With `excess(s) = s^2 a + s^3 q`, `s` starts at
 /// `sqrt(T / (a + q))`, exact when `q = 0`, and two Newton steps take it to
 /// the root at f32 precision (`|q| / a ~ max|eta| / hbar`, so the start is
-/// already within 1e-5). The target `T` is the violated edge pulled 1e-6
+/// already within 1e-5). The target `T` is the violated edge pulled 1e-5
 /// inside the band, so f32 rounding of the result cannot land outside.
 /// Members inside the band are returned bit-for-bit. `s` is detached, as
 /// in [`project_energy`].
@@ -238,8 +238,8 @@ pub fn project_excess_energy<B: Backend>(
     let active = active.greater_elem(0.5);
     let target = e
         .clone()
-        .max_pair(lower * (1.0 + 1e-6))
-        .min_pair(upper * (1.0 - 1e-6));
+        .max_pair(lower * (1.0 + 1e-5))
+        .min_pair(upper * (1.0 - 1e-5));
     let mut s = (target.clone() / e.clamp_min(1e-30)).clamp_min(0.0).sqrt();
     for _ in 0..2 {
         let f = s.clone().powi_scalar(2) * a.clone() + s.clone().powi_scalar(3) * q.clone()

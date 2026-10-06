@@ -32,6 +32,8 @@ def export(
     mask_dilation: int | None,
     energy_r_max: float,
     out_dir: str | Path,
+    excess_r: float | None = None,
+    excess_r_min: float = 0.0,
 ) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -63,5 +65,7 @@ def export(
         "nu": nu,
         "mask": mask,
         "energy_r_max": energy_r_max,
+        "excess_r": excess_r,
+        "excess_r_min": excess_r_min,
     }
     (out_dir / "config.json").write_text(json.dumps(config, indent=2))

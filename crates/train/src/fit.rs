@@ -353,9 +353,10 @@ mod tests {
         state.add_drop(&params, 24.0, 40.0, 0.05, 4.0);
         let mut x0 = encode(&state);
         let (mut plain_up, mut worst) = (0, 0.0f32);
-        // energy-stats at nu = 0.01: cross-term per-tick ratio in
-        // [0.9997814, 1.0002143] on the training mixture, +-1e-6.
-        let band = EnergyBand { r_min: 0.9997804, r_max: 1.0002153 };
+        // nu = 0.01, 39,411 solver ticks of the training mixture: per-tick
+        // cross-term ratio in [0.9996733, 1.0002059]
+        // (docs/runs/2026-10-06-energy-band.md).
+        let band = EnergyBand { r_min: 0.99965, r_max: 1.00022 };
         for _ in 0..200 {
             solver.step(&mut state);
             let x1 = encode(&state);

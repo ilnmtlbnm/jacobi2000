@@ -18,7 +18,7 @@ from .data import META_DIM, Normalizer, TrajectoryDataset
 from .export import export as export_checkpoint
 from .model import Jacobi2000, Jacobi2000Config, stencil_mask
 from .parity import load_from_export
-from .project import Denorm, energy, project_energy, project_mass
+from .project import Denorm, energy, excess_energy, project_energy, project_excess_energy, project_mass
 from .spectral import band_mse
 
 
@@ -34,6 +34,10 @@ class FitConfig:
     project: bool = True
     project_energy: bool = False
     r_max: float = 1.0001
+    # Excess-energy band (project.py `project_excess_energy`): None is off;
+    # `excess_r_min = 0` is the upper-only form.
+    excess_r_max: float | None = None
+    excess_r_min: float = 0.0
     spectral: float = 1.0
     lr_floor: float = 1.0
     log_every: int = 100
@@ -70,6 +74,7 @@ def fit(
     denorm = Denorm(mean=norm.mean, std=norm.std, depth=norm.depth)
     meta_vec = torch.from_numpy(dataset.meta_vector()).to(device)
     rng = np.random.default_rng(cfg.seed)
+    dt_dx = dataset.dt / dataset.dx
 
     t0 = time.time()
     for step in range(cfg.steps):
@@ -86,15 +91,28 @@ def fit(
         x = window[0]
         mass0 = x[:, 0:1].mean(dim=(2, 3)).reshape(b, 1) if cfg.project else None
         loss = torch.zeros((), device=device)
+        log_now = (step + 1) % cfg.log_every == 0 or step == 0
+        outside = 0
         for step_k in range(k):
             if cfg.noise > 0.0:
                 x = x + torch.randn_like(x) * cfg.noise
             prev_energy = energy(x, denorm, dataset.g) if cfg.project_energy else None
+            prev_excess = (
+                excess_energy(x, denorm, dataset.g, dt_dx) if cfg.excess_r_max is not None else None
+            )
             x = model.step(x, meta, mask)
             if cfg.project:
                 x = project_mass(x, mass0)
             if prev_energy is not None:
                 x = project_energy(x, prev_energy, denorm, dataset.g, cfg.r_max)
+            if prev_excess is not None:
+                if log_now:
+                    with torch.no_grad():
+                        e = excess_energy(x, denorm, dataset.g, dt_dx)
+                        outside += int(((e > prev_excess * cfg.excess_r_max) | (e < prev_excess * cfg.excess_r_min)).sum())
+                x = project_excess_energy(
+                    x, prev_excess, denorm, dataset.g, dt_dx, cfg.excess_r_min, cfg.excess_r_max
+                )
             target = window[step_k + 1]
             err = x - target
             loss = loss + err.pow(2).mean()
@@ -109,8 +127,11 @@ def fit(
             g["lr"] = lr
         opt.step()
 
-        if (step + 1) % cfg.log_every == 0 or step == 0:
-            on_log({"step": step + 1, "loss": float(loss.item()), "secs": time.time() - t0})
+        if log_now:
+            row = {"step": step + 1, "loss": float(loss.item()), "secs": time.time() - t0}
+            if cfg.excess_r_max is not None:
+                row["excess_active"] = outside / (b * k)
+            on_log(row)
 
     return model
 
@@ -128,6 +149,10 @@ def main():
     ap.add_argument("--project", type=lambda s: s.lower() == "true", default=True)
     ap.add_argument("--project-energy", type=lambda s: s.lower() == "true", default=True)
     ap.add_argument("--r-max", type=float, default=1.0001)
+    ap.add_argument("--excess-r-max", type=float, default=None,
+                    help="excess-energy band upper ratio, E'_new <= E'_prev * r_max (off when absent)")
+    ap.add_argument("--excess-r-min", type=float, default=0.0,
+                    help="excess-energy band lower ratio, E'_new >= E'_prev * r_min (0 = upper only)")
     ap.add_argument("--spectral", type=float, default=1.0)
     ap.add_argument("--lr-floor", type=float, default=1.0)
     ap.add_argument("--dim", type=int, default=128)
@@ -164,6 +189,8 @@ def main():
         project=args.project,
         project_energy=args.project_energy,
         r_max=args.r_max,
+        excess_r_max=args.excess_r_max,
+        excess_r_min=args.excess_r_min,
         spectral=args.spectral,
         lr_floor=args.lr_floor,
         seed=args.seed,
@@ -174,7 +201,8 @@ def main():
 
     def on_log(row):
         log_rows.append(row)
-        print(f"step {row['step']:6d}  loss {row['loss']:.6f}  {row['secs']:.1f}s")
+        active = f"  excess active {row['excess_active']:.3f}" if "excess_active" in row else ""
+        print(f"step {row['step']:6d}  loss {row['loss']:.6f}  {row['secs']:.1f}s{active}")
 
     t0 = time.time()
     fit(model, dataset, norm, fit_cfg, device, on_log)
@@ -192,6 +220,8 @@ def main():
         mask_radius=fit_cfg.mask_radius,
         mask_dilation=fit_cfg.mask_dilation,
         energy_r_max=fit_cfg.r_max,
+        excess_r=fit_cfg.excess_r_max,
+        excess_r_min=fit_cfg.excess_r_min,
         out_dir=args.out,
     )
     print(f"exported to {args.out}")
