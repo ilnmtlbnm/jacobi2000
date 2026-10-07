@@ -434,6 +434,7 @@ window.__app = {
   compareMetrics: () => Array.from(engine.compare_metrics()),
   secondaryField: async () => Array.from(await engine.secondary_field()),
   modelName: () => engine.model_name(),
+  backendName: () => engine.backend_name(),
   error: null,
 };
 

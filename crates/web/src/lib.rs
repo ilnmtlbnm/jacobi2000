@@ -746,3 +746,17 @@ pub fn mask_name() -> String {
 pub fn model_name() -> String {
     APP.with(|a| a.borrow().as_ref().unwrap().primary.name.clone())
 }
+
+/// `"webgpu"` or `"cpu"` — which backend `init`'s capability check landed
+/// on (module doc). For the STATUS row and for headless/manual
+/// verification that a page is actually running on the backend it claims.
+#[wasm_bindgen]
+pub fn backend_name() -> String {
+    APP.with(|a| {
+        let a = a.borrow();
+        match &*a.as_ref().unwrap().primary.model {
+            Backend::Cpu(_) => "cpu".to_string(),
+            Backend::Gpu(_) => "webgpu".to_string(),
+        }
+    })
+}

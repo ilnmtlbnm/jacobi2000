@@ -1,7 +1,15 @@
 // Headless Chromium check of the demo page. Drives window.__app, never DOM
-// clicks. Never a personal browser: this is Playwright's bundled build.
+// clicks. Never a personal browser: this is Playwright's bundled build by
+// default.
+//
+// Headless Chromium cannot reach a real Vulkan/NVIDIA WebGPU adapter (falls
+// back to SwiftShader, software); a WebGPU-accuracy run needs headed
+// Chromium on a real display, which SMOKE_HEADED/SMOKE_EXECUTABLE/
+// SMOKE_DISPLAY below opt into on a machine that has one — never the
+// a personal browser, only ever a test machine's desktop session.
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 import path from 'node:path';
 import { serve } from './serve.mjs';
 
@@ -9,10 +17,26 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const port = 8099;
 const server = await serve(root, port);
 
-const browser = await chromium.launch({
-  channel: 'chromium',
-  args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU'],
-});
+const headed = process.env.SMOKE_HEADED === '1';
+// Forces the capability ladder's CPU fallback (engine::Model::to_gpu ->
+// no adapter) by disabling the GPU process outright, instead of letting
+// SwiftShader's software adapter satisfy requestAdapter() (which it does,
+// so the ordinary webgpu flags below are not a CPU-path test by themselves).
+const forceCpu = process.env.SMOKE_FORCE_CPU === '1';
+if (headed && process.env.SMOKE_DISPLAY) {
+  process.env.DISPLAY = process.env.SMOKE_DISPLAY;
+}
+const launchOpts = { args: forceCpu ? ['--disable-gpu'] : ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU'] };
+if (headed) {
+  launchOpts.headless = false;
+  launchOpts.executablePath = process.env.SMOKE_EXECUTABLE || '/usr/bin/chromium';
+  if (!forceCpu) {
+    launchOpts.args.push('--use-angle=vulkan', '--use-vulkan=native', '--enable-dawn-features=allow_unsafe_apis', '--ignore-gpu-blocklist', '--disable-gpu-sandbox', '--no-sandbox');
+  }
+} else {
+  launchOpts.channel = 'chromium';
+}
+const browser = await chromium.launch(launchOpts);
 const page = await browser.newPage();
 const logs = [];
 page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
@@ -30,7 +54,7 @@ try {
 
   // Horizon: centred drop on a 64x64 grid is 32 cells from every wall, so
   // horizon = 32 / c ticks, c = sqrt(g*depth)*dt/dx from the model's meta.
-  const meta = JSON.parse(await (await fetch(`http://127.0.0.1:${port}/model/model20/meta.json`)).text());
+  const meta = JSON.parse(await (await fetch(`http://127.0.0.1:${port}/model/model20/config.json`)).text());
   const c = Math.sqrt(meta.g * meta.depth) * meta.dt / meta.dx;
   const horizon = await page.evaluate(() => window.__app.horizon());
   const expectedHorizon = 32 / c;
@@ -66,7 +90,7 @@ try {
   );
   console.log(`HIGHLIGHT: PASS (${hl.cells.length} cells, radius ${hl.radius}, dilation ${hl.dilation}, span ${xSpan})`);
 
-  await page.screenshot({ path: '<tmp>/jacobi-stencil.png' });
+  await page.screenshot({ path: path.join(os.tmpdir(), 'jacobi-stencil.png') });
 
   await page.evaluate(() => window.__app.clearHighlight());
   await page.evaluate(() => window.__app.step(25), { timeout: 120000 });
@@ -85,6 +109,12 @@ try {
   check(Number.isFinite(modelPeak), 'model field is not finite');
   check(ms > 0, 'no per-tick timing');
   console.log('HEALTH: PASS');
+
+  const backend = await page.evaluate(() => window.__app.backendName());
+  console.log(`BACKEND: ${backend}`);
+  if (forceCpu) {
+    check(backend === 'cpu', `SMOKE_FORCE_CPU=1 but the page is running on '${backend}'`);
+  }
 
   // step/step10 buttons drive window.__app.step, same path as this test.
   await page.evaluate(() => window.__app.step(1));
