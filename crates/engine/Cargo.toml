@@ -17,3 +17,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 libm = "0.2"
 rayon = { version = "1.10", optional = true }
+
+[dev-dependencies]
+# Parity baseline only (tests/parity.rs): builds and exports a random-init
+# Burn model to compare this crate's forward pass against. Never a
+# production dependency of this crate.
+jacobi2000 = { path = "../jacobi2000" }
+burn = { version = "0.20", default-features = false, features = ["std", "ndarray"] }
+rand = { workspace = true }
