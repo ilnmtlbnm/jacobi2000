@@ -101,12 +101,27 @@ off Burn entirely — no Burn anywhere in its dependency tree
 `jacobi export-weights` and the PyTorch training export both write,
 `docs/pytorch-training.md`), steps it next to the reference solver from a
 built-in initial condition, and prints the model's correlation against
-the solver every tick:
+the solver every tick.
+
+There is no public pretrained checkpoint to download yet (`model20` is a
+local training artifact, gitignored under `results/checkpoints` and
+`artifacts/`, never published). Train one with the `cli` crate's `train`
+command (CPU-only `ndarray` backend by default, no GPU needed), export it
+to the `rollout` format, then run it:
 
 ```
+cargo run --release -p cli -- train --steps 3000 --single-drop true --out artifacts/model
+cargo run --release -p cli -- export-weights --model artifacts/model --out web/model/model20
 cargo run -p engine-cli --release --bin rollout -- \
-    --model web/model/model20 --steps 50
+    --model web/model/model20 --steps 50 --backend cpu
 ```
+
+`train`'s defaults (`--dim 128 --layers 4`) already match `model20`'s
+architecture; `--steps 3000` is a short run, not the full model20 recipe
+(`docs/runs/2026-09-19-2.md` has the exact flags that one was trained
+with, warm-started from earlier checkpoints). Raise `--steps` and add the
+projection/mask flags from that run log for a model that matches the
+correlations quoted above.
 
 `--backend auto|cpu|webgpu` picks the backend (`auto`, the default, tries
 WebGPU and falls back to CPU — capability, not a benchmark); `--backend
