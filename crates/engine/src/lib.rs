@@ -12,8 +12,10 @@
 pub mod config;
 pub mod cpu;
 pub mod mask;
+pub mod metrics;
 pub mod norm;
 pub mod project;
+pub mod solver_meta;
 pub mod weights;
 
 use std::path::Path;
@@ -21,6 +23,7 @@ use std::path::Path;
 pub use config::Config;
 pub use mask::Mask;
 pub use norm::{Denorm, Normalizer};
+pub use solver_meta::{meta_of, META_DIM};
 pub use weights::Weights;
 
 pub struct Model {

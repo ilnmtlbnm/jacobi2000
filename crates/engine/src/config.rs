@@ -21,8 +21,11 @@ struct Raw {
     heads: usize,
     meta_dim: usize,
     norm: Normalizer,
+    dx: f32,
+    dt: f32,
     g: f32,
     depth: f32,
+    nu: f32,
     #[serde(default = "default_r_max")]
     energy_r_max: f32,
     #[serde(default = "default_mask")]
@@ -54,8 +57,11 @@ pub struct Config {
     pub tokens: usize,
     pub patch_dim: usize,
     pub norm: Normalizer,
+    pub dx: f32,
+    pub dt: f32,
     pub g: f32,
     pub depth: f32,
+    pub nu: f32,
     pub energy_r_max: f32,
     pub mask: Mask,
 }
@@ -83,10 +89,17 @@ impl Config {
             tokens: tokens_x * tokens_y,
             patch_dim: r.channels * r.patch * r.patch,
             norm: r.norm,
+            dx: r.dx,
+            dt: r.dt,
             g: r.g,
             depth: r.depth,
+            nu: r.nu,
             energy_r_max: r.energy_r_max,
             mask: r.mask,
         }
+    }
+
+    pub fn params(&self) -> solvers::Params {
+        solvers::Params { nx: self.nx, ny: self.ny, dx: self.dx, dt: self.dt, g: self.g, depth: self.depth, nu: self.nu }
     }
 }
