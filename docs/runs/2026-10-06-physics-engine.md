@@ -153,12 +153,13 @@ Headless (Playwright's bundled Chromium, `--enable-unsafe-webgpu
 
 ## Gate 5: privacy grep
 
-A privacy grep for personal paths and identifiers on all three
-commits on this branch returns only the leak-check shell scripts' own grep
-patterns (`crates/lean-runtime/scripts/leak_check.sh`,
+A privacy grep for personal paths and identifiers (local filesystem paths,
+internal hostnames, and personal names/emails) was run on all three commits
+on this branch and came back clean: the only hits were the leak-check shell
+scripts' own grep patterns (`crates/lean-runtime/scripts/leak_check.sh`,
 `scripts/build_fhp_web.sh`, `scripts/build_jacobi_web.sh` — they necessarily
-contain the strings `.claude/`, `/Users/`, `Code/` as the patterns they grep
-*for*). No actual leaked path, hostname or name. The wasm binaries
+contain strings like `.claude/`, `/Users/`, `Code/` as the patterns they
+grep *for*). No actual leaked path, hostname or name. The wasm binaries
 themselves were checked by each build script's own `leak_check`/`LEAKS`
 step during the build (gate 4) and came back clean.
 
