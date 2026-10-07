@@ -16,3 +16,4 @@ __pycache__/
 /exports
 /results/checkpoints
 /data
+/crates/web/pkg

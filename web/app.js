@@ -188,8 +188,8 @@ function renderRecipe(entry) {
 
 async function fetchModel(dir) {
   const [weights, meta] = await Promise.all([
-    fetch(`./model/${dir}/model.bin`).then((r) => r.arrayBuffer()),
-    fetch(`./model/${dir}/meta.json`).then((r) => r.text()),
+    fetch(`./model/${dir}/model.safetensors`).then((r) => r.arrayBuffer()),
+    fetch(`./model/${dir}/config.json`).then((r) => r.text()),
   ]);
   return { weights: new Uint8Array(weights), meta };
 }
@@ -291,12 +291,12 @@ async function boot() {
     buildPicker($('model-picker'), pickPrimary, null);
     markActive($('model-picker'), primaryName);
     // Task C7: reverse checkpoint is optional — a page whose model/<name>/
-    // has no model-reverse.bin still boots and runs exactly as before,
-    // `rewind` just no-ops (checked in engine.rewind itself).
+    // has no model-reverse.safetensors still boots and runs exactly as
+    // before, `rewind` just no-ops (checked in engine.rewind itself).
     try {
       const [rw, rm] = await Promise.all([
-        fetch(`./model/${initial.dir}/model-reverse.bin`).then((r) => { if (!r.ok) throw new Error('no reverse checkpoint'); return r.arrayBuffer(); }),
-        fetch(`./model/${initial.dir}/meta-reverse.json`).then((r) => r.text()),
+        fetch(`./model/${initial.dir}/model-reverse.safetensors`).then((r) => { if (!r.ok) throw new Error('no reverse checkpoint'); return r.arrayBuffer(); }),
+        fetch(`./model/${initial.dir}/config-reverse.json`).then((r) => r.text()),
       ]);
       await engine.init_reverse(new Uint8Array(rw), rm);
       console.log('STATUS: reverse checkpoint loaded, rewind() enabled');

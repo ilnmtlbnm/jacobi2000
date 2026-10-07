@@ -7,19 +7,19 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# rayon CPU-threads path (crates/lean-runtime's capability ladder picks it
+# when the page is cross-origin isolated with SharedArrayBuffer and more
+# than one hardware thread); single CPU thread is the default and always
+# available.
+threads = ["engine/threads"]
+
 [dependencies]
-jacobi2000 = { path = "../jacobi2000" }
+engine = { path = "../engine" }
 solvers = { path = "../solvers" }
-train = { path = "../train" }
-# The backend is chosen here, in the consumer crate: WebGPU in the tab.
-burn = { version = "0.20", default-features = false, features = ["std", "wgpu"] }
+lean-runtime = { path = "../lean-runtime" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"
-serde_json = { workspace = true }
-getrandom = { version = "0.3", features = ["wasm_js"] }
-# rand 0.8 in the data stack pulls getrandom 0.2, which needs its js feature
-# turned on from a crate that actually builds for wasm32.
-getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }

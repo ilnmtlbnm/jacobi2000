@@ -1,36 +1,42 @@
 #!/usr/bin/env bash
 # Export checkpoints into web/model/<name>/ for the browser gallery, plus a
 # web/model/index.json the page reads to build the model picker. Weights are
-# never committed (web/model/ is gitignored); this script just copies from
-# artifacts/ and regenerates the index every run.
+# never committed (web/model/ is gitignored); this script runs `jacobi
+# export-weights` (Burn checkpoint -> safetensors + config.json,
+# docs/pytorch-training.md) on each one and regenerates the index every run.
+# `crates/web` reads this format directly (`engine::Model::load`), off Burn
+# (docs/runs/2026-10-07-inference-lean.md).
 #
 # Numbers below are taken from the research log (docs/runs/), not measured
-# here — this script does not build or run anything.
+# here — this script does not build or run anything beyond the export.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p web/model
 rm -rf web/model/*/
-rm -f web/model/meta.json web/model/model.bin
+rm -f web/model/meta.json web/model/model.bin web/model/model.safetensors web/model/config.json
 
-copy() {
+export_one() {
   local name="$1"
-  mkdir -p "web/model/$name"
-  cp "artifacts/$name/meta.json" "web/model/$name/meta.json"
-  cp "artifacts/$name/model.bin" "web/model/$name/model.bin"
-  echo "exported $name"
+  local dest="${2:-web/model/$name}"
+  cargo run --release -p cli --bin jacobi -- export-weights --model "artifacts/$name" --out "$dest"
+  echo "exported $name -> $dest"
 }
 
 for name in model19 model20 model-wide-1 model-wide-2 model-energy-smoke-2 model-sph-smoke model-pt-curriculum; do
-  copy "$name"
+  export_one "$name"
 done
 
 # reverse checkpoint for the rewind exhibit, if one exists (C7, currently
 # blocked on training per docs/runs/2026-09-19-rewind.md) — optional, the
-# page's rewind() no-ops without it.
-if [ -f artifacts/model20-reverse/meta.json ]; then
-  cp artifacts/model20-reverse/meta.json web/model/model20/meta-reverse.json
-  cp artifacts/model20-reverse/model.bin web/model/model20/model-reverse.bin
+# page's rewind() no-ops without it. Exported into model20's own directory
+# under the `-reverse` suffix app.js expects.
+if [ -d artifacts/model20-reverse ]; then
+  tmp="$(mktemp -d)"
+  export_one "model20-reverse" "$tmp"
+  mv "$tmp/model.safetensors" web/model/model20/model-reverse.safetensors
+  mv "$tmp/config.json" web/model/model20/config-reverse.json
+  rmdir "$tmp"
   echo "exported model20 reverse checkpoint"
 fi
 

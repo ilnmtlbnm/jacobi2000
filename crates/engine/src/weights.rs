@@ -44,7 +44,7 @@ pub fn read_safetensors_bytes(bytes: &[u8]) -> Weights {
         let offsets = v["data_offsets"].as_array().unwrap();
         let start = data_start + offsets[0].as_u64().unwrap() as usize;
         let end = data_start + offsets[1].as_u64().unwrap() as usize;
-        let data: Vec<f32> = bytes[start..end].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        let data: Vec<f32> = bytes[start..end].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
         out.insert(name.clone(), Tensor { shape, data });
     }
     out

@@ -1,35 +1,36 @@
 //! Browser engine: solver on the left, learned operator(s) on the right, one
 //! `window.__app` surface driven by the page (and by the headless test).
 //!
-//! WASM rules that are load-bearing here:
-//! - never a synchronous GPU readback (`into_data()` deadlocks the tab);
-//!   every read goes through `into_data_async().await`;
-//! - the model state stays on the GPU between ticks, so N ticks cost one
-//!   readback, not N.
+//! Off Burn (docs/runs/2026-10-07-inference-lean.md): the model runs on
+//! `engine`'s hand-written CPU forward pass, not a Burn/wgpu graph. State
+//! lives in plain `Vec<f32>` and every step is synchronous; the exported
+//! wasm functions keep their old `async` signatures (and `web/app.js` keeps
+//! `await`ing them) only so the JS side needed no changes, not because
+//! anything here still waits on a GPU readback.
 //!
-//! Gallery (task: model picker + case picker + compare mode): a checkpoint is
-//! a [`LoadedModel`] — its own weights, normalizer and mask, each stepped in
-//! its own tensor. `App.primary` is always present; `App.secondary` exists
-//! only in compare mode, stepped in lockstep with the same solver truth.
-//! Every model shares one grid (64x64, patch 4) and one solver-conditioning
-//! tensor (`App.meta`, built from the primary's physics params) — all
-//! shipped checkpoints share that grid and near-identical physics
-//! (dt~0.090, nu=0.001), so this is a fair simplification, not an
-//! approximation that changes which model wins.
+//! Backend selection is capability-only (`lean_runtime::backend`): CPU
+//! threads (the `threads` feature, rayon) when the page is cross-origin
+//! isolated with SharedArrayBuffer and more than one hardware thread, one
+//! CPU thread otherwise. WebGPU is not yet in the ladder — no WGSL kernel
+//! exists for this model yet; see the run doc for what's left.
+//!
+//! Gallery (task: model picker + case picker + compare mode): a checkpoint
+//! is a [`LoadedModel`] — its own weights (`engine::Model`, which carries
+//! its own grid/norm/mask config) and state, each stepped independently.
+//! `App.primary` is always present; `App.secondary` exists only in compare
+//! mode, stepped in lockstep with the same solver truth. Every model shares
+//! one grid (64x64, patch 4) and one solver-conditioning vector
+//! (`App.meta`, built from the primary's physics params) — all shipped
+//! checkpoints share that grid and near-identical physics (dt~0.090,
+//! nu=0.001), so this is a fair simplification, not an approximation that
+//! changes which model wins.
 
 use std::cell::{Cell, RefCell};
 
-use burn::module::Module;
-use burn::prelude::*;
-use burn::record::{BinBytesRecorder, FullPrecisionSettings, Recorder};
-use jacobi2000::{energy, project_energy, project_mass, Denorm, Jacobi2000, Jacobi2000Config, Mask};
+use engine::metrics::{bias, correlation, decode_h, peak, radial_profile, xcorr_lag};
+use engine::{project, Model as EngineModel};
 use solvers::{Params, ShallowWater, State};
-use train::checkpoint::Meta;
-use train::data::{meta_of, Normalizer, META_DIM};
-use train::metrics::{bias, correlation, decode_h, peak, radial_profile, xcorr_lag};
 use wasm_bindgen::prelude::*;
-
-type B = burn::backend::Wgpu;
 
 /// Ticks at which the rollout error is recorded, matching the native CLI.
 const CHECKPOINTS: [usize; 3] = [10, 50, 200];
@@ -63,34 +64,22 @@ impl CaseKind {
     }
 }
 
-/// One checkpoint, stepped in its own tensor. Shared grid/mask shape with
-/// every other loaded checkpoint (see module doc).
+/// One checkpoint, stepped in its own state buffer. Shared grid/mask shape
+/// with every other loaded checkpoint (see module doc).
 struct LoadedModel {
     name: String,
-    model: Jacobi2000<B>,
-    norm: Normalizer,
-    depth: f32,
-    g: f32,
-    energy_r_max: f32,
-    mask_spec: Mask,
-    mask: Option<Tensor<B, 2>>,
-    x: Tensor<B, 4>,
-    mass0: Tensor<B, 2>,
-}
-
-impl LoadedModel {
-    fn denorm(&self) -> Denorm {
-        Denorm { mean: self.norm.mean, std: self.norm.std, depth: self.depth }
-    }
+    model: EngineModel,
+    x: Vec<f32>,
+    /// Box mean of the normalized channel 0 at the last reset, in normalized
+    /// units — the target `project::project_mass` restores.
+    mass0: f32,
 }
 
 struct App {
     params: Params,
-    device: <B as Backend>::Device,
-    meta: Tensor<B, 2>,
+    meta: Vec<f32>,
     solver: ShallowWater,
     truth: State,
-    /// Box total of h at the last reset: the constant the projection restores.
     /// Field frozen at the last reset: the persistence baseline.
     frozen: Vec<f32>,
     tick: usize,
@@ -103,7 +92,7 @@ struct App {
     /// Task C7: the reverse (backward-stepping) checkpoint, loaded
     /// separately via `init_reverse`. `None` until then, so `rewind` is a
     /// no-op (logged to STATUS by the caller) on a page that never loaded one.
-    reverse_model: Option<Jacobi2000<B>>,
+    reverse_model: Option<EngineModel>,
     primary: LoadedModel,
     /// Compare mode's second checkpoint, stepped alongside `primary` from
     /// the same case. `None` outside compare mode.
@@ -132,66 +121,26 @@ fn horizon_ticks(p: &Params, x: f32, y: f32) -> f32 {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
-    /// Set for the duration of `step`'s async body (which awaits GPU
-    /// readback partway through). While set, `drop_at`/`reset` must not
-    /// touch `APP` — they queue instead — since `step` re-borrows it after
-    /// every `.await` and a concurrent borrow would panic.
+    /// Set for the duration of `step`'s async body. The CPU engine never
+    /// actually awaits mid-step any more, but this flag (and the pending
+    /// queues below) are kept so `drop_at`/`reset`'s re-entrancy contract
+    /// with `web/app.js` is unchanged.
     static STEPPING: Cell<bool> = const { Cell::new(false) };
-    /// Drops/resets that arrived while `STEPPING`; applied at the start of
-    /// the next `step` call so `drop_at`/`reset` never have to panic, and so
-    /// a drop never perturbs the tick count of the step already in flight.
     static PENDING_DROPS: RefCell<Vec<[f32; 4]>> = const { RefCell::new(Vec::new()) };
     static PENDING_RESET: Cell<bool> = const { Cell::new(false) };
 }
 
-fn encode_tensor(
-    norm: &Normalizer,
-    s: &State,
-    p: &Params,
-    device: &<B as Backend>::Device,
-) -> (Vec<f32>, Tensor<B, 4>) {
+fn encode_tensor(cfg_norm: &engine::Normalizer, s: &State, p: &Params) -> (Vec<f32>, Vec<f32>) {
     let mut packed = vec![0.0f32; 3 * p.cells()];
-    norm.encode(s, &mut packed);
-    let t = Tensor::<B, 1>::from_floats(packed.as_slice(), device).reshape([1, 3, p.ny, p.nx]);
-    (packed, t)
+    cfg_norm.encode(s, &mut packed);
+    (packed.clone(), packed)
 }
 
-fn load_checkpoint(
-    weights: Vec<u8>,
-    meta_json: &str,
-    name: String,
-    device: &<B as Backend>::Device,
-    truth: &State,
-    params: &Params,
-) -> Result<LoadedModel, JsValue> {
-    let meta: Meta = serde_json::from_str(meta_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let cfg = Jacobi2000Config::new()
-        .with_nx(meta.nx)
-        .with_ny(meta.ny)
-        .with_patch(meta.patch)
-        .with_dim(meta.dim)
-        .with_layers(meta.layers)
-        .with_heads(meta.heads)
-        .with_ff_mult(meta.ff_mult);
-    let record = BinBytesRecorder::<FullPrecisionSettings>::default()
-        .load(weights, device)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let model = cfg.init::<B>(device).load_record(record);
-    let mask = meta.mask.to_tensor::<B>(&model.grid, device);
-    let (_, x) = encode_tensor(&meta.norm, truth, params, device);
-    let mass0 = jacobi2000::mass(&x);
-    Ok(LoadedModel {
-        name,
-        model,
-        norm: meta.norm,
-        depth: meta.depth,
-        g: meta.g,
-        energy_r_max: meta.energy_r_max,
-        mask_spec: meta.mask,
-        mask,
-        x,
-        mass0,
-    })
+fn load_checkpoint(weights: Vec<u8>, config_json: &str, name: String, truth: &State) -> LoadedModel {
+    let model = EngineModel::from_bytes(&weights, config_json);
+    let (_, x) = encode_tensor(&model.cfg.norm, truth, &model.cfg.params());
+    let mass0 = project::mass(&x, model.cfg.ny * model.cfg.nx);
+    LoadedModel { name, model, x, mass0 }
 }
 
 /// Apply the current case's initial condition to `truth`/`frozen`/`primary`/
@@ -220,13 +169,14 @@ fn apply_case(app: &mut App) {
             origins.push((m2x, m2y));
         }
     }
-    let (frozen, x) = encode_tensor(&app.primary.norm, &app.truth, p, &app.device);
+    let n = p.cells();
+    let (frozen, x) = encode_tensor(&app.primary.model.cfg.norm, &app.truth, p);
     app.frozen = frozen;
-    app.primary.mass0 = jacobi2000::mass(&x);
+    app.primary.mass0 = project::mass(&x, n);
     app.primary.x = x;
     if let Some(sec) = app.secondary.as_mut() {
-        let (_, x2) = encode_tensor(&sec.norm, &app.truth, p, &app.device);
-        sec.mass0 = jacobi2000::mass(&x2);
+        let (_, x2) = encode_tensor(&sec.model.cfg.norm, &app.truth, p);
+        sec.mass0 = project::mass(&x2, n);
         sec.x = x2;
     }
     app.tick = 0;
@@ -235,38 +185,27 @@ fn apply_case(app: &mut App) {
     app.horizon = if origins.is_empty() {
         f32::INFINITY
     } else {
-        origins
-            .iter()
-            .map(|&(x, y)| horizon_ticks(p, x, y))
-            .fold(f32::INFINITY, f32::min)
+        origins.iter().map(|&(x, y)| horizon_ticks(p, x, y)).fold(f32::INFINITY, f32::min)
     };
     app.compare_metrics = [f32::NAN; 8];
 }
 
 #[wasm_bindgen]
-pub async fn init(weights: Vec<u8>, meta_json: String, name: String) -> Result<(), JsValue> {
+pub async fn init(weights: Vec<u8>, config_json: String, name: String) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
-    let meta: Meta = serde_json::from_str(&meta_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    let device = burn::backend::wgpu::WgpuDevice::default();
-    burn::backend::wgpu::init_setup_async::<burn::backend::wgpu::graphics::AutoGraphicsApi>(
-        &device,
-        Default::default(),
-    )
-    .await;
-
-    let params = meta.params();
+    let primary_model = EngineModel::from_bytes(&weights, &config_json);
+    let params = primary_model.cfg.params();
     let truth = State::flat(&params);
-    let meta_t =
-        Tensor::<B, 1>::from_floats(meta_of(&params).as_slice(), &device).reshape([1, META_DIM]);
-    let primary = load_checkpoint(weights, &meta_json, name, &device, &truth, &params)?;
-    let (frozen, _) = encode_tensor(&primary.norm, &truth, &params, &device);
+    let meta = engine::meta_of(&params).to_vec();
+    let (_, x) = encode_tensor(&primary_model.cfg.norm, &truth, &params);
+    let mass0 = project::mass(&x, params.cells());
+    let primary = LoadedModel { name, model: primary_model, x, mass0 };
+    let (frozen, _) = encode_tensor(&primary.model.cfg.norm, &truth, &params);
 
     APP.with(|a| {
         *a.borrow_mut() = Some(App {
             params,
-            device: device.clone(),
-            meta: meta_t,
+            meta,
             solver: ShallowWater::new(params),
             truth,
             frozen,
@@ -291,13 +230,9 @@ pub async fn init(weights: Vec<u8>, meta_json: String, name: String) -> Result<(
 /// picker. Resets the whole simulation to the current case (own docstring on
 /// `apply_case`), same as switching case.
 #[wasm_bindgen]
-pub async fn load_model(weights: Vec<u8>, meta_json: String, name: String) -> Result<(), JsValue> {
-    let (device, truth, params) = APP.with(|a| {
-        let a = a.borrow();
-        let app = a.as_ref().unwrap();
-        (app.device.clone(), app.truth.clone(), app.params)
-    });
-    let primary = load_checkpoint(weights, &meta_json, name, &device, &truth, &params)?;
+pub async fn load_model(weights: Vec<u8>, config_json: String, name: String) -> Result<(), JsValue> {
+    let truth = APP.with(|a| a.borrow().as_ref().unwrap().truth.clone());
+    let primary = load_checkpoint(weights, &config_json, name, &truth);
     APP.with(|a| {
         let mut a = a.borrow_mut();
         let app = a.as_mut().unwrap();
@@ -311,13 +246,9 @@ pub async fn load_model(weights: Vec<u8>, meta_json: String, name: String) -> Re
 /// Gallery: enable compare mode with a second checkpoint, stepped alongside
 /// the primary from the same (re-applied) case.
 #[wasm_bindgen]
-pub async fn enable_compare(weights: Vec<u8>, meta_json: String, name: String) -> Result<(), JsValue> {
-    let (device, truth, params) = APP.with(|a| {
-        let a = a.borrow();
-        let app = a.as_ref().unwrap();
-        (app.device.clone(), app.truth.clone(), app.params)
-    });
-    let secondary = load_checkpoint(weights, &meta_json, name, &device, &truth, &params)?;
+pub async fn enable_compare(weights: Vec<u8>, config_json: String, name: String) -> Result<(), JsValue> {
+    let truth = APP.with(|a| a.borrow().as_ref().unwrap().truth.clone());
+    let secondary = load_checkpoint(weights, &config_json, name, &truth);
     APP.with(|a| {
         let mut a = a.borrow_mut();
         let app = a.as_mut().unwrap();
@@ -359,7 +290,7 @@ pub fn set_mass_projection(on: bool) {
 }
 
 /// Gallery: toggle the energy-inequality projection. Uses each loaded
-/// checkpoint's own `energy_r_max` (from its meta.json; 1.0 — no energy
+/// checkpoint's own `energy_r_max` (from its config.json; 1.0 — no energy
 /// growth at all — for checkpoints that never set one, which is what those
 /// checkpoints were actually scored with).
 #[wasm_bindgen]
@@ -368,25 +299,12 @@ pub fn set_energy_projection(on: bool) {
 }
 
 /// Task C7: load the reverse checkpoint next to the forward one. Same
-/// architecture config as the forward model (`Jacobi2000Config` from its own
-/// `meta.json`); only the weights differ. Safe to call any time after
-/// `init`; `rewind` no-ops until this has run.
+/// architecture config as the forward model (its own `config.json`); only
+/// the weights differ. Safe to call any time after `init`; `rewind` no-ops
+/// until this has run.
 #[wasm_bindgen]
-pub async fn init_reverse(weights: Vec<u8>, meta_json: String) -> Result<(), JsValue> {
-    let meta: Meta = serde_json::from_str(&meta_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let device = APP.with(|a| a.borrow().as_ref().unwrap().device.clone());
-    let cfg = Jacobi2000Config::new()
-        .with_nx(meta.nx)
-        .with_ny(meta.ny)
-        .with_patch(meta.patch)
-        .with_dim(meta.dim)
-        .with_layers(meta.layers)
-        .with_heads(meta.heads)
-        .with_ff_mult(meta.ff_mult);
-    let record = BinBytesRecorder::<FullPrecisionSettings>::default()
-        .load(weights, &device)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let model = cfg.init::<B>(&device).load_record(record);
+pub async fn init_reverse(weights: Vec<u8>, config_json: String) -> Result<(), JsValue> {
+    let model = EngineModel::from_bytes(&weights, &config_json);
     APP.with(|a| a.borrow_mut().as_mut().unwrap().reverse_model = Some(model));
     Ok(())
 }
@@ -406,25 +324,12 @@ pub async fn rewind(n: usize) {
     APP.with(|a| apply_pending(a.borrow_mut().as_mut().unwrap()));
     STEPPING.with(|s| s.set(true));
     for _ in 0..n {
-        let (x, mask, meta, mass0) = APP.with(|a| {
-            let a = a.borrow();
-            let app = a.as_ref().unwrap();
-            (
-                app.primary.x.clone(),
-                app.primary.mask.clone(),
-                app.meta.clone(),
-                app.primary.mass0.clone(),
-            )
-        });
-        let next = APP.with(|a| {
-            let a = a.borrow();
-            let app = a.as_ref().unwrap();
-            let rm = app.reverse_model.as_ref().unwrap();
-            project_mass(rm.step(x, meta, mask), mass0)
-        });
         APP.with(|a| {
             let mut a = a.borrow_mut();
             let app = a.as_mut().unwrap();
+            let rm = app.reverse_model.as_ref().unwrap();
+            let mut next = rm.step(&app.primary.x, &app.meta);
+            project::project_mass(&mut next, app.primary.mass0, app.params.cells());
             app.primary.x = next;
             app.tick = app.tick.saturating_sub(1);
         });
@@ -437,34 +342,33 @@ pub async fn rewind(n: usize) {
 /// back recovers a peak near a drop's known origin.
 #[wasm_bindgen]
 pub async fn peak_location() -> Vec<f32> {
-    let (x, norm, params) = APP.with(|a| {
+    APP.with(|a| {
         let a = a.borrow();
         let app = a.as_ref().unwrap();
-        (app.primary.x.clone(), app.primary.norm, app.params)
-    });
-    let data = x.into_data_async().await.unwrap();
-    let v = data.as_slice::<f32>().unwrap();
-    let n = params.cells();
-    let (mut best_i, mut best_v) = (0usize, f32::NEG_INFINITY);
-    for (i, &vi) in v.iter().enumerate().take(n) {
-        let h = (vi * norm.std[0] + norm.mean[0]).abs();
-        if h > best_v {
-            best_v = h;
-            best_i = i;
+        let norm = &app.primary.model.cfg.norm;
+        let n = app.params.cells();
+        let (mut best_i, mut best_v) = (0usize, f32::NEG_INFINITY);
+        for i in 0..n {
+            let h = (app.primary.x[i] * norm.std[0] + norm.mean[0]).abs();
+            if h > best_v {
+                best_v = h;
+                best_i = i;
+            }
         }
-    }
-    vec![(best_i % params.nx) as f32, (best_i / params.nx) as f32]
+        vec![(best_i % app.params.nx) as f32, (best_i / app.params.nx) as f32]
+    })
 }
 
 fn apply_drop(app: &mut App, x: f32, y: f32, amp: f32, sigma: f32) {
     app.truth.add_drop(&app.params, x, y, amp, sigma);
-    let (frozen, t) = encode_tensor(&app.primary.norm, &app.truth, &app.params, &app.device);
+    let n = app.params.cells();
+    let (frozen, t) = encode_tensor(&app.primary.model.cfg.norm, &app.truth, &app.params);
     app.frozen = frozen;
-    app.primary.mass0 = jacobi2000::mass(&t);
+    app.primary.mass0 = project::mass(&t, n);
     app.primary.x = t;
     if let Some(sec) = app.secondary.as_mut() {
-        let (_, t2) = encode_tensor(&sec.norm, &app.truth, &app.params, &app.device);
-        sec.mass0 = jacobi2000::mass(&t2);
+        let (_, t2) = encode_tensor(&sec.model.cfg.norm, &app.truth, &app.params);
+        sec.mass0 = project::mass(&t2, n);
         sec.x = t2;
     }
     app.tick = 0;
@@ -502,10 +406,6 @@ pub fn drop_at(x: f32, y: f32, amp: f32, sigma: f32) {
     }
     APP.with(|a| {
         if let Some(app) = a.borrow_mut().as_mut() {
-            // Drain anything left over from a step/rewind call that finished
-            // without a following step/rewind to flush it (e.g. drops queued
-            // mid-flight, applied here instead of leaking into whichever
-            // step/rewind call happens to run next).
             apply_pending(app);
             apply_drop(app, x, y, amp, sigma);
         }
@@ -529,52 +429,42 @@ pub fn reset() {
 /// Step one loaded model forward once, applying whichever projections are
 /// currently on (mass equality, energy inequality — CONCEPT sec. 4 step 2:
 /// propose, then project).
-fn step_model(
-    lm: &LoadedModel,
-    meta: &Tensor<B, 2>,
-    mass_projection: bool,
-    energy_projection: bool,
-) -> Tensor<B, 4> {
-    let prev_energy = energy(&lm.x, &lm.denorm(), lm.g);
-    let mut next = lm.model.step(lm.x.clone(), meta.clone(), lm.mask.clone());
+fn step_model(lm: &LoadedModel, meta: &[f32], mass_projection: bool, energy_projection: bool, params: &Params) -> Vec<f32> {
+    let n = params.cells();
+    let d = lm.model.cfg.norm.denorm();
+    let g = lm.model.cfg.g;
+    let prev_energy = project::energy(&lm.x, &d, g, n);
+    let mut next = lm.model.step(&lm.x, meta);
     if energy_projection {
-        next = project_energy(next, prev_energy, &lm.denorm(), lm.g, lm.energy_r_max);
+        project::project_energy(&mut next, prev_energy, &d, g, lm.model.cfg.energy_r_max, n);
     }
     if mass_projection {
-        next = project_mass(next, lm.mass0.clone());
+        project::project_mass(&mut next, lm.mass0, n);
     }
     next
 }
 
-/// Advance every panel by `n` ticks. One GPU readback per checkpoint, one
-/// per compare-metrics refresh, plus one at the end for rendering.
+/// Advance every panel by `n` ticks.
 #[wasm_bindgen]
 pub async fn step(n: usize) {
     APP.with(|a| apply_pending(a.borrow_mut().as_mut().unwrap()));
     STEPPING.with(|s| s.set(true));
     let t0 = js_sys::Date::now();
     for _ in 0..n {
-        // Advance the solver (CPU) and every loaded model (GPU) by one tick.
         APP.with(|a| {
             let mut a = a.borrow_mut();
             let app = a.as_mut().unwrap();
             app.solver.step(&mut app.truth);
             app.tick += 1;
         });
-        let (mass_on, energy_on, meta) = APP.with(|a| {
+        let (mass_on, energy_on, meta, params) = APP.with(|a| {
             let a = a.borrow();
             let app = a.as_ref().unwrap();
-            (app.mass_projection, app.energy_projection, app.meta.clone())
+            (app.mass_projection, app.energy_projection, app.meta.clone(), app.params)
         });
-        let next_primary =
-            APP.with(|a| step_model(&a.borrow().as_ref().unwrap().primary, &meta, mass_on, energy_on));
+        let next_primary = APP.with(|a| step_model(&a.borrow().as_ref().unwrap().primary, &meta, mass_on, energy_on, &params));
         let next_secondary = APP.with(|a| {
-            a.borrow()
-                .as_ref()
-                .unwrap()
-                .secondary
-                .as_ref()
-                .map(|sec| step_model(sec, &meta, mass_on, energy_on))
+            a.borrow().as_ref().unwrap().secondary.as_ref().map(|sec| step_model(sec, &meta, mass_on, energy_on, &params))
         });
         APP.with(|a| {
             let mut a = a.borrow_mut();
@@ -588,29 +478,21 @@ pub async fn step(n: usize) {
         let (want_rollout, want_metrics) = APP.with(|a| {
             let a = a.borrow();
             let app = a.as_ref().unwrap();
-            (
-                CHECKPOINTS.iter().position(|&c| c == app.tick),
-                app.tick % METRICS_EVERY == 0,
-            )
+            (CHECKPOINTS.iter().position(|&c| c == app.tick), app.tick % METRICS_EVERY == 0)
         });
         if let Some(i) = want_rollout {
-            let data = APP
-                .with(|a| a.borrow().as_ref().unwrap().primary.x.clone())
-                .into_data_async()
-                .await
-                .unwrap();
-            let pred = data.as_slice::<f32>().unwrap().to_vec();
             APP.with(|a| {
                 let mut a = a.borrow_mut();
                 let app = a.as_mut().unwrap();
+                let pred = app.primary.x.clone();
                 let mut target = vec![0.0f32; pred.len()];
-                app.primary.norm.encode(&app.truth, &mut target);
+                app.primary.model.cfg.norm.encode(&app.truth, &mut target);
                 app.errors[i] = rmse(&pred, &target);
                 app.persistence[i] = rmse(&app.frozen, &target);
             });
         }
         if want_metrics {
-            refresh_compare_metrics().await;
+            refresh_compare_metrics();
         }
     }
     let dt = js_sys::Date::now() - t0;
@@ -622,53 +504,32 @@ pub async fn step(n: usize) {
 
 /// Live localized metrics (corr, amplitude ratio, wavefront lag against the
 /// solver) for compare mode, refreshed every `METRICS_EVERY` ticks. Origin
-/// for the radial profile is the domain center — a fair generic choice
-/// across cases (drop/dam-break/extended may not share a single source
-/// point).
-async fn refresh_compare_metrics() {
-    let (n, nx, ny, cx, cy, solver_h, primary_x, primary_norm, secondary) = APP.with(|a| {
-        let a = a.borrow();
-        let app = a.as_ref().unwrap();
-        let n = app.params.cells();
-        let solver_h: Vec<f32> = app.truth.h.iter().map(|&h| h - app.params.depth).collect();
-        (
-            n,
-            app.params.nx,
-            app.params.ny,
-            app.params.nx as f32 / 2.0,
-            app.params.ny as f32 / 2.0,
-            solver_h,
-            app.primary.x.clone(),
-            app.primary.norm,
-            app.secondary.as_ref().map(|s| (s.x.clone(), s.norm)),
-        )
-    });
-    let pdata = primary_x.into_data_async().await.unwrap();
-    let ph = decode_h(pdata.as_slice::<f32>().unwrap(), &primary_norm, n);
-    let sr = radial_profile(&solver_h, nx, ny, cx, cy);
-    let pr = radial_profile(&ph, nx, ny, cx, cy);
-    let corr_a = correlation(&ph, &solver_h);
-    let amp_a = peak(&ph) / peak(&solver_h).max(1e-12);
-    let lag_a = xcorr_lag(&pr, &sr, 10);
-
-    let bias_a = bias(&ph, &solver_h);
-
-    let (corr_b, amp_b, lag_b, bias_b) = if let Some((sx, snorm)) = secondary {
-        let sdata = sx.into_data_async().await.unwrap();
-        let sh = decode_h(sdata.as_slice::<f32>().unwrap(), &snorm, n);
-        let sh_radial = radial_profile(&sh, nx, ny, cx, cy);
-        (
-            correlation(&sh, &solver_h),
-            peak(&sh) / peak(&solver_h).max(1e-12),
-            xcorr_lag(&sh_radial, &sr, 10),
-            bias(&sh, &solver_h),
-        )
-    } else {
-        (f32::NAN, f32::NAN, f32::NAN, f32::NAN)
-    };
+/// for the radial profile is the domain center.
+fn refresh_compare_metrics() {
     APP.with(|a| {
-        a.borrow_mut().as_mut().unwrap().compare_metrics =
-            [corr_a, amp_a, lag_a, corr_b, amp_b, lag_b, bias_a, bias_b];
+        let mut a = a.borrow_mut();
+        let app = a.as_mut().unwrap();
+        let n = app.params.cells();
+        let (nx, ny) = (app.params.nx, app.params.ny);
+        let (cx, cy) = (nx as f32 / 2.0, ny as f32 / 2.0);
+        let solver_h: Vec<f32> = app.truth.h.iter().map(|&h| h - app.params.depth).collect();
+        let sr = radial_profile(&solver_h, nx, ny, cx, cy);
+
+        let ph = decode_h(&app.primary.x, &app.primary.model.cfg.norm, n);
+        let pr = radial_profile(&ph, nx, ny, cx, cy);
+        let corr_a = correlation(&ph, &solver_h);
+        let amp_a = peak(&ph) / peak(&solver_h).max(1e-12);
+        let lag_a = xcorr_lag(&pr, &sr, 10);
+        let bias_a = bias(&ph, &solver_h);
+
+        let (corr_b, amp_b, lag_b, bias_b) = if let Some(sec) = &app.secondary {
+            let sh = decode_h(&sec.x, &sec.model.cfg.norm, n);
+            let sh_radial = radial_profile(&sh, nx, ny, cx, cy);
+            (correlation(&sh, &solver_h), peak(&sh) / peak(&solver_h).max(1e-12), xcorr_lag(&sh_radial, &sr, 10), bias(&sh, &solver_h))
+        } else {
+            (f32::NAN, f32::NAN, f32::NAN, f32::NAN)
+        };
+        app.compare_metrics = [corr_a, amp_a, lag_a, corr_b, amp_b, lag_b, bias_a, bias_b];
     });
 }
 
@@ -690,11 +551,7 @@ pub fn solver_field() -> Vec<f32> {
     APP.with(|a| {
         let a = a.borrow();
         let app = a.as_ref().unwrap();
-        app.truth
-            .h
-            .iter()
-            .map(|&h| h - app.params.depth)
-            .collect()
+        app.truth.h.iter().map(|&h| h - app.params.depth).collect()
     })
 }
 
@@ -703,37 +560,34 @@ pub fn solver_field() -> Vec<f32> {
 /// instead and drops the divergence map (three panels: A, B, solver).
 #[wasm_bindgen]
 pub async fn model_and_divergence() -> Vec<f32> {
-    let (x, norm, params, truth) = APP.with(|a| {
+    APP.with(|a| {
         let a = a.borrow();
         let app = a.as_ref().unwrap();
-        (app.primary.x.clone(), app.primary.norm, app.params, app.truth.h.clone())
-    });
-    let data = x.into_data_async().await.unwrap();
-    let v = data.as_slice::<f32>().unwrap();
-    let n = params.cells();
-    let mut out = Vec::with_capacity(2 * n);
-    for value in v.iter().take(n) {
-        out.push(value * norm.std[0] + norm.mean[0]);
-    }
-    for i in 0..n {
-        out.push(out[i] - (truth[i] - params.depth));
-    }
-    out
+        let norm = &app.primary.model.cfg.norm;
+        let n = app.params.cells();
+        let mut out = Vec::with_capacity(2 * n);
+        for value in app.primary.x.iter().take(n) {
+            out.push(value * norm.std[0] + norm.mean[0]);
+        }
+        for i in 0..n {
+            out.push(out[i] - (app.truth.h[i] - app.params.depth));
+        }
+        out
+    })
 }
 
 /// Compare mode: the secondary model's surface height anomaly, `[ny * nx]`.
 /// Empty if compare mode is off.
 #[wasm_bindgen]
 pub async fn secondary_field() -> Vec<f32> {
-    let Some((x, norm, n)) = APP.with(|a| {
+    APP.with(|a| {
         let a = a.borrow();
         let app = a.as_ref().unwrap();
-        app.secondary.as_ref().map(|s| (s.x.clone(), s.norm, app.params.cells()))
-    }) else {
-        return Vec::new();
-    };
-    let data = x.into_data_async().await.unwrap();
-    decode_h(data.as_slice::<f32>().unwrap(), &norm, n)
+        match &app.secondary {
+            Some(sec) => decode_h(&sec.x, &sec.model.cfg.norm, app.params.cells()),
+            None => Vec::new(),
+        }
+    })
 }
 
 /// `[corrA, ampA, lagA, corrB, ampB, lagB, biasA, biasB]`, NaN for the B
@@ -743,30 +597,13 @@ pub fn compare_metrics() -> Vec<f32> {
     APP.with(|a| a.borrow().as_ref().unwrap().compare_metrics.to_vec())
 }
 
-/// Per-cell xr ensemble spread of the surface height (task 10, CONCEPT sec.
-/// 4), `[ny * nx]`, physical units, for `k` jittered patch-grid offsets on
-/// the *current* model state (does not advance the tick). TODO(demo): wire
-/// into the divergence panel as a fourth `paint()` call, e.g.
-/// `paint(ctx.spread, await engine.spread_field(4), 0.01)` next to the
-/// existing `model_and_divergence()` call in `web/app.js`'s `render()`.
+/// Per-cell xr ensemble spread (CONCEPT sec. 4, task 10): not ported from
+/// the Burn engine yet (docs/runs/2026-10-07-inference-lean.md) — `app.js`
+/// never calls this (its own TODO, left from before this move), so it is
+/// not part of the page's acceptance checks. Returns empty until it is.
 #[wasm_bindgen]
-pub async fn spread_field(k: usize) -> Vec<f32> {
-    let (model, x, meta, mask, norm) = APP.with(|a| {
-        let a = a.borrow();
-        let app = a.as_ref().unwrap();
-        (
-            app.primary.model.clone(),
-            app.primary.x.clone(),
-            app.meta.clone(),
-            app.primary.mask.clone(),
-            app.primary.norm,
-        )
-    });
-    let (_, spread) = train::xr_step(&model, x, meta, mask, k);
-    let data = spread.into_data_async().await.unwrap();
-    let v = data.as_slice::<f32>().unwrap();
-    let n = APP.with(|a| a.borrow().as_ref().unwrap().params.cells());
-    v[..n].iter().map(|&s| s * norm.std[0]).collect()
+pub async fn spread_field(_k: usize) -> Vec<f32> {
+    Vec::new()
 }
 
 #[wasm_bindgen]
@@ -808,13 +645,13 @@ pub fn grid_size() -> Vec<usize> {
     })
 }
 
-/// The mask the loaded checkpoint runs with (read from its meta.json).
+/// The mask the loaded checkpoint runs with (read from its config.json).
 #[wasm_bindgen]
 pub fn mask_name() -> String {
     APP.with(|a| {
         let a = a.borrow();
         let app = a.as_ref().unwrap();
-        format!("{:?}", app.primary.mask_spec)
+        format!("{:?}", app.primary.model.cfg.mask)
     })
 }
 

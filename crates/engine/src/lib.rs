@@ -33,8 +33,17 @@ pub struct Model {
 
 impl Model {
     pub fn load(dir: &Path) -> Model {
-        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
-        let w = weights::read_safetensors(&dir.join("model.safetensors"));
+        let config_json = std::fs::read_to_string(dir.join("config.json")).unwrap();
+        let bytes = std::fs::read(dir.join("model.safetensors")).unwrap();
+        Model::from_bytes(&bytes, &config_json)
+    }
+
+    /// Same as [`Self::load`], from in-memory bytes: the browser has no
+    /// filesystem, so `crates/web` fetches `model.safetensors` and
+    /// `config.json` and hands the bytes straight here.
+    pub fn from_bytes(safetensors: &[u8], config_json: &str) -> Model {
+        let json: serde_json::Value = serde_json::from_str(config_json).expect("config.json: invalid JSON");
+        let w = weights::read_safetensors_bytes(safetensors);
         let cfg = Config::from_json(&json, &w);
         Model { cfg, w }
     }
