@@ -1,0 +1,19 @@
+[package]
+name = "engine"
+description = "Jacobi2000 inference off Burn: CPU (single/threads) forward pass reading the same safetensors + config.json checkpoints the PyTorch export writes (docs/pytorch-training.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# rayon-parallel CPU path, chosen at runtime by lean-runtime's capability
+# ladder, never autotuned.
+threads = ["dep:rayon"]
+
+[dependencies]
+lean-runtime = { path = "../lean-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libm = "0.2"
+rayon = { version = "1.10", optional = true }

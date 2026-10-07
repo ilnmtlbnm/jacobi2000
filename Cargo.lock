@@ -1633,6 +1633,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "lean-runtime",
+ "libm",
+ "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "entities"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
