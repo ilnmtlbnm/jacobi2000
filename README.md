@@ -92,14 +92,44 @@ npm install
 
 Then serve `web/` with any static file server and open `index.html`.
 
+### Run it from the command line
+
+`crates/engine-cli` (binary `rollout`) runs a checkpoint's inference
+off Burn entirely — no Burn anywhere in its dependency tree
+(`cargo tree -p engine-cli | grep -c burn` is `0`). It loads a
+`model.safetensors` + `config.json` checkpoint (the format
+`jacobi export-weights` and the PyTorch training export both write,
+`docs/pytorch-training.md`), steps it next to the reference solver from a
+built-in initial condition, and prints the model's correlation against
+the solver every tick:
+
+```
+cargo run -p engine-cli --release --bin rollout -- \
+    --model web/model/model20 --steps 50
+```
+
+`--backend auto|cpu|webgpu` picks the backend (`auto`, the default, tries
+WebGPU and falls back to CPU — capability, not a benchmark); `--backend
+webgpu`/`threads` need this crate built with `--features wgpu`/`threads`
+respectively. `--case drop|dam_break` picks the initial condition, and
+`--out field.npy` dumps the final decoded height field as a NumPy `.npy`
+file.
+
 ## Layout
 
 - `crates/jacobi2000` — grid type, attention masks, model, constraint
   projection, the fill iteration.
 - `crates/solvers` — the reference shallow-water solver.
-- `crates/train` — data generation, training loop, evaluation metrics.
-- `crates/cli` — the native command-line tool.
-- `crates/web` — the WASM build of the model and solver for the browser.
+- `crates/train` — data generation, training loop, evaluation metrics
+  (Burn).
+- `crates/cli` — the native training/evaluation command-line tool (Burn).
+- `crates/engine` — inference off Burn: a hand-written CPU (optionally
+  `rayon`-threaded) and WebGPU (hand-written WGSL) forward pass, reading
+  `model.safetensors` + `config.json` checkpoints.
+- `crates/engine-cli` — `rollout`, a command-line runner for `engine`
+  (no Burn in its dependency tree; see "Run it from the command line").
+- `crates/web` — the WASM build of `engine` and the solver for the
+  browser, also off Burn.
 - `web/` — the demo page.
 - `docs/runs/` — dated research-log entries: parameters, commands, results.
 

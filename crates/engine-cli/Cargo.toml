@@ -1,0 +1,23 @@
+[package]
+name = "engine-cli"
+description = "Command-line rollout for the Burn-free engine crate: load a safetensors+config.json checkpoint, step it against the reference solver, print corr/stats, optionally dump the final field as .npy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rollout"
+path = "src/main.rs"
+
+[features]
+default = []
+# Both forward to engine's own features; see its Cargo.toml. threads is a
+# build-time choice (rayon in or out); wgpu lets --backend webgpu run, with
+# --backend auto/cpu still available in the same binary.
+threads = ["engine/threads"]
+wgpu = ["engine/wgpu", "dep:pollster"]
+
+[dependencies]
+engine = { path = "../engine" }
+solvers = { path = "../solvers" }
+pollster = { version = "0.4", optional = true }

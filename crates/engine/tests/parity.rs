@@ -102,6 +102,52 @@ fn full_mask_one_step_matches_burn() {
     run_case("full", cfg, BurnMask::Full);
 }
 
+/// GPU-vs-CPU parity on the same random-init checkpoint, same probe input.
+/// Dispatches real GPU work — never run this on the M2 (Metal); it is a
+/// box-only (Vulkan) gate. Skips cleanly (prints and returns) if no adapter
+/// is granted, so it is still safe to leave in the default test binary.
+#[cfg(feature = "wgpu")]
+#[test]
+fn gpu_matches_cpu_on_random_init() {
+    let cfg = Jacobi2000Config::new().with_layers(2);
+    let mask = BurnMask::Stencil { radius: 1, dilation: 1 };
+    let dir = std::env::temp_dir().join(format!("jacobi2000-engine-parity-gpu-{}", std::process::id()));
+    write_checkpoint(&dir, &cfg, mask);
+
+    let cpu_model = engine::Model::load(&dir);
+    let gpu_model = match pollster::block_on(cpu_model.to_gpu()) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("gpu_matches_cpu_on_random_init: skipped, no adapter ({e:?})");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+    };
+
+    let state = probe_state(cfg.channels, cfg.ny, cfg.nx);
+    let meta_vec: Vec<f32> = (0..cfg.meta_dim).map(|i| 0.1 * (i as f32 + 1.0)).collect();
+
+    let cpu_out = cpu_model.forward(&state, &meta_vec);
+    let gpu_out = pollster::block_on(gpu_model.forward(&state, &meta_vec));
+    let (max_abs, max_rel) = max_abs_rel(&cpu_out, &gpu_out);
+    println!("gpu vs cpu, 1-step: max_abs={max_abs:e} max_rel={max_rel:e}");
+    assert!(max_abs < 1e-2, "GPU forward diverged from CPU: max abs diff {max_abs}");
+
+    let mut cpu_state = state.clone();
+    let mut gpu_state = state;
+    let mut max_abs_50 = 0.0f32;
+    for _ in 0..50 {
+        cpu_state = cpu_model.step(&cpu_state, &meta_vec);
+        gpu_state = pollster::block_on(gpu_model.step(&gpu_state, &meta_vec));
+        let (a, _) = max_abs_rel(&cpu_state, &gpu_state);
+        max_abs_50 = max_abs_50.max(a);
+    }
+    println!("gpu vs cpu, 50-step rollout: max_abs={max_abs_50:e}");
+    assert!(max_abs_50 < 1.0, "GPU rollout diverged from CPU: max abs diff {max_abs_50}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn fifty_step_rollout_stays_close_to_burn() {
     let cfg = Jacobi2000Config::new().with_layers(2);

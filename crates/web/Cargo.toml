@@ -16,7 +16,10 @@ default = []
 threads = ["engine/threads"]
 
 [dependencies]
-engine = { path = "../engine" }
+# WebGPU is always compiled in (top of lean-runtime's capability ladder);
+# whether it's actually used is a runtime adapter check, not a build
+# feature — a page that gets no adapter falls back to CPU automatically.
+engine = { path = "../engine", features = ["wgpu"] }
 solvers = { path = "../solvers" }
 lean-runtime = { path = "../lean-runtime" }
 wasm-bindgen = "0.2"

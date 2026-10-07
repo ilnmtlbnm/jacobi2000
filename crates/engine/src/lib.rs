@@ -11,6 +11,8 @@
 
 pub mod config;
 pub mod cpu;
+#[cfg(feature = "wgpu")]
+pub mod gpu;
 pub mod mask;
 pub mod metrics;
 pub mod norm;
@@ -56,5 +58,12 @@ impl Model {
     /// One tick: `state + forward(state, meta)`.
     pub fn step(&self, state: &[f32], meta: &[f32]) -> Vec<f32> {
         cpu::step(&self.cfg, &self.w, state, meta)
+    }
+
+    /// Build the WebGPU-backed twin of this model (same weights, same
+    /// config), for the top of the capability ladder.
+    #[cfg(feature = "wgpu")]
+    pub async fn to_gpu(&self) -> Result<gpu::GpuModel, lean_runtime::Error> {
+        gpu::GpuModel::new(self.cfg.clone(), &self.w).await
     }
 }
