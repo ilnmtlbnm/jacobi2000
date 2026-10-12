@@ -159,6 +159,18 @@ fn groups_1d(threads: usize) -> (u32, u32) {
     (x, count.div_ceil(x))
 }
 
+impl Drop for GpuModel {
+    /// Frees the device before the next one is requested. A dropped wgpu
+    /// device is released lazily, and a process that builds many models in a
+    /// row (a test binary) otherwise keeps their Vulkan devices alive while
+    /// asking the driver for another.
+    fn drop(&mut self) {
+        self.device.destroy();
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::Wait);
+    }
+}
+
 impl GpuModel {
     /// A device on the best adapter and the model's pipelines and weights.
     /// `Error::Runtime(NoAdapter)` when there is none: the caller then takes

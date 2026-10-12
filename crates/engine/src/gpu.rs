@@ -196,6 +196,18 @@ fn upsample_bg(device: &wgpu::Device, queue: &wgpu::Queue, pl: &wgpu::ComputePip
     ])
 }
 
+impl Drop for GpuModel {
+    /// Frees the device before the next one is requested. A dropped wgpu
+    /// device is released lazily, and a process that builds many models in a
+    /// row (a test binary) otherwise keeps their Vulkan devices alive while
+    /// asking the driver for another.
+    fn drop(&mut self) {
+        self.device.destroy();
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::Wait);
+    }
+}
+
 impl GpuModel {
     pub async fn new(cfg: Config, w: &Weights) -> Result<GpuModel, lean_runtime::Error> {
         let adapter = rtgpu::request_adapter().await?;
