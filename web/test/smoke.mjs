@@ -1,12 +1,10 @@
 // Headless Chromium check of the demo page. Drives window.__app, never DOM
-// clicks. Never a personal browser: this is Playwright's bundled build by
-// default.
+// clicks. Uses Playwright's bundled Chromium by default.
 //
 // Headless Chromium cannot reach a real Vulkan/NVIDIA WebGPU adapter (falls
 // back to SwiftShader, software); a WebGPU-accuracy run needs headed
 // Chromium on a real display, which SMOKE_HEADED/SMOKE_EXECUTABLE/
-// SMOKE_DISPLAY below opt into on a machine that has one — never the
-// a personal browser, only ever a test machine's desktop session.
+// SMOKE_DISPLAY below opt into on a machine that has one.
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -157,10 +155,10 @@ try {
   );
   check(peakAfterRace !== peakBeforeRace, 'race: solver peak did not change after concurrent drops');
   console.log('RACE: PASS');
-  // Task C7: rewind. Reset, drop at a known origin, step the forward model
+  // Rewind. Reset, drop at a known origin, step the forward model
   // 20 ticks, then rewind the reverse model 20 ticks and check the peak
   // lands back near the drop's origin. Skips (does not fail) if the page
-  // has no reverse checkpoint (model/model-reverse.bin absent) — the demo
+  // has no reverse checkpoint (model/model-reverse.bin absent); the demo
   // still works without one, per the no-op rewind() contract.
   await page.evaluate(() => window.__app.reset());
   await page.evaluate(() => window.__app.drop(20, 40));
@@ -173,7 +171,7 @@ try {
     console.log(`REWIND: ${dist <= 4 ? 'PASS' : 'FAIL'} (peak at [${after}], origin [20,40], error ${dist.toFixed(2)} cells)`);
     check(dist <= 4, `rewind(20) peak expected within 4 cells of [20,40], got [${after}] (${dist.toFixed(2)} cells)`);
   } else {
-    console.log(`REWIND: SKIPPED (no reverse checkpoint loaded — tick stayed at ${tickAfterRewind})`);
+    console.log(`REWIND: SKIPPED (no reverse checkpoint loaded; tick stayed at ${tickAfterRewind})`);
   }
 } catch (e) {
   failure = e;

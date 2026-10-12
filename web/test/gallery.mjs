@@ -58,7 +58,7 @@ try {
   console.log('ACCEPTANCE: PASS (model20 > 0.98, model-wide-2 > 0.95)');
 
   // Compare mode: model20 vs model-wide-1, same drop case, solver as the
-  // third panel — three canvases, all finite.
+  // third panel, three canvases, all finite.
   await page.evaluate(() => window.__app.pickModel('model20'));
   await page.evaluate(() => window.__app.setCase('drop'));
   await page.evaluate(() => window.__app.enableCompare('model-wide-1'));

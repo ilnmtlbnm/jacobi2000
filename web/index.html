@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>jacobi2000 — idle intelligence</title>
+<title>jacobi2000 | idle intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
@@ -225,10 +225,10 @@
 <section>
     <h2>STATUS</h2>
     <div class="kv"><span>state</span><span id="status">loading</span></div>
-    <div class="kv"><span>backend</span><span id="backend">—</span></div>
-    <div class="kv"><span>grid</span><span id="grid">—</span></div>
-    <div class="kv"><span>mask</span><span id="mask">—</span></div>
-    <div class="kv"><span>model</span><span id="model-name">—</span></div>
+    <div class="kv"><span>backend</span><span id="backend">--</span></div>
+    <div class="kv"><span>grid</span><span id="grid">--</span></div>
+    <div class="kv"><span>mask</span><span id="mask">--</span></div>
+    <div class="kv"><span>model</span><span id="model-name">--</span></div>
     <p class="recipe" id="recipe"></p>
     <p class="recipe" id="rewind-status"></p>
 </section>
@@ -274,7 +274,7 @@
     <div class="grids">
         <div class="panel">
             <canvas id="c-solver" width="64" height="64"></canvas>
-            <div class="caption">solver (truth) — click to drop</div>
+            <div class="caption">solver (truth), click to drop</div>
         </div>
         <div class="panel">
             <canvas id="c-model" width="64" height="64"></canvas>
@@ -293,7 +293,7 @@
     <h2>PERFORMANCE</h2>
     <div class="metrics-grid">
         <div class="metric">
-            <div class="metric-value" id="ms">—</div>
+            <div class="metric-value" id="ms">--</div>
             <div class="metric-label">ms / tick</div>
         </div>
         <div class="metric">
@@ -301,19 +301,19 @@
             <div class="metric-label">ticks</div>
         </div>
         <div class="metric">
-            <div class="metric-value" id="peak">—</div>
+            <div class="metric-value" id="peak">--</div>
             <div class="metric-label">peak |h'|</div>
         </div>
         <div class="metric">
-            <div class="metric-value" id="horizon">—</div>
+            <div class="metric-value" id="horizon">--</div>
             <div class="metric-label">horizon (ticks)</div>
         </div>
     </div>
     <table>
         <tr><th>rollout RMSE</th><th>model</th><th>frozen</th></tr>
-        <tr><td>10 ticks</td><td id="e10">—</td><td id="p10">—</td></tr>
-        <tr><td>50 ticks</td><td id="e50">—</td><td id="p50">—</td></tr>
-        <tr><td>200 ticks</td><td id="e200">—</td><td id="p200">—</td></tr>
+        <tr><td>10 ticks</td><td id="e10">--</td><td id="p10">--</td></tr>
+        <tr><td>50 ticks</td><td id="e50">--</td><td id="p50">--</td></tr>
+        <tr><td>200 ticks</td><td id="e200">--</td><td id="p200">--</td></tr>
     </table>
 </section>
 

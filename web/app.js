@@ -62,7 +62,7 @@ function receptiveField(x, y) {
     }
   }
   // Head reach: widen every attended token by one more token in each
-  // direction (dilation 1 — the conv is not dilated).
+  // direction (dilation 1; the conv is not dilated).
   const tokens = new Set();
   for (const idx of attn) {
     const tx2 = idx % tokensX, ty2 = Math.floor(idx / tokensX);
@@ -117,13 +117,13 @@ function paint(context, field, scale) {
 }
 
 function fmtMetric(label, v) {
-  return `${label} ${Number.isFinite(v) ? v.toFixed(3) : '—'}`;
+  return `${label} ${Number.isFinite(v) ? v.toFixed(3) : '--'}`;
 }
 
 // bias is a signed constant offset (fraction of the solver field's spread),
 // so it's shown with an explicit sign, e.g. "bias +0.12".
 function fmtBias(v) {
-  return `bias ${Number.isFinite(v) ? (v >= 0 ? '+' : '') + v.toFixed(2) : '—'}`;
+  return `bias ${Number.isFinite(v) ? (v >= 0 ? '+' : '') + v.toFixed(2) : '--'}`;
 }
 
 function renderCompareMetrics() {
@@ -168,22 +168,22 @@ async function render() {
   $('ticks').textContent = engine.ticks();
   $('ms').textContent = engine.ms_per_tick().toFixed(1);
   const h = engine.horizon();
-  $('horizon').textContent = Number.isFinite(h) ? Math.floor(h) : '—';
+  $('horizon').textContent = Number.isFinite(h) ? Math.floor(h) : '--';
   const e = engine.rollout_errors();
-  const fmt = (v) => (Number.isNaN(v) ? '—' : v.toFixed(4));
+  const fmt = (v) => (Number.isNaN(v) ? '--' : v.toFixed(4));
   $('e10').textContent = fmt(e[0]); $('e50').textContent = fmt(e[1]); $('e200').textContent = fmt(e[2]);
   $('p10').textContent = fmt(e[3]); $('p50').textContent = fmt(e[4]); $('p200').textContent = fmt(e[5]);
 }
 
 function entryLabel(entry) {
   const params = entry.params >= 1e6 ? `${(entry.params / 1e6).toFixed(1)}M` : `${(entry.params / 1e3).toFixed(0)}k`;
-  const corr = Number.isFinite(entry.corr50) ? entry.corr50.toFixed(3) : '—';
+  const corr = Number.isFinite(entry.corr50) ? entry.corr50.toFixed(3) : '--';
   return `${entry.name} · ${params} params · corr ${corr} at 50 ticks`;
 }
 
 function renderRecipe(entry) {
   $('model-name').textContent = entry.name;
-  $('recipe').textContent = `${entry.dim}/${entry.layers}, ${entry.params.toLocaleString()} params — ${entry.desc}`;
+  $('recipe').textContent = `${entry.dim}/${entry.layers}, ${entry.params.toLocaleString()} params, ${entry.desc}`;
 }
 
 async function fetchModel(dir) {
@@ -290,7 +290,7 @@ async function boot() {
     renderRecipe(initial);
     buildPicker($('model-picker'), pickPrimary, null);
     markActive($('model-picker'), primaryName);
-    // Task C7: reverse checkpoint is optional — a page whose model/<name>/
+    // The reverse checkpoint is optional: a page whose model/<name>/
     // has no model-reverse.safetensors still boots and runs exactly as
     // before, `rewind` just no-ops (checked in engine.rewind itself).
     try {
@@ -373,7 +373,7 @@ $('b-run').addEventListener('click', () => {
 });
 $('b-step').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(1); });
 $('b-step10').addEventListener('click', () => { running = false; $('b-run').textContent = 'run'; step(10); });
-// Task C7: step the reverse model 20 ticks back from here and report how
+// Step the reverse model 20 ticks back from here and report how
 // close the peak lands to where the wave started (captured at the last
 // tick-0, i.e. the last drop/reset).
 $('b-rewind20').addEventListener('click', async () => {
@@ -382,7 +382,7 @@ $('b-rewind20').addEventListener('click', async () => {
   await engine.rewind(20);
   await render();
   const after = await engine.peak_location();
-  const n = originPeak ? Math.hypot(after[0] - originPeak[0], after[1] - originPeak[1]).toFixed(1) : '—';
+  const n = originPeak ? Math.hypot(after[0] - originPeak[0], after[1] - originPeak[1]).toFixed(1) : '--';
   $('rewind-status').textContent = `rewind: 20 ticks back, peak error ${n} cells`;
 });
 
@@ -401,9 +401,8 @@ window.__app = {
   mask: () => maskLabel(modelMeta.mask),
   highlight: (x, y) => { highlightState = receptiveField(x, y); drawHighlightOverlay(); return highlightState; },
   clearHighlight: () => { highlightState = null; },
-  // Task C7: step the reverse model back n ticks from the current model
-  // state. STATUS-line logged per call (console, matching the demo's
-  // existing STATUS-panel-only convention — no new UI element).
+  // Step the reverse model back n ticks from the current model
+  // state. Logged per call to the console.
   rewind: async (n) => {
     await engine.rewind(n);
     await render();
