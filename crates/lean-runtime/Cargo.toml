@@ -1,6 +1,6 @@
 [package]
 name = "lean-runtime"
-description = "Shared wgpu and wasm runtime: device acquisition, buffers, pipelines, the backend ladder and the wasm threads pool, with no model or physics types. Originates in idle-intelligence/llm-web (see README.md)."
+description = "Shared wgpu and wasm runtime: device acquisition, buffers, pipelines, the backend ladder and the wasm threads pool, with no model or physics types. Derived from the runtime work in idle-intelligence/llm-web."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

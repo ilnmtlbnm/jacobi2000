@@ -6,17 +6,12 @@ capability only), device acquisition with the adapter's own limits, buffers
 and awaited readback, pipelines, size checks against the device limits, a
 clock, and the wasm threads pool. No model or physics types.
 
-Origin: this crate is the runtime layer written for
-[idle-intelligence/llm-web](https://github.com/idle-intelligence/llm-web)
-(`crates/lean-runtime`, commit 648a659). llm-web's main branch (checked at
-6daf322) does not contain it as a crate: its `lean-core` acquires the device
-inside `Engine`, next to the GGUF and tokenizer code, so there is nothing
-there to depend on without pulling in a language-model stack. The copy here is
-kept as its own crate and synced by hand with what llm-web main does in the
-same places: the minimum compute-limit check at device acquisition
-(`limits::require_compute`, called by `engine`), uploads through
-`queue.write_buffer` only, and the `mtBuilt` flag in `js/capabilities.js`
-(a page tells the ladder whether it shipped a threads build).
+This crate was derived from the runtime work in
+[idle-intelligence/llm-web](https://github.com/idle-intelligence/llm-web) and
+is synced with the device handling of llm-web main at commit 6daf322: the
+minimum compute-limit check at device acquisition (`limits::require_compute`),
+uploads through `queue.write_buffer` only, and the `mtBuilt` flag in
+`js/capabilities.js`.
 
 - `src/`: the Rust crate.
 - `js/capabilities.js`: the same ladder rule for a browser page or worker.
