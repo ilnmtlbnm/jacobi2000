@@ -1,0 +1,26 @@
+[package]
+name = "life"
+description = "The three small Game of Life models (BERT of Life, the 9-number MLP, the toroidal stencil model): CPU (single/threads) and WGSL forward passes reading safetensors + config.json, batched over all cells of a board."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# rayon-parallel CPU path, chosen by the consumer from lean-runtime's
+# capability ladder, never autotuned.
+threads = ["dep:rayon"]
+# WebGPU path: WGSL kernels (src/shaders/) on lean-runtime's device, buffer
+# and pipeline helpers.
+wgpu = ["dep:wgpu", "dep:bytemuck"]
+
+[dependencies]
+lean-runtime = { path = "../lean-runtime" }
+serde_json = { workspace = true }
+libm = "0.2"
+rayon = { version = "1.10", optional = true }
+wgpu = { version = "26", optional = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+bytemuck = { version = "1.25", optional = true, features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.4"

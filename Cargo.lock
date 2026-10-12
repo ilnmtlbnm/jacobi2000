@@ -2714,6 +2714,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "life"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "lean-runtime",
+ "libm",
+ "pollster 0.4.0",
+ "rayon",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
