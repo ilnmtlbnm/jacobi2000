@@ -17,6 +17,11 @@ lto = true
 codegen-units = 1
 opt-level = 3
 
+# rustc crashes (SIGBUS in LLVM's DWARF emission) on fhp's generated collision
+# tables when they are built with full debug info.
+[profile.dev.package.fhp]
+debug = false
+
 # fhp and jacobi's parity tests evaluate bit-sliced circuits over millions of
 # lanes; unoptimized they take minutes (carried over from their source
 # workspace in tritsliced).
