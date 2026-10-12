@@ -8,8 +8,10 @@
 // project's kernels), then threads stride over the head_dim outputs.
 // Non-causal, so no online softmax is needed (unlike lean's
 // attn_prefill.wgsl): the whole score row fits in workgroup memory.
-// `q`/`k`/`v`: [tokens, dim], heads occupy contiguous `dim` ranges
-// (`[head*hd, (head+1)*hd)`), matching `cpu.rs::attention`.
+// `qkv`: [tokens, 3*dim], the fused q/k/v projection output (q in columns
+// [0, dim), k in [dim, 2*dim), v in [2*dim, 3*dim)); heads occupy
+// contiguous `dim` ranges (`[head*hd, (head+1)*hd)`) inside each, matching
+// `cpu.rs::attention`. `out`: [tokens, dim].
 // `MAX_CAND` bounds the workgroup arrays (WGSL needs a const length); 1024
 // covers this model's 256-token (64x64, patch 4) grid with headroom for a
 // finer patch.
@@ -21,11 +23,9 @@ struct Dims {
     scale: f32, _p0: u32, _p1: u32, _p2: u32,
 };
 
-@group(0) @binding(0) var<storage, read> q: array<f32>;
-@group(0) @binding(1) var<storage, read> k: array<f32>;
-@group(0) @binding(2) var<storage, read> v: array<f32>;
-@group(0) @binding(3) var<storage, read_write> out: array<f32>;
-@group(0) @binding(4) var<uniform> dims: Dims;
+@group(0) @binding(0) var<storage, read> qkv: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<uniform> dims: Dims;
 
 const WG: u32 = 64u;
 var<workgroup> scores: array<f32, MAX_CAND>;
@@ -49,7 +49,9 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
     let head = wg.x;
     let qi = wg.y;
     let hd = dims.head_dim;
-    let q_base = qi * dims.dim + head * hd;
+    let row = 3u * dims.dim;
+    let q_base = qi * row + head * hd;
+    let o_base = qi * dims.dim + head * hd;
     let side = 2u * dims.radius + 1u;
     let n_cand = select(side * side, dims.tokens, dims.mask_kind == 0u);
 
@@ -58,10 +60,10 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
         let ki = candidate(qi, c);
         var s: f32 = -1e30;
         if (ki < dims.tokens) {
-            let k_base = ki * dims.dim + head * hd;
+            let k_base = ki * row + dims.dim + head * hd;
             var dot: f32 = 0.0;
             for (var d: u32 = 0u; d < hd; d = d + 1u) {
-                dot = dot + q[q_base + d] * k[k_base + d];
+                dot = dot + qkv[q_base + d] * qkv[k_base + d];
             }
             s = dot * dims.scale;
         }
@@ -97,9 +99,9 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
         for (var c: u32 = 0u; c < n_cand; c = c + 1u) {
             let p = scores[c];
             if (p != 0.0) {
-                acc = acc + p * v[keys[c] * dims.dim + head * hd + d];
+                acc = acc + p * qkv[keys[c] * row + 2u * dims.dim + head * hd + d];
             }
         }
-        out[q_base + d] = acc / denom;
+        out[o_base + d] = acc / denom;
     }
 }

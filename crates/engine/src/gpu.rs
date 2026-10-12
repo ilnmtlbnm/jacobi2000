@@ -24,7 +24,7 @@ use lean_runtime::{buffers, gpu as rtgpu, pipeline};
 
 use crate::config::Config;
 use crate::mask::Mask;
-use crate::weights::Weights;
+use crate::weights::{get, Weights};
 
 const WG_LINEAR: &str = include_str!("shaders/linear.wgsl");
 const WG_LAYERNORM: &str = include_str!("shaders/layernorm.wgsl");
@@ -100,9 +100,7 @@ pub struct GpuModel {
 
     // Per-layer bind groups for the weight-bearing ops, in forward order.
     norm1: Vec<wgpu::BindGroup>,
-    q: Vec<wgpu::BindGroup>,
-    k: Vec<wgpu::BindGroup>,
-    v: Vec<wgpu::BindGroup>,
+    qkv: Vec<wgpu::BindGroup>,
     proj: Vec<wgpu::BindGroup>,
     norm2: Vec<wgpu::BindGroup>,
     ff1: Vec<wgpu::BindGroup>,
@@ -235,9 +233,7 @@ impl GpuModel {
         let x_buf = scratch(&device, "x", cfg.tokens * cfg.dim);
         let h_buf = scratch(&device, "h", cfg.tokens * cfg.dim);
         let m_buf = scratch(&device, "m", cfg.dim);
-        let q_buf = scratch(&device, "q", cfg.tokens * cfg.dim);
-        let k_buf = scratch(&device, "k", cfg.tokens * cfg.dim);
-        let v_buf = scratch(&device, "v", cfg.tokens * cfg.dim);
+        let qkv_buf = scratch(&device, "qkv", cfg.tokens * 3 * cfg.dim);
         let attn_out_buf = scratch(&device, "attn_out", cfg.tokens * cfg.dim);
         let ff1_out_buf = scratch(&device, "ff1_out", cfg.tokens * cfg.ff_inner);
         let xn_buf = scratch(&device, "xn", cfg.tokens * cfg.dim);
@@ -267,9 +263,7 @@ impl GpuModel {
         let add_meta_bg = add_broadcast_bg(&device, &queue, &pl_add_broadcast, &x_buf, &m_buf, tokens, dim);
 
         let mut norm1 = Vec::new();
-        let mut qv = Vec::new();
-        let mut kv = Vec::new();
-        let mut vv = Vec::new();
+        let mut qkv = Vec::new();
         let mut proj = Vec::new();
         let mut norm2 = Vec::new();
         let mut ff1 = Vec::new();
@@ -277,9 +271,20 @@ impl GpuModel {
         for i in 0..cfg.layers {
             let p = |s: &str| format!("blocks.{i}.{s}");
             norm1.push(layernorm_bg(&device, &queue, &pl_layernorm, &x_buf, wb(&p("norm1.gamma")), wb(&p("norm1.beta")), &h_buf, tokens, dim));
-            qv.push(linear_bg(&device, &queue, &pl_linear, &h_buf, wb(&p("q.weight")), wb(&p("q.bias")), &q_buf, tokens, dim, dim, 0));
-            kv.push(linear_bg(&device, &queue, &pl_linear, &h_buf, wb(&p("k.weight")), wb(&p("k.bias")), &k_buf, tokens, dim, dim, 0));
-            vv.push(linear_bg(&device, &queue, &pl_linear, &h_buf, wb(&p("v.weight")), wb(&p("v.bias")), &v_buf, tokens, dim, dim, 0));
+            // q, k and v share their input, so one matmul against the three
+            // weights concatenated along the output axis ([in, 3*out]).
+            let (wq, wk, wv) = (get(w, &p("q.weight")), get(w, &p("k.weight")), get(w, &p("v.weight")));
+            let mut wqkv = Vec::with_capacity(3 * wq.data.len());
+            for r in 0..cfg.dim {
+                for t in [wq, wk, wv] {
+                    wqkv.extend_from_slice(&t.data[r * cfg.dim..(r + 1) * cfg.dim]);
+                }
+            }
+            let bqkv: Vec<f32> = [&p("q.bias"), &p("k.bias"), &p("v.bias")].iter().flat_map(|n| get(w, n).data.iter().copied()).collect();
+            let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+            let wqkv_buf = buffers::upload(&device, &queue, "qkv.weight", bytemuck::cast_slice(&wqkv), storage);
+            let bqkv_buf = buffers::upload(&device, &queue, "qkv.bias", bytemuck::cast_slice(&bqkv), storage);
+            qkv.push(linear_bg(&device, &queue, &pl_linear, &h_buf, &wqkv_buf, &bqkv_buf, &qkv_buf, tokens, dim, 3 * dim, 0));
             proj.push(linear_bg(&device, &queue, &pl_linear, &attn_out_buf, wb(&p("proj.weight")), wb(&p("proj.bias")), &x_buf, tokens, dim, dim, 2));
             norm2.push(layernorm_bg(&device, &queue, &pl_layernorm, &x_buf, wb(&p("norm2.gamma")), wb(&p("norm2.beta")), &h_buf, tokens, dim));
             ff1.push(linear_bg(&device, &queue, &pl_linear, &h_buf, wb(&p("ff1.weight")), wb(&p("ff1.bias")), &ff1_out_buf, tokens, dim, ff_inner, 1));
@@ -294,11 +299,9 @@ impl GpuModel {
             let scale = 1.0 / (cfg.head_dim as f32).sqrt();
             let dims = uniform(&device, &queue, "attn_dims", &AttentionDims { tokens, dim, heads: cfg.heads as u32, head_dim, tokens_x, mask_kind, radius, dilation, scale, _p0: 0, _p1: 0, _p2: 0 });
             pipeline::bind_group(&device, &pl_attention, 0, &[
-                wgpu::BindGroupEntry { binding: 0, resource: q_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: k_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: v_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: attn_out_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: dims.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: qkv_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: attn_out_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: dims.as_entire_binding() },
             ])
         };
 
@@ -327,7 +330,7 @@ impl GpuModel {
             device, queue, cfg,
             pl_linear, pl_layernorm, pl_add_inplace, pl_add_broadcast, pl_patchify, pl_attention, pl_conv2d, pl_upsample, pl_transpose,
             state_buf, meta_buf, increment_buf, readback_len,
-            norm1, q: qv, k: kv, v: vv, proj, norm2, ff1, ff2,
+            norm1, qkv, proj, norm2, ff1, ff2,
             attention_bg,
             patchify_bg, embed_bg, add_pos_bg, meta_linear_bg, add_meta_bg, final_norm_bg, transpose_bg,
             token_mix_bg, t0_resid_bg, to_cells_bg, upsample_y_bg, upsample_x_bg,
@@ -371,9 +374,7 @@ impl GpuModel {
 
         for i in 0..cfg.layers {
             self.dispatch1d(&mut encoder, &self.pl_layernorm, &self.norm1[i], tokens, 1);
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.q[i], ceil_div(dim, 32), ceil_div(tokens, 32));
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.k[i], ceil_div(dim, 32), ceil_div(tokens, 32));
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.v[i], ceil_div(dim, 32), ceil_div(tokens, 32));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.qkv[i], ceil_div(3 * dim, 32), ceil_div(tokens, 32));
             self.dispatch2d(&mut encoder, &self.pl_attention, &self.attention_bg, cfg.heads as u32, tokens);
             self.dispatch2d(&mut encoder, &self.pl_linear, &self.proj[i], ceil_div(dim, 32), ceil_div(tokens, 32));
 
