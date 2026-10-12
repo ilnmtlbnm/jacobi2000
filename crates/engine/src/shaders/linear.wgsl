@@ -6,13 +6,15 @@
 // `nn::Linear` layout, `[in, out]` row-major (y = x @ W + b), so the
 // weight tile is loaded k-major with n contiguous (coalesced global reads)
 // and read k-major with tx contiguous (conflict-free shared reads).
-// out[m,n] = dot(x[m,:], w[:,n]) + b[n].
+// out[m,n] = dot(x[m,:], w[:,n]) + b[n], then by `mode`: 0 store, 1 store
+// GELU of it, 2 add it to the existing out[m,n] (residual connection, so
+// the caller binds `out` to the residual stream).
 const TM: u32 = 32u;
 const TN: u32 = 32u;
 const TK: u32 = 16u;
 const THREADS: u32 = 256u;
 
-struct Dims { m: u32, k: u32, n: u32, _pad: u32 };
+struct Dims { m: u32, k: u32, n: u32, mode: u32 };
 
 @group(0) @binding(0) var<storage, read> x: array<f32>;
 @group(0) @binding(1) var<storage, read> w: array<f32>;
@@ -22,6 +24,32 @@ struct Dims { m: u32, k: u32, n: u32, _pad: u32 };
 
 var<workgroup> a_tile: array<array<f32, TK>, TM>;
 var<workgroup> b_tile: array<array<f32, TN>, TK>;
+
+// Exact erf-based GELU; `erf` has no WGSL builtin, so this is the standard
+// Abramowitz-Stegun rational approximation (7.1.26, max error 1.5e-7),
+// checked against `cpu.rs`'s `libm::erff` in the GPU-vs-CPU parity tests.
+fn erf_approx(v: f32) -> f32 {
+    let s = sign(v);
+    let a = abs(v);
+    let t = 1.0 / (1.0 + 0.3275911 * a);
+    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+    return s * y;
+}
+
+fn gelu(v: f32) -> f32 {
+    return 0.5 * v * (1.0 + erf_approx(v * 0.7071067811865476));
+}
+
+fn store(idx: u32, acc: f32, bias: f32) {
+    let v = acc + bias;
+    if (dims.mode == 1u) {
+        out[idx] = gelu(v);
+    } else if (dims.mode == 2u) {
+        out[idx] = out[idx] + v;
+    } else {
+        out[idx] = v;
+    }
+}
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wg: vec3<u32>) {
@@ -74,8 +102,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wg:
     let mr1 = m0 + ty + 16u;
     let nc0 = n0 + tx;
     let nc1 = n0 + tx + 16u;
-    if (mr0 < dims.m && nc0 < dims.n) { out[mr0 * dims.n + nc0] = acc00 + b[nc0]; }
-    if (mr0 < dims.m && nc1 < dims.n) { out[mr0 * dims.n + nc1] = acc01 + b[nc1]; }
-    if (mr1 < dims.m && nc0 < dims.n) { out[mr1 * dims.n + nc0] = acc10 + b[nc0]; }
-    if (mr1 < dims.m && nc1 < dims.n) { out[mr1 * dims.n + nc1] = acc11 + b[nc1]; }
+    if (mr0 < dims.m && nc0 < dims.n) { store(mr0 * dims.n + nc0, acc00, b[nc0]); }
+    if (mr0 < dims.m && nc1 < dims.n) { store(mr0 * dims.n + nc1, acc01, b[nc1]); }
+    if (mr1 < dims.m && nc0 < dims.n) { store(mr1 * dims.n + nc0, acc10, b[nc0]); }
+    if (mr1 < dims.m && nc1 < dims.n) { store(mr1 * dims.n + nc1, acc11, b[nc1]); }
 }

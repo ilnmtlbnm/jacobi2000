@@ -6,13 +6,14 @@
 // zero padding `pad = k/2` (odd kernels only). Same 32x32 tile, 16x16
 // workgroup, 2x2 register blocking as linear.wgsl (itself from the
 // project's t0-fast linear_tiled.wgsl). `bias: [cout]`, `out: [cout,h,w]`.
+// `gelu` = 1 applies GELU to the result before the store.
 // Dispatch: (ceil(h*w / 32), ceil(cout / 32)).
 const TM: u32 = 32u;
 const TN: u32 = 32u;
 const TK: u32 = 16u;
 const THREADS: u32 = 256u;
 
-struct Dims { cin: u32, h: u32, w: u32, cout: u32, k: u32, len: u32, _p0: u32, _p1: u32 };
+struct Dims { cin: u32, h: u32, w: u32, cout: u32, k: u32, len: u32, gelu: u32, _p1: u32 };
 
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read> weight: array<f32>;
@@ -22,6 +23,26 @@ struct Dims { cin: u32, h: u32, w: u32, cout: u32, k: u32, len: u32, _p0: u32, _
 
 var<workgroup> a_tile: array<array<f32, TK>, TM>;
 var<workgroup> b_tile: array<array<f32, TN>, TK>;
+
+// Exact erf-based GELU; `erf` has no WGSL builtin, so this is the standard
+// Abramowitz-Stegun rational approximation (7.1.26, max error 1.5e-7),
+// checked against `cpu.rs`'s `libm::erff` in the GPU-vs-CPU parity tests.
+fn erf_approx(v: f32) -> f32 {
+    let s = sign(v);
+    let a = abs(v);
+    let t = 1.0 / (1.0 + 0.3275911 * a);
+    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+    return s * y;
+}
+
+fn gelu(v: f32) -> f32 {
+    return 0.5 * v * (1.0 + erf_approx(v * 0.7071067811865476));
+}
+
+fn store(idx: u32, acc: f32, bias: f32) {
+    let v = acc + bias;
+    out[idx] = select(v, gelu(v), dims.gelu == 1u);
+}
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wg: vec3<u32>) {
@@ -87,8 +108,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wg:
     let cr1 = co0 + ty + 16u;
     let pc0 = p0 + tx;
     let pc1 = p0 + tx + 16u;
-    if (cr0 < dims.cout && pc0 < plane) { out[cr0 * plane + pc0] = acc00 + bias[cr0]; }
-    if (cr0 < dims.cout && pc1 < plane) { out[cr0 * plane + pc1] = acc01 + bias[cr0]; }
-    if (cr1 < dims.cout && pc0 < plane) { out[cr1 * plane + pc0] = acc10 + bias[cr1]; }
-    if (cr1 < dims.cout && pc1 < plane) { out[cr1 * plane + pc1] = acc11 + bias[cr1]; }
+    if (cr0 < dims.cout && pc0 < plane) { store(cr0 * plane + pc0, acc00, bias[cr0]); }
+    if (cr0 < dims.cout && pc1 < plane) { store(cr0 * plane + pc1, acc01, bias[cr0]); }
+    if (cr1 < dims.cout && pc0 < plane) { store(cr1 * plane + pc0, acc10, bias[cr1]); }
+    if (cr1 < dims.cout && pc1 < plane) { store(cr1 * plane + pc1, acc11, bias[cr1]); }
 }
