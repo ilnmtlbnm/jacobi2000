@@ -583,8 +583,7 @@ fn peak_frequency(rows: &[(f64, f64)]) -> (f64, f64) {
     (bf, span * bf)
 }
 
-/// Diagnostic street on the GPU for the wake-band question
-/// (docs/runs/2026-10-06-fhp-signed-bands.md): the page's street (plate at
+/// Diagnostic street on the GPU for the wake-band question: the page's street (plate at
 /// W/6, inlet 32 and outlet 64 columns, U), model signed (reference block
 /// --block, period --every) or ternary (the page's: chiral, density 0.6),
 /// optional plate rows (--plate, default H/8) and free-slip walls at the

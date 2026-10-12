@@ -20,34 +20,32 @@ const WINDOW: u32 = 50;
 /// Weight of a new frame in the running average across frames.
 const ALPHA: f32 = 0.5;
 
-/// Ternary density (particles per channel), the run log's operating point.
+/// Ternary density (particles per channel), the operating point.
 pub const TERNARY_DENSITY: f64 = 0.6;
-/// Ternary `chiral` at d = 0.6, measured (docs/runs/2026-10-06-fhp-ternary.md):
+/// Ternary `chiral` at d = 0.6, measured:
 /// g at U = 0.1 and nu from the shear wave at H = 256.
 pub const TERNARY_G: f64 = 0.3796;
 pub const TERNARY_NU: f64 = 0.0853;
-/// FHP-III at d = 0.28, measured the same way (same run log, tables a and b:
-/// g at U = 0.1, nu from the shear wave at H = 256); Re 59 at 4096 x 1024.
+/// FHP-III at d = 0.28, measured the same way (g at U = 0.1, nu from the shear wave at H = 256); Re 59 at 4096 x 1024.
 pub const FHP3_G: f64 = 0.3648;
 pub const FHP3_NU: f64 = 0.1371;
 /// Bytes per site the per-site ternary engine holds (two u16 copies and
 /// six u32 source indices).
 const TERNARY_CPU_BYTES: f64 = 28.0;
-/// Signed: reference occupation n0 of the run log's street
-/// (docs/runs/2026-10-06-fhp-signed.md). The reference block is tied to the
+/// Signed: reference occupation n0 of the page's street. The reference block is tied to the
 /// plate (`signed_block`), independent of the display block.
 pub const SIGNED_N0: f64 = 4.0;
-/// Signed B16 N4 n0 4, measured (same run log, tables a and b: g at U = 0.1
+/// Signed B16 N4 n0 4, measured (g at U = 0.1
 /// and nu from the shear wave at H = 256); Re 199 at 4096 x 1024.
 pub const SIGNED_G: f64 = 0.9941;
 pub const SIGNED_NU: f64 = 0.1107;
-/// Signed B8 N1, measured the same way (same run log's shear scan).
+/// Signed B8 N1, measured the same way (shear scan).
 pub const SIGNED_B8_G: f64 = 0.9985;
 pub const SIGNED_B8_NU: f64 = 0.1150;
 
 /// The signed reference block for a W x H street: H/64, so the plate (H/8
-/// rows) spans 8 blocks (docs/runs/2026-10-06-fhp-signed-bands.md: the
-/// wake bands at 3.5 blocks across the plate, a street at 7), as a power of
+/// rows) spans 8 blocks (wake bands at 3.5 blocks across the plate, a street
+/// at 7), as a power of
 /// two from 8 to 64 dividing W and H.
 pub fn signed_block(w: usize, h: usize) -> usize {
     let mut b = 64;

@@ -1,7 +1,7 @@
 //! The wgpu and wasm plumbing an engine needs before its own kernels:
 //! the backend ladder, device acquisition with the adapter's limits,
 //! buffers and readback, pipelines, a clock, and the wasm threads pool.
-//! No model, lattice or kernel types live here. See docs/lean-runtime.md.
+//! No model, lattice or kernel types live here.
 
 pub mod backend;
 pub mod buffers;

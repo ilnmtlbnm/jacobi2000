@@ -1,5 +1,4 @@
-//! Reproduces the 64 x 64, 4000-iteration errors of
-//! docs/runs/2026-10-05-jacobi-gates.md section 4 (accuracy.py, exp-jacobi).
+//! Reproduces the 64 x 64, 4000-iteration errors of the reference run.
 
 use jacobi::bitsliced::Bitsliced;
 use jacobi::reference::f32_run;

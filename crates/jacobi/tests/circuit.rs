@@ -1,7 +1,6 @@
 use jacobi::circuit::Circuit;
 
-/// Gate counts from docs/runs/2026-10-05-jacobi-gates.md (exp-jacobi),
-/// ripple3, section 2.
+/// Gate counts of the ripple3 circuit.
 #[test]
 fn gate_counts_match_the_run_doc() {
     for (b, trunc, round) in [(4, 54, 62), (8, 114, 130), (12, 174, 198), (16, 234, 266)] {

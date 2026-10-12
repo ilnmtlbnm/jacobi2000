@@ -2,8 +2,7 @@
 # Build the fhp engine for the browser into crates/fhp/pkg (WebGPU and the
 # single-thread bit-sliced CPU path, SIMD128) and crates/fhp/pkg-mt (the
 # threaded CPU path: nightly build-std, atomics, wasm-bindgen-rayon), for
-# the dev page crates/fhp/www/index.html. Same recipe as llm-web's
-# scripts/build_lean.sh and scripts/build_lean_mt.sh.
+# the dev page crates/fhp/www/index.html.
 #
 # Requires wasm-pack, a nightly toolchain with rust-src, and wasm-bindgen-cli
 # at the version pinned in crates/fhp/Cargo.toml (0.2.128).

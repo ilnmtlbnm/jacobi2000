@@ -1,7 +1,6 @@
 //! Buffer creation and readback. Uploads go through `queue.write_buffer`,
 //! never `mapped_at_creation`: on Chromium with Vulkan, buffers filled
-//! through the mapping were seen holding different bytes on the device
-//! (docs/runs/2026-10-02-webgpu-nondeterminism.md). Readback is always
+//! through the mapping were seen holding different bytes on the device. Readback is always
 //! awaited; a synchronous wait deadlocks a browser.
 
 use crate::Error;
