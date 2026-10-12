@@ -17,9 +17,8 @@ what the MLP weights are). Mass is a per-particle constant never touched by
 the model, so it is conserved by construction too, trivially.
 
 Data: `crates/solvers/examples/sph_dump.rs`, raw SPH particle trajectories
-(position, velocity, mass every tick), not the splatted-to-grid fields
-`crates/train/src/lagrangian.rs` uses for the existing grid model
-(`artifacts/model-sph-smoke`, `docs/runs/2026-09-19-sph-smoke.md`).
+(position, velocity, mass every tick), not the splatted-to-grid fields of the
+earlier grid model (`docs/runs/2026-09-19-sph-smoke.md`).
 """
 
 import argparse

@@ -1,4 +1,4 @@
-//! Reference solvers. Pure Rust, no Burn, no allocation in the hot loop.
+//! Reference solvers. Pure Rust, no allocation in the hot loop.
 
 pub mod shallow_water;
 pub mod sph;

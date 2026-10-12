@@ -1,4 +1,4 @@
-//! Hard constraints, mirroring `jacobi2000::project` without Burn. Batch
+//! Hard constraints, mirroring `training/jacobi2000_pt/project.py`. Batch
 //! size 1 only (the one `crates/web` ever runs); state is `[3, ny, nx]` flat
 //! in normalized units, channel 0 = h, 1 = u, 2 = v.
 
@@ -18,13 +18,13 @@ fn potential_kinetic(x: &[f32], d: &Denorm, g: f32, n: usize) -> (f32, f32) {
     (potential, kinetic)
 }
 
-/// Total energy, physical units, matching `jacobi2000::project::energy`.
+/// Total energy, physical units.
 pub fn energy(x: &[f32], d: &Denorm, g: f32, n: usize) -> f32 {
     let (p, k) = potential_kinetic(x, d, g, n);
     p + k
 }
 
-/// Box mean of the normalized channel 0, matching `jacobi2000::project::mass`.
+/// Box mean of the normalized channel 0.
 pub fn mass(x: &[f32], n: usize) -> f32 {
     x[..n].iter().sum::<f32>() / n as f32
 }
@@ -38,9 +38,8 @@ pub fn project_mass(x: &mut [f32], target: f32, n: usize) {
 }
 
 /// Scale `(u, v)` uniformly down to the energy bound `prev_energy * r_max`
-/// when exceeded; never scales up. Mirrors
-/// `jacobi2000::project::project_energy` exactly (same clamp, same
-/// `1e-12` kinetic floor).
+/// when exceeded; never scales up. Same clamp and
+/// `1e-12` kinetic floor as `project.py`.
 pub fn project_energy(x: &mut [f32], prev_energy: f32, d: &Denorm, g: f32, r_max: f32, n: usize) {
     let bound = prev_energy * r_max;
     let (potential, kinetic) = potential_kinetic(x, d, g, n);

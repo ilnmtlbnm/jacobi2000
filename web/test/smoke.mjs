@@ -75,7 +75,7 @@ try {
 
   // Receptive-field highlight: (2r+1)^2 token neighbourhood of the active
   // stencil, plus one more (undilated) token hop for the per-cell head's
-  // own 3x3-token conv (crates/jacobi2000/src/model.rs, CellHead::token_mix).
+  // own 3x3-token conv (`CellHead.token_mix` in training/jacobi2000_pt/model.py).
   const hl = await page.evaluate(() => window.__app.highlight(32, 32));
   const headReach = 1;
   const totalRadius = meta.mask.Stencil.radius + headReach;

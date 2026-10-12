@@ -1,4 +1,4 @@
-"""Mirrors crates/train/src/spectral.rs: a Laplacian-pyramid band-MSE term,
+"""A Laplacian-pyramid band-MSE term,
 not an FFT. Three levels, short wavelengths weighted most."""
 
 import torch

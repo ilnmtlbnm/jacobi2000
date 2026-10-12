@@ -1,6 +1,6 @@
-//! Field normalizer, mirroring `train::data::Normalizer` without Burn.
-//! State layout: `[channel, y, x]` flat, channel 0 = h, 1 = u, 2 = v, same as
-//! `jacobi2000::model::Jacobi2000`'s `[batch, channels, ny, nx]`.
+//! Field normalizer.
+//! State layout: `[channel, y, x]` flat, channel 0 = h, 1 = u, 2 = v, the
+//! `[batch, channels, ny, nx]` layout of `training/jacobi2000_pt/model.py`.
 
 use serde::Deserialize;
 
@@ -23,8 +23,7 @@ impl Normalizer {
         Denorm { mean: self.mean, std: self.std, depth: self.depth }
     }
 
-    /// Pack a solver state into a normalized `[3, ny, nx]` slice, matching
-    /// `train::data::Normalizer::encode`.
+    /// Pack a solver state into a normalized `[3, ny, nx]` slice.
     pub fn encode(&self, s: &solvers::State, out: &mut [f32]) {
         let n = s.h.len();
         for i in 0..n {

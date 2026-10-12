@@ -1,6 +1,6 @@
 [package]
 name = "engine"
-description = "Jacobi2000 inference off Burn: CPU (single/threads) forward pass reading the same safetensors + config.json checkpoints the PyTorch export writes (docs/pytorch-training.md)."
+description = "Jacobi2000 inference: CPU (single/threads) and WebGPU forward pass reading the safetensors + config.json checkpoints the PyTorch export writes (docs/pytorch-training.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

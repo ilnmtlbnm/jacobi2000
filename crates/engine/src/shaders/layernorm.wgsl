@@ -1,8 +1,8 @@
 // One workgroup per row, 256-thread shared-memory tree reduction — the same
 // design as this project's rmsnorm kernel (lean, llm-wasm), extended to a
 // full layernorm (subtract the mean too, not just normalize by the second
-// moment) since `jacobi2000::model` uses Burn's `LayerNorm` (biased
-// variance, `eps` added before the square root), not RMSNorm.
+// moment) since the model uses LayerNorm (biased variance, `eps` added
+// before the square root), not RMSNorm.
 // out[r,:] = (x[r,:] - mean(x[r,:])) / sqrt(var(x[r,:]) + eps) * gamma + beta.
 struct Dims { rows: u32, dim: u32, eps: f32, _pad: u32 };
 

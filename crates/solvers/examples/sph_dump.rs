@@ -1,15 +1,14 @@
 //! Roadmap item 1 (Lagrangian formulation): dump raw SPH particle
 //! trajectories (position, velocity, mass, every tick) to disk, so a
 //! PyTorch particle model can train on particles directly instead of the
-//! splatted-to-grid fields `crates/train/src/lagrangian.rs` uses for the
-//! existing grid model.
+//! splatted-to-grid fields (`training/jacobi2000_pt/lagrangian.py`).
 //!
 //! One file per trajectory: a JSON header (particle count, ticks, dt, g,
 //! rest_density) plus a flat little-endian f32 file laid out
 //! `[ticks, 5, n]` (x, y, vx, vy, mass), matching the row-major convention
 //! `training/jacobi2000_pt/data.py` already reads for the grid dataset.
-//! Ticks are recorded every `SPH_STEPS_PER_TICK` SPH steps (same tick
-//! definition `crates/train/src/lagrangian.rs` uses), so a Lagrangian model
+//! Ticks are recorded every `SPH_STEPS_PER_TICK` SPH steps (the same tick
+//! definition as the splatted-grid data), so a Lagrangian model
 //! ticks at the same physical rate as the grid model would.
 
 use std::fs;

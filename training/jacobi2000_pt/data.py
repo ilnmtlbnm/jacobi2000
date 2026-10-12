@@ -1,14 +1,11 @@
 """Reads the trajectory files written once by
-`jacobi dump-dataset --out <dir>` (crates/train/src/data.rs::dump_trajectories):
+`dump-dataset --out <dir>` (crates/engine-cli/src/dump_dataset.rs):
 one `traj-NNNNN.json` header and one `traj-NNNNN.f32` raw-field file per
 trajectory, plus a `manifest.json` listing every header.
 
 Physics never happens here: the Rust solver is the one source of it. This
 module only reshapes what it already computed into normalized training
-windows, and a `Normalizer` fit the same way `train::data::Generator`'s
-`fit_normalizer` is (mean/std over every dumped physical value), so a step-
-mode window here is what `crates/train/src/fit.rs::fit` would have handed a
-Burn model.
+windows, and a `Normalizer` fit as mean/std over every dumped physical value.
 """
 
 import json

@@ -1,8 +1,7 @@
 //! Browser engine: solver on the left, learned operator(s) on the right, one
 //! `window.__app` surface driven by the page (and by the headless test).
 //!
-//! Off Burn (docs/runs/2026-10-07-inference-lean.md): the model runs on
-//! `engine`'s hand-written forward pass, not a Burn graph — either
+//! The model runs on `engine`'s hand-written forward pass, either
 //! `engine::cpu` (plain `Vec<f32>`, optionally `rayon`-threaded if this
 //! wasm binary was built with the `threads` feature) or `engine::gpu`
 //! (hand-written WGSL kernels on `lean_runtime`'s device/buffer/pipeline
@@ -683,10 +682,9 @@ pub fn compare_metrics() -> Vec<f32> {
     APP.with(|a| a.borrow().as_ref().unwrap().compare_metrics.to_vec())
 }
 
-/// Per-cell xr ensemble spread (CONCEPT sec. 4, task 10): not ported from
-/// the Burn engine yet (docs/runs/2026-10-07-inference-lean.md) — `app.js`
-/// never calls this (its own TODO, left from before this move), so it is
-/// not part of the page's acceptance checks. Returns empty until it is.
+/// Per-cell xr ensemble spread (CONCEPT sec. 4, task 10): not implemented
+/// in this engine: `app.js` never calls it and the page's acceptance checks
+/// do not cover it. Returns empty.
 #[wasm_bindgen]
 pub async fn spread_field(_k: usize) -> Vec<f32> {
     Vec::new()

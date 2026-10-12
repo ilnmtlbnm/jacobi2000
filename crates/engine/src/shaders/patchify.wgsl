@@ -1,6 +1,6 @@
 // state[c, ny, nx] -> patches[token, patch_dim], token = ty*tokens_x+tx,
 // feature d = c*patch*patch + py*patch + px — the same layout
-// `jacobi2000::model::Jacobi2000::patchify`'s reshape/permute produces, and
+// `model.py`'s `patchify` reshape/permute produces, and
 // `cpu.rs::forward`'s patchify loop mirrors directly.
 // `patch` is a WGSL reserved keyword (caught by wgpu's shader validation,
 // not by any Rust-side check, since this struct's field names are never

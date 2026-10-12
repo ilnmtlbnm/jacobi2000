@@ -1,4 +1,4 @@
-//! Attention mask, mirroring `jacobi2000::mask::Mask` without Burn. Rather
+//! Attention mask. Rather
 //! than materialize an additive `[tokens, tokens]` matrix, `allowed` is
 //! queried directly in the attention inner loop (same Chebyshev-neighbourhood
 //! predicate, same result, no `tokens^2` f32 allocation).
@@ -13,7 +13,7 @@ pub enum Mask {
 
 impl Mask {
     /// Token-grid coordinates from a flat token index (row-major: `t = ty *
-    /// tokens_x + tx`), matching `jacobi2000::Grid::token_xy`.
+    /// tokens_x + tx`).
     #[inline]
     pub fn allowed(&self, tokens_x: usize, q: usize, k: usize) -> bool {
         match *self {
@@ -36,7 +36,7 @@ mod tests {
 
     #[test]
     fn stencil_matches_the_tensor_mask_truth_table() {
-        // Same cases as jacobi2000::mask's own test, on a 16x16 token grid.
+        // The mask truth table of `model.py`'s `stencil_mask`, on a 16x16 token grid.
         let m = Mask::Stencil { radius: 1, dilation: 1 };
         let tx = 16;
         let q = 5 * tx + 5;

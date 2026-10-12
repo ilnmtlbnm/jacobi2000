@@ -1,7 +1,6 @@
 """Export a trained Jacobi2000 to safetensors + config.json
-(docs/pytorch-training.md's weight exchange format) — the format
-`jacobi import-weights` reads to bring the checkpoint back into Burn's own
-binary format for `eval-metrics`, `round-trip`, and `web/`."""
+(docs/pytorch-training.md's weight exchange format), the format
+`crates/engine`, `engine-cli` and `web/` load."""
 
 import json
 from pathlib import Path
@@ -14,8 +13,8 @@ from .model import Jacobi2000
 
 
 def state_dict_for_export(model: Jacobi2000) -> dict[str, torch.Tensor]:
-    """The model's own named parameters are already named to match burn's
-    field layout (see model.py's docstring), so this is the identity plus a
+    """The model's own named parameters are already named to match the
+    exchange format (see model.py's docstring), so this is the identity plus a
     contiguous-and-cpu pass safetensors requires."""
     return {name: p.detach().contiguous().cpu() for name, p in model.state_dict().items()}
 

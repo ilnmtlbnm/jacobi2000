@@ -1,7 +1,7 @@
 // Linear upsample by `p` along one axis (0 = y, 1 = x), replicating the
 // last row/column so the far edge has a neighbour to interpolate towards:
 // cell `i` of token `t` mixes `t` and `t+1` with weight `(i + 0.5) / p`,
-// matching `jacobi2000::model::upsample` / `cpu.rs::upsample_y`/`upsample_x`.
+// matching `model.py`'s `upsample` / `cpu.rs::upsample_y`/`upsample_x`.
 // One invocation per output element, same naive-kernel shape as the rest
 // of this model's ops. `input: [c,h,w]`; axis 0 -> `out: [c,h*p,w]`; axis 1
 // -> `out: [c,h,w*p]`.

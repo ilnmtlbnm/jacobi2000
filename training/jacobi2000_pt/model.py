@@ -1,6 +1,7 @@
-"""PyTorch mirror of crates/jacobi2000/src/model.rs.
+"""The Jacobi2000 patch transformer in PyTorch. `crates/engine` implements the
+same forward pass for inference.
 
-Every layer is named and shaped to match burn's own storage layout exactly
+Every layer is named and shaped to match the exchange format
 (see docs/pytorch-training.md), so `export.py` writes safetensors the Rust
 side reads with no reshuffling. "Linear" layers here are hand-rolled
 (weight stored `[in, out]`, `y = x @ W + b`) rather than `nn.Linear`, whose
@@ -45,8 +46,8 @@ class Jacobi2000Config:
 
 
 class Lin(nn.Module):
-    """`y = x @ weight + bias`, `weight: [in, out]` (burn's `nn::Linear`
-    row layout, not PyTorch's `nn.Linear` `[out, in]`)."""
+    """`y = x @ weight + bias`, `weight: [in, out]` (row layout, not
+    PyTorch's `nn.Linear` `[out, in]`)."""
 
     def __init__(self, d_in: int, d_out: int):
         super().__init__()
@@ -59,7 +60,7 @@ class Lin(nn.Module):
 
 
 class Norm(nn.Module):
-    """burn's `nn::LayerNorm`: normalize over the last dim, scale by
+    """LayerNorm: normalize over the last dim, scale by
     `gamma`, shift by `beta`, `eps = 1e-5`."""
 
     def __init__(self, dim: int):
@@ -72,9 +73,8 @@ class Norm(nn.Module):
 
 
 class Conv(nn.Module):
-    """`weight: [out, in, kh, kw]`, same layout as burn's `nn::Conv2d` (and
-    PyTorch's own `nn.Conv2d`, which this wraps to keep a plain
-    weight/bias pair for export)."""
+    """`weight: [out, in, kh, kw]`, PyTorch's own `nn.Conv2d` layout, which
+    this wraps to keep a plain weight/bias pair for export."""
 
     def __init__(self, cin: int, cout: int, k: int):
         super().__init__()
@@ -121,7 +121,7 @@ class Block(nn.Module):
 def upsample(x: torch.Tensor, dim: int, p: int) -> torch.Tensor:
     """Linear upsample of spatial `dim` (2 = y, 3 = x) by `p`, replicating
     the last token so the far edge has a neighbour to interpolate towards.
-    Mirrors `crates/jacobi2000/src/model.rs::upsample` exactly."""
+    `engine`'s `upsample` does the same."""
     n = x.shape[dim]
     nxt = torch.cat(
         [x.narrow(dim, 1, n - 1), x.narrow(dim, n - 1, 1)], dim=dim
@@ -160,8 +160,8 @@ class Jacobi2000(nn.Module):
         self.cfg = cfg
         self.embed = Lin(cfg.patch_dim, cfg.dim)
         self.meta = Lin(cfg.meta_dim, cfg.dim)
-        # [1, tokens, dim]: matches burn's `pos` field shape exactly (rank 3,
-        # not 2), so the safetensors export needs no reshape either way.
+        # [1, tokens, dim]: rank 3 (not 2), the shape the
+        # safetensors exchange format stores.
         self.pos = nn.Parameter(torch.zeros(1, cfg.tokens, cfg.dim))
         self.blocks = nn.ModuleList(
             [Block(cfg.dim, cfg.heads, cfg.ff_mult) for _ in range(cfg.layers)]
@@ -213,9 +213,9 @@ class Jacobi2000(nn.Module):
 
 
 def stencil_mask(cfg: Jacobi2000Config, radius: int, dilation: int, device=None) -> torch.Tensor:
-    """Additive `[tokens, tokens]` mask, mirroring
-    `crates/jacobi2000/src/mask.rs::Mask::Stencil` exactly (same neighbourhood
-    rule, same `NEG_INFINITY` sentinel)."""
+    """Additive `[tokens, tokens]` mask, the same
+    neighbourhood rule as `engine::Mask::Stencil` (`-inf` where a key is not
+    attended)."""
     n = cfg.tokens
     tx = cfg.tokens_x
     data = torch.full((n, n), float("-inf"))

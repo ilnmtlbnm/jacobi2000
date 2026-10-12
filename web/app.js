@@ -38,8 +38,8 @@ function maskLabel(mask) {
 // Receptive field of the cell at (x, y): the (2r+1)^2 token neighbourhood
 // of the active stencil mask (radius r, dilation d), tokens mapped to cells
 // (patch x patch each), then widened by one more (undilated) token hop for
-// the per-cell head's own 3x3-token conv (crates/jacobi2000/src/model.rs,
-// `CellHead::token_mix`), which reads every attended token's immediate
+// the per-cell head's own 3x3-token conv (`CellHead.token_mix` in
+// training/jacobi2000_pt/model.py), which reads every attended token's immediate
 // neighbours after attention.
 function receptiveField(x, y) {
   const patch = modelMeta.patch;
@@ -310,7 +310,7 @@ async function boot() {
     $('c-div').width = nx; $('c-div').height = ny;
     $('grid').textContent = `${nx}x${ny}`;
     $('mask').textContent = maskLabel(modelMeta.mask);
-    $('backend').textContent = 'burn wgpu / WebGPU';
+    $('backend').textContent = engine.backend_name();
     $('status').textContent = 'ready';
     ready = true;
     await render();

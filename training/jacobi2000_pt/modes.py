@@ -17,12 +17,10 @@ channel, flattened to a real vector (concat real/imag), one linear-plus-GELU
 residual block predicts the increment in mode space, `irfft2` reconstructs
 the field. No grid attention, no patches, no mask.
 
-This is a new architecture, not `Jacobi2000`, so it cannot be imported into
-Burn (`jacobi import-weights` expects the patch-transformer's own tensor
-names) and is scored here in Python only, against held-out trajectories from
+This is a new architecture, not `Jacobi2000`, so it has none of the patch-transformer's
+tensors, so `crates/engine` cannot load it, and it is scored here in Python only, against held-out trajectories from
 the same dataset dump `training/jacobi2000_pt/curriculum.py` trains on
-(`metrics.py`, the same formulas `crates/train/src/metrics.rs` uses, per
-that module's own docstring on why this port exists for fast iteration).
+(`metrics.py`).
 """
 
 import argparse

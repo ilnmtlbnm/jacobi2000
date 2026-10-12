@@ -1,13 +1,12 @@
-//! Jacobi2000 inference off Burn: reads the same `model.safetensors` +
+//! Jacobi2000 inference: reads the `model.safetensors` +
 //! `config.json` checkpoints the PyTorch export writes
 //! (`docs/pytorch-training.md`), runs the forward pass over flat `f32`
 //! buffers (`cpu.rs`), batch size 1 (the only size `crates/web` ever runs).
 //!
 //! Backend selection is `lean_runtime::backend`'s capability ladder
 //! (WebGPU, then CPU threads, then one CPU thread) — never a runtime
-//! benchmark. Only the CPU path (`threads` feature for the rayon variant)
-//! is implemented so far; see `docs/runs/2026-10-07-inference-lean.md` for
-//! what's left before WebGPU joins the ladder.
+//! benchmark. The CPU path (`threads` feature for the rayon variant) is in
+//! `cpu.rs`, the WebGPU path (`wgpu` feature) in `gpu.rs`.
 
 pub mod config;
 pub mod cpu;

@@ -1,8 +1,5 @@
-//! A dependency-free safetensors reader, independent of
-//! `jacobi2000::weights` (which reads the same byte format through Burn
-//! tensors). Reads the files the PyTorch export
-//! (`training/jacobi2000_pt/export.py`) and `jacobi export-weights` both
-//! write: an 8-byte little-endian header length, a JSON header
+//! A dependency-free safetensors reader. Reads the files the PyTorch export
+//! (`training/jacobi2000_pt/export.py`) writes: an 8-byte little-endian header length, a JSON header
 //! (`{name: {dtype, shape, data_offsets}}`), then the raw little-endian F32
 //! buffer (docs/pytorch-training.md).
 
@@ -62,8 +59,7 @@ mod tests {
 
     #[test]
     fn round_trips_a_minimal_safetensors_buffer() {
-        // Build the same byte layout `jacobi2000::weights::write_safetensors`
-        // produces, without depending on that crate (burn-free by design).
+        // Build the safetensors byte layout by hand.
         let data = vec![1.0f32, 2.0, 3.0, 4.0];
         let bytes_le: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
         let header = serde_json::json!({

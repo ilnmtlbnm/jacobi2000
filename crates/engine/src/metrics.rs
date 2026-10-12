@@ -1,9 +1,6 @@
-//! The subset of `train::metrics` that `crates/web` needs at runtime
-//! (correlation, peak, bias, radial profile, cross-correlation lag, h
-//! decode), ported verbatim (same formulas) so the demo page's live
-//! comparison metrics don't pull Burn in through `train`. The full set
-//! (RMSE, banded errors, rollout scoring, round-trip scoring) stays in
-//! `train::metrics` for the CLI's training-time eval tools.
+//! Field comparison metrics: correlation, peak, bias, radial profile,
+//! cross-correlation lag, h decode. Used by `crates/web` for the demo page's
+//! live comparison and by `engine-cli`'s `eval-metrics`.
 
 use crate::norm::Normalizer;
 

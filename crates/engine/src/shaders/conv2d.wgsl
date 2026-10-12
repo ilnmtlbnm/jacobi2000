@@ -1,4 +1,4 @@
-// Zero-padded 2D cross-correlation (PyTorch/Burn `conv2d` convention, no
+// Zero-padded 2D cross-correlation (PyTorch `conv2d` convention, no
 // kernel flip), one invocation per output element — the naive kernel shape
 // this project uses for small per-cell ops; CellHead's images are at most
 // 128x64x64, well within a single naive dispatch. `input: [cin,h,w]`,

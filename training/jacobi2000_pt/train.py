@@ -1,5 +1,5 @@
 """Step mode with a rollout loss, the model20 recipe
-(docs/runs/2026-09-19-2.md), ported from crates/train/src/fit.rs::fit.
+(docs/runs/2026-09-19-2.md):
 AdamW, warmup + cosine decay, pushforward curriculum (single-step before
 `rollout_after`, then `rollout` steps), noise injection, mass + optional
 energy projection in the loop, plain MSE plus a spectral term."""
@@ -81,8 +81,7 @@ def fit(
         k = 1 if step < cfg.rollout_after else cfg.rollout
         window = dataset.batch(rng, norm, cfg.batch, k, device)  # [k+1, b, 3, ny, nx]
         if cfg.reverse:
-            # mirrors `crates/train/src/data.rs`'s `reverse` flag: flip the
-            # frame order so the model learns state(t+1) -> state(t), mask
+            # flip the frame order so the model learns state(t+1) -> state(t), mask
             # and solver unchanged.
             window = window.flip(0)
         b = window.shape[1]
@@ -142,7 +141,7 @@ def fit(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", required=True, help="directory written by `jacobi dump-dataset`")
+    ap.add_argument("--dataset", required=True, help="directory written by `dump-dataset` (crates/engine-cli)")
     ap.add_argument("--out", required=True, help="output directory (safetensors + config.json)")
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--lr", type=float, default=3e-4)

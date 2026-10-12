@@ -4,7 +4,7 @@
 // model's sizes (at most 256x512) and for a browser's 256-invocation cap;
 // a tiled native variant is not worth the complexity at this scale.
 //
-// `w` is burn's own `nn::Linear` layout, `[in, out]` row-major (y = x @ W +
+// `w` is `[in, out]` row-major (y = x @ W +
 // b), NOT the `[out, in]` GGUF/PyTorch-`nn.Linear` layout lean's own
 // linear.wgsl reads — the index arithmetic below reflects that.
 // out[m,n] = dot(x[m,:], w[:,n]) + b[n].

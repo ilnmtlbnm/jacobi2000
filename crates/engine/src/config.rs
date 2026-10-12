@@ -1,5 +1,5 @@
-//! `config.json`'s schema is `train::checkpoint::Meta`'s JSON
-//! (docs/pytorch-training.md); this reads the fields the engine needs and
+//! `config.json`'s schema is the one `training/jacobi2000_pt/export.py`
+//! writes (docs/pytorch-training.md); this reads the fields the engine needs and
 //! infers `head_dim`/`ff_inner` from the checkpoint's own tensor shapes
 //! rather than trusting fields that may not be present (`head_dim` isn't in
 //! `config.json` at all).

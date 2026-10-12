@@ -1,6 +1,6 @@
 [package]
 name = "engine-cli"
-description = "Command-line rollout for the Burn-free engine crate: load a safetensors+config.json checkpoint, step it against the reference solver, print corr/stats, optionally dump the final field as .npy."
+description = "Command-line tools for the engine crate: rollout (step a safetensors+config.json checkpoint against the reference solver), eval-metrics (score rollouts at several horizons) and dump-dataset (write solver trajectories for training)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

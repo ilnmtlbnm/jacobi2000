@@ -1,8 +1,7 @@
-"""Port of crates/train/src/metrics.rs's scoring functions (same formulas),
-for fast in-Python iteration. The acceptance numbers reported in
-docs/runs/2026-09-29-pytorch-training.md are always the Rust `eval-metrics`
-binary's own output on the imported checkpoint, not this port's; this exists
-so training doesn't need a Rust round trip to see whether it's working."""
+"""Scoring functions (the same formulas as `crates/engine/src/metrics.rs`) for
+fast in-Python iteration. The acceptance numbers come from `eval-metrics`
+(crates/engine-cli) on the exported checkpoint; this exists so training
+doesn't need a Rust round trip to see whether it's working."""
 
 from dataclasses import dataclass
 

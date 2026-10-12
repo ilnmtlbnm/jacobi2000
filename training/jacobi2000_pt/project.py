@@ -1,4 +1,4 @@
-"""Mirrors crates/jacobi2000/src/project.rs exactly: hard constraints applied
+"""Hard constraints (`crates/engine/src/project.rs` does the same at inference), applied
 after the model proposes, not soft loss terms."""
 
 from dataclasses import dataclass

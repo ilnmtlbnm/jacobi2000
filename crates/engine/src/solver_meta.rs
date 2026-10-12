@@ -1,7 +1,6 @@
-//! Ported from `train::data::{meta_of, META_DIM}` (pure arithmetic over
-//! `solvers::Params`, no Burn involved there either): `[ln dx, ln dt, ln g,
-//! ln depth, ln(nu + 1e-6)]`, the conditioning vector fed to the model's
-//! `meta` linear layer.
+//! The conditioning vector fed to the model's `meta` linear layer, pure
+//! arithmetic over `solvers::Params`: `[ln dx, ln dt, ln g, ln depth,
+//! ln(nu + 1e-6)]`.
 
 use solvers::Params;
 

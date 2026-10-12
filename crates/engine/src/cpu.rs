@@ -1,6 +1,6 @@
 //! The forward pass, hand-written over flat `f32` buffers: no tensor
 //! framework, no per-op dispatch overhead, one function per layer type,
-//! mirroring `jacobi2000::model::Jacobi2000::forward` operation for
+//! following `training/jacobi2000_pt/model.py` operation for
 //! operation (same patchify order, same head-split convention, same conv
 //! padding, same upsample weights) so the two stay numerically identical.
 //!
@@ -44,7 +44,7 @@ fn linear(x: &[f32], rows: usize, din: usize, w: &[f32], b: &[f32], dout: usize,
     let _ = rows;
 }
 
-/// Burn's `LayerNorm::forward`: biased variance, `eps` added before the
+/// LayerNorm: biased variance, `eps` added before the
 /// square root, `gamma`/`beta` both `[dim]`.
 fn layernorm(x: &[f32], rows: usize, dim: usize, gamma: &[f32], beta: &[f32], out: &mut [f32]) {
     const EPS: f32 = 1e-5;
@@ -64,8 +64,8 @@ fn layernorm(x: &[f32], rows: usize, dim: usize, gamma: &[f32], beta: &[f32], ou
     let _ = rows;
 }
 
-/// Exact erf-based GELU (`0.5 x (1 + erf(x / sqrt(2)))`), matching Burn's
-/// `activation::gelu` (not the tanh approximation).
+/// Exact erf-based GELU (`0.5 x (1 + erf(x / sqrt(2)))`), not the tanh
+/// approximation.
 fn gelu_inplace(x: &mut [f32]) {
     const INV_SQRT2: f32 = std::f32::consts::SQRT_2.recip();
     for v in x.iter_mut() {
@@ -88,10 +88,10 @@ pub fn step(cfg: &Config, w: &Weights, state: &[f32], meta: &[f32]) -> Vec<f32> 
 }
 
 /// Multi-head attention with an additive mask applied as a boolean
-/// predicate (equivalent to Burn's `-inf` additive mask before softmax,
+/// predicate (equivalent to a `-inf` additive mask before softmax,
 /// without materializing a `[tokens, tokens]` matrix). `h: [tokens, dim]`,
 /// `out: [tokens, dim]`, heads occupy contiguous `dim` ranges
-/// (`[head*hd, (head+1)*hd)`), matching
+/// (`[head*hd, (head+1)*hd)`), as in
 /// `y.reshape([b,t,heads,hd]).permute([0,2,1,3])`.
 #[allow(clippy::too_many_arguments)]
 fn attention(
@@ -163,7 +163,7 @@ fn attention(
     out.chunks_mut(dim).enumerate().for_each(|(qi, out_row)| row(qi, out_row));
 }
 
-/// Zero-padded 2D cross-correlation (PyTorch/Burn `conv2d` convention, no
+/// Zero-padded 2D cross-correlation (PyTorch `conv2d` convention, no
 /// kernel flip). `input: [cin, h, w]`, `weight: [cout, cin, k, k]`, `bias:
 /// [cout]`, `pad = k / 2` (odd kernels only, matching
 /// `PaddingConfig2d::Explicit(k/2, k/2)`), `out: [cout, h, w]`.
@@ -206,8 +206,8 @@ fn conv2d(input: &[f32], cin: usize, h: usize, w: usize, weight: &[f32], bias: &
 
 /// Linear upsample along the `y` axis by `p`, replicating the last row so
 /// the far edge has a neighbour to interpolate towards: cell `i` of token
-/// `t` mixes `t` and `t+1` with weight `(i + 0.5) / p`, matching
-/// `jacobi2000::model::upsample`. `input: [c, h, w]`, `out: [c, h*p, w]`.
+/// `t` mixes `t` and `t+1` with weight `(i + 0.5) / p`, as in
+/// `model.py`'s `upsample`. `input: [c, h, w]`, `out: [c, h*p, w]`.
 fn upsample_y(input: &[f32], c: usize, h: usize, w: usize, p: usize, out: &mut [f32]) {
     for ci in 0..c {
         for yt in 0..h {

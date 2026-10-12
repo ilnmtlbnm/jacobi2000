@@ -7,8 +7,8 @@ answers 'next', '10th', '40th' from the same weights"), rather than
 Meta_dim is extended from 5 to 6 (`log(k)` appended to the existing
 `[ln dx, ln dt, ln g, ln depth, ln(nu+eps)]` vector) -- a deliberate,
 disclosed deviation from `Jacobi2000Config`'s fixed meta_dim=5, so this
-checkpoint (like `bigstep.py`'s) cannot be imported into Burn without a
-config-schema change on the Rust side; scored in Python only, same as the
+checkpoint (like `bigstep.py`'s) cannot be loaded by `crates/engine` without a
+config-schema change; scored in Python only, same as the
 other new-architecture-shaped experiments tonight.
 
 Warm start: the body (embed/blocks/norm/head) is loaded from the baseline
