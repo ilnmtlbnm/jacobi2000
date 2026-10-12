@@ -1,7 +1,8 @@
 // Tiled shared-memory matmul with 2x2 register blocking: one 16x16
 // workgroup (256 invocations, the browser cap) computes a 32x32 output
 // block, each thread owning the 2x2 sub-tile (m, m+16) x (n, n+16) held in
-// registers. Adapted from the project's own t0-fast linear_tiled.wgsl,
+// registers. Adapted from linear_tiled.wgsl in
+// https://github.com/idle-intelligence/t0-web,
 // which reads PyTorch's [out, in] weights; here `w` has the
 // layout `[in, out]`, row-major (y = x @ W + b), so the
 // weight tile is loaded k-major with n contiguous (coalesced global reads)

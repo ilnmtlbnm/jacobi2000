@@ -4,8 +4,8 @@
 // tensor is laid out (`weight: [cout,cin,k,k]`, so a weight row is already
 // contiguous in kk) and patch[kk, p] gathered from `input: [cin,h,w]` with
 // zero padding `pad = k/2` (odd kernels only). Same 32x32 tile, 16x16
-// workgroup, 2x2 register blocking as linear.wgsl (itself from the
-// project's t0-fast linear_tiled.wgsl). `bias: [cout]`, `out: [cout,h,w]`.
+// workgroup, 2x2 register blocking as linear.wgsl (itself adapted from
+// linear_tiled.wgsl in https://github.com/idle-intelligence/t0-web). `bias: [cout]`, `out: [cout,h,w]`.
 // `gelu` = 1 applies GELU to the result before the store.
 // Dispatch: (ceil(h*w / 32), ceil(cout / 32)).
 const TM: u32 = 32u;

@@ -1,5 +1,5 @@
-// a[i] += b[i], length `len`. Generic elementwise op, same pattern as this
-// project's other add_inplace kernels (lean, t0-fast); no model content.
+// a[i] += b[i], length `len`. Generic elementwise op, a generic
+// elementwise kernel with no model content.
 struct Dims { len: u32, _p0: u32, _p1: u32, _p2: u32 };
 
 @group(0) @binding(0) var<storage, read_write> a: array<f32>;
