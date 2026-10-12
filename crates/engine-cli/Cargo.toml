@@ -10,6 +10,10 @@ name = "rollout"
 path = "src/main.rs"
 
 [[bin]]
+name = "eval-metrics"
+path = "src/eval.rs"
+
+[[bin]]
 name = "dump-dataset"
 path = "src/dump_dataset.rs"
 

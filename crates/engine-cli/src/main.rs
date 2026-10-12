@@ -1,4 +1,4 @@
-//! `rollout`: run the Burn-free `engine` crate from the command line.
+//! `rollout`: run the `engine` crate from the command line.
 //!
 //! ```text
 //! cargo run -p engine-cli --release --bin rollout -- \
@@ -6,10 +6,8 @@
 //! ```
 //!
 //! `--model` is a checkpoint directory holding `model.safetensors` +
-//! `config.json` (the format `jacobi export-weights` and the PyTorch
-//! export both write, docs/pytorch-training.md). No Burn anywhere in this
-//! binary's dependency tree (`cargo tree -p engine-cli`): it reads that
-//! format directly through `engine::weights`.
+//! `config.json`, the format the PyTorch export writes
+//! (`training/jacobi2000_pt/export.py`, docs/pytorch-training.md).
 //!
 //! Steps the reference solver (`solvers::ShallowWater`) alongside the
 //! model from the same initial condition and prints the model's
@@ -18,6 +16,9 @@
 //! number instead of a page.
 
 use std::path::PathBuf;
+
+mod backend;
+use backend::pick_engine;
 
 use engine::metrics::{correlation, decode_h};
 use engine::{project, Model};
@@ -29,12 +30,6 @@ struct Args {
     backend: String,
     case: String,
     out: Option<PathBuf>,
-    /// One forward pass on the deterministic sinusoidal probe input
-    /// (byte-for-byte `crates/cli/src/main.rs::probe_input`), dumped as raw
-    /// little-endian f32 to this path instead of running a rollout — the
-    /// same fixture `jacobi forward-probe` and
-    /// `jacobi2000_pt.parity` compare against (docs/pytorch-training.md).
-    probe_out: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -43,7 +38,6 @@ fn parse_args() -> Args {
     let mut backend = "auto".to_string();
     let mut case = "drop".to_string();
     let mut out = None;
-    let mut probe_out = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -52,7 +46,6 @@ fn parse_args() -> Args {
             "--backend" => backend = it.next().unwrap_or(backend),
             "--case" => case = it.next().unwrap_or(case),
             "--out" => out = it.next().map(PathBuf::from),
-            "--probe-out" => probe_out = it.next().map(PathBuf::from),
             other => {
                 eprintln!("unrecognized argument `{other}`");
                 std::process::exit(2);
@@ -60,28 +53,10 @@ fn parse_args() -> Args {
         }
     }
     let Some(model) = model else {
-        eprintln!("usage: rollout --model <checkpoint-dir> [--steps N] [--backend auto|cpu|webgpu] [--case drop|dam_break] [--out field.npy] [--probe-out probe.f32]");
+        eprintln!("usage: rollout --model <checkpoint-dir> [--steps N] [--backend auto|cpu|webgpu] [--case drop|dam_break] [--out field.npy]");
         std::process::exit(2);
     };
-    Args { model, steps, backend, case, out, probe_out }
-}
-
-/// Byte-for-byte `crates/cli/src/main.rs::probe_input` /
-/// `jacobi2000_pt.parity.probe_input`: two low-order sinusoids per channel,
-/// reconstructible from `config.json` alone.
-fn probe_input(channels: usize, ny: usize, nx: usize) -> Vec<f32> {
-    let mut state = vec![0.0f32; channels * ny * nx];
-    for c in 0..channels {
-        for y in 0..ny {
-            for x in 0..nx {
-                let v = ((c + 1) as f32 * 0.05)
-                    * (std::f32::consts::TAU * (c + 1) as f32 * x as f32 / nx as f32).sin()
-                    * (std::f32::consts::TAU * y as f32 / ny as f32).cos();
-                state[(c * ny + y) * nx + x] = v;
-            }
-        }
-    }
-    state
+    Args { model, steps, backend, case, out }
 }
 
 /// The same initial condition `crates/web`'s case picker builds.
@@ -121,75 +96,6 @@ fn write_npy(path: &std::path::Path, data: &[f32], shape: (usize, usize)) -> std
     std::fs::write(path, bytes)
 }
 
-#[allow(clippy::large_enum_variant)]
-enum Engine {
-    Cpu(Model),
-    #[cfg(feature = "wgpu")]
-    Gpu(Box<engine::gpu::GpuModel>),
-}
-
-impl Engine {
-    fn step(&self, state: &[f32], meta: &[f32]) -> Vec<f32> {
-        match self {
-            Engine::Cpu(m) => m.step(state, meta),
-            #[cfg(feature = "wgpu")]
-            Engine::Gpu(m) => pollster::block_on(m.step(state, meta)),
-        }
-    }
-
-    fn forward(&self, state: &[f32], meta: &[f32]) -> Vec<f32> {
-        match self {
-            Engine::Cpu(m) => m.forward(state, meta),
-            #[cfg(feature = "wgpu")]
-            Engine::Gpu(m) => pollster::block_on(m.forward(state, meta)),
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            Engine::Cpu(_) => "cpu",
-            #[cfg(feature = "wgpu")]
-            Engine::Gpu(_) => "webgpu",
-        }
-    }
-}
-
-fn pick_engine(model: Model, want: &str) -> Engine {
-    match want {
-        "cpu" => Engine::Cpu(model),
-        "webgpu" => {
-            #[cfg(feature = "wgpu")]
-            {
-                match pollster::block_on(model.to_gpu()) {
-                    Ok(g) => Engine::Gpu(Box::new(g)),
-                    Err(e) => {
-                        eprintln!("--backend webgpu requested but no adapter was granted: {e:?}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            #[cfg(not(feature = "wgpu"))]
-            {
-                eprintln!("--backend webgpu requires building with --features wgpu");
-                std::process::exit(2);
-            }
-        }
-        "auto" => {
-            #[cfg(feature = "wgpu")]
-            {
-                if let Ok(g) = pollster::block_on(model.to_gpu()) {
-                    return Engine::Gpu(Box::new(g));
-                }
-            }
-            Engine::Cpu(model)
-        }
-        other => {
-            eprintln!("unrecognized --backend `{other}` (want auto | cpu | webgpu)");
-            std::process::exit(2);
-        }
-    }
-}
-
 fn main() {
     let args = parse_args();
     let model = Model::load(&args.model);
@@ -197,16 +103,6 @@ fn main() {
     let params = cfg.params();
     let engine = pick_engine(model, &args.backend);
     println!("loaded {} ({}x{}, dim {}, {} layers, mask {:?}) on {}", args.model.display(), cfg.nx, cfg.ny, cfg.dim, cfg.layers, cfg.mask, engine.label());
-
-    if let Some(probe_out) = args.probe_out {
-        let state = probe_input(cfg.channels, cfg.ny, cfg.nx);
-        let meta = engine::meta_of(&params).to_vec();
-        let out = engine.forward(&state, &meta);
-        let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
-        std::fs::write(&probe_out, &bytes).expect("writing probe output failed");
-        println!("wrote {} floats to {}", out.len(), probe_out.display());
-        return;
-    }
 
     let mut truth = State::flat(&params);
     apply_case(&args.case, &mut truth, &params);
