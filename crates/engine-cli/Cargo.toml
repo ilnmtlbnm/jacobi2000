@@ -9,6 +9,10 @@ license.workspace = true
 name = "rollout"
 path = "src/main.rs"
 
+[[bin]]
+name = "dump-dataset"
+path = "src/dump_dataset.rs"
+
 [features]
 default = []
 # Both forward to engine's own features; see its Cargo.toml. threads is a
@@ -20,4 +24,7 @@ wgpu = ["engine/wgpu", "dep:pollster"]
 [dependencies]
 engine = { path = "../engine" }
 solvers = { path = "../solvers" }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 pollster = { version = "0.4", optional = true }
