@@ -100,3 +100,30 @@ fn gpu_matches_pytorch() {
     println!("gpu vs pytorch, 50-step rollout: max_abs={d50:e}");
     assert!(d50 < 1e-3, "GPU rollout diverged from PyTorch: max abs diff {d50}");
 }
+
+/// GPU-vs-CPU one-step parity for the other mask shapes the attention
+/// kernel enumerates differently: full attention, and a dilated radius-2
+/// stencil that clips at the grid edge.
+#[cfg(feature = "wgpu")]
+#[test]
+fn gpu_matches_cpu_on_other_masks() {
+    for (name, mask) in [("full", BurnMask::Full), ("stencil r2 d2", BurnMask::Stencil { radius: 2, dilation: 2 })] {
+        let cfg = Jacobi2000Config::new().with_layers(2);
+        let dir = std::env::temp_dir().join(format!("jacobi2000-engine-parity-gpu-mask-{}", std::process::id()));
+        write_checkpoint(&dir, &cfg, mask);
+        let cpu_model = engine::Model::load(&dir);
+        let Ok(gpu_model) = pollster::block_on(cpu_model.to_gpu()) else {
+            println!("gpu_matches_cpu_on_other_masks: skipped, no adapter");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let state = probe_state(cfg.channels, cfg.ny, cfg.nx);
+        let meta_vec: Vec<f32> = (0..cfg.meta_dim).map(|i| 0.1 * (i as f32 + 1.0)).collect();
+        let cpu_out = cpu_model.forward(&state, &meta_vec);
+        let gpu_out = pollster::block_on(gpu_model.forward(&state, &meta_vec));
+        let (max_abs, _) = max_abs_rel(&cpu_out, &gpu_out);
+        println!("gpu vs cpu, 1-step, {name}: max_abs={max_abs:e}");
+        assert!(max_abs < 1e-3, "{name}: GPU forward diverged from CPU: max abs diff {max_abs}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
