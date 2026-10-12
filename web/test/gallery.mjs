@@ -1,6 +1,6 @@
 // Headless Chromium check of the model gallery: load every loadable
 // checkpoint, run 30 ticks on the drop case, check finite fields and the
-// rung6 corr@30 floor for model20/model-wide-2; then compare mode with two
+// step6 corr@30 floor for model20/model-wide-2; then compare mode with two
 // models + the solver. Drives window.__app, never DOM clicks.
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
@@ -75,7 +75,7 @@ try {
   check(secondaryFinite, 'compare: secondary field not finite or empty');
   check(compareMetrics.every((v) => Number.isFinite(v)), `compare metrics not all finite: ${compareMetrics}`);
   // compareMetrics: [corrA, ampA, lagA, corrB, ampB, lagB, biasA, biasB].
-  // model20 (A) is the projection-ON, four-bar-passing checkpoint (rung6);
+  // model20 (A) is the projection-ON, four-bar-passing checkpoint (step6);
   // its bias must be small. model-wide-1 (B) is reported, not gated.
   const biasA = compareMetrics[6];
   const biasB = compareMetrics[7];

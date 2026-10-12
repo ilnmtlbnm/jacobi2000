@@ -35,7 +35,7 @@ carry every one of the 79 named tensors correctly.
 ## 2. Round trip: Burn -> safetensors -> Burn, before any new training
 
 `jacobi import-weights` on the export from step 1, then the exact eval
-command that produced `docs/runs/2026-09-19-rung6.md`'s model20 row:
+command that produced `docs/runs/2026-09-19-step6.md`'s model20 row:
 
 ```
 jacobi import-weights --safetensors <export-dir>/model.safetensors --config <export-dir>/config.json --out <reimport-dir>
@@ -104,7 +104,7 @@ jacobi eval-metrics --model <burn-dir> --horizons 10,25,50 --trajectories 24 --s
 | model-wide-1 (Burn, from scratch) | 256/6 | 5,427,971 | 0.9987 | 0.9956 | 0.9858 | 1.0368 | +0.186 | n/a | 0.000e0 | 1591.2 s (3080) |
 | **PyTorch, this run (from scratch)** | 128/4 | 995,843 | 0.9966 | 0.9827 | 0.9353 | 0.9636 | +0.579 | 0.000 | 0.000e0 | **290.5 s (3080)** |
 
-Full per-horizon table (`docs/runs/2026-09-19-rung6.md`'s format), raw output
+Full per-horizon table (`docs/runs/2026-09-19-step6.md`'s format), raw output
 in `docs/runs/2026-09-29-pytorch-model20-eval-standard.txt`:
 
 | field | ticks | corr (h,u,v) | corr (h) | active RMSE | amplitude ratio | wavefront lag (xcorr) | bias |
@@ -145,10 +145,10 @@ command shape as `docs/runs/2026-09-19-model20-eval-stress.txt`:
 Same pattern as the standard set: passes, weaker than the warm-started
 model20.
 
-## 6. Curriculum: reconstructing model20's lineage, reaching the rung6 bar
+## 6. Curriculum: reconstructing model20's lineage, reaching the step6 bar
 
 Section 4's single 4000-step from-scratch run cleared the README's own
-(looser) acceptance bars but not the rung6 bar model20 itself clears
+(looser) acceptance bars but not the step6 bar model20 itself clears
 (corr@50 >= 0.99, amp@50 in [0.97, 1.03], stress no worse than model20).
 The gap is closed here by replaying the *shape* of model20's lineage
 (`docs/runs/2026-09-18-{9..17}.md`'s rollout ramp, `2026-09-19-{1,2}.md`'s
@@ -180,7 +180,7 @@ generous rather than tuned.
 | s6-mass-energy-proj | rollout 8, mass+energy projection ON (r_max 1.0001), lr 1e-4 (mirrors A2, `2026-09-19-2.md`, model20's own final stage) | 1500 | 115.6 |
 
 Each stage's checkpoint imported into Burn (`jacobi import-weights`) and scored
-with the unchanged rung6 command
+with the unchanged step6 command
 (`jacobi eval-metrics --horizons 10,25,50 --trajectories 24 --seed 0
 --project true --project-energy true`, backend ndarray/CPU on the M2):
 
@@ -196,7 +196,7 @@ with the unchanged rung6 command
 
 (model20's row re-measured this run from `web/model/model20`'s native Burn
 checkpoint — see the correction note below — and matches
-`docs/runs/2026-09-19-rung6.md` exactly, confirming the eval pipeline.)
+`docs/runs/2026-09-19-step6.md` exactly, confirming the eval pipeline.)
 
 ### Rung6 acceptance check, s6 (curriculum-final, model20-equivalent stage)
 
@@ -215,7 +215,7 @@ model20's own history showing the same trade (model19, without either
 projection, scores corr@50 0.9924-0.9975 across its own eval runs; model20
 adds energy conservation at a small correlation cost). s6 is the
 recipe-correct final stage (matches model20's own A2 configuration) and it
-clears every rung6 bar.
+clears every step6 bar.
 
 ### Stress set (task 8b), s6 vs model20
 
@@ -279,7 +279,7 @@ python -m jacobi2000_pt.train --dataset <dataset-dir> --out pt-compare \
 
 **PyTorch trains this recipe 6.0x faster per step than Burn/wgpu on the same
 3080** (472.9 / 78.6 = 6.02). Both checkpoints are undertrained (1000
-steps, from scratch, no curriculum — neither clears the rung6 bar, nor is
+steps, from scratch, no curriculum — neither clears the step6 bar, nor is
 meant to at this step count); corr@50 is within noise of the two runs
 (0.9446 vs 0.9412), not a meaningful accuracy difference at this budget.
 Raw eval output: `docs/runs/2026-09-29-burn-vs-pytorch-{burn,pt}-eval.txt`.
@@ -344,7 +344,7 @@ wasn't renamed to fit that convention.
 ## Correction: `model20-pt`'s safetensors export was stale
 
 Section 1's parity export directory (`<box>/jacobi2000-pt/model20-pt`)
-no longer holds real model20's weights: re-running the rung6 eval command
+no longer holds real model20's weights: re-running the step6 eval command
 on a checkpoint imported from it reproduced section 4's *from-scratch*
 PyTorch numbers (corr@50 0.9353, amp@50 0.9636) exactly, not model20's
 (corr@50 0.9954). The two runs' `--out` directories collided at some point
@@ -356,7 +356,7 @@ re-running section 1/2 needs a fresh `jacobi export-weights` from a real
 model20 Burn checkpoint. This run's model20 baseline (used in every table
 above) came from `<box>/jacobi2000/web/model/model20`'s native Burn
 checkpoint instead (dated before any PyTorch work started), and its
-eval-metrics numbers match `docs/runs/2026-09-19-rung6.md` exactly,
+eval-metrics numbers match `docs/runs/2026-09-19-step6.md` exactly,
 confirming it's the real thing and confirming the eval pipeline itself.
 
 ## Observations
@@ -416,7 +416,7 @@ plus the gallery test's own compare-mode screenshot
 ## What's left
 
 - Every goal in this run's task list has at least one attempt recorded
-  above: section 6 reaches the rung6 bar, section 7 has the controlled
+  above: section 6 reaches the step6 bar, section 7 has the controlled
   Burn-vs-PyTorch comparison, section 8 trains a reverse checkpoint and
   scores the round trip, section 9 closes the loop through the wasm build
   and the headless gallery test.

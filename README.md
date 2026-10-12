@@ -12,50 +12,19 @@ once from its neighbors, repeated until the field stops changing.
 
 The first system it has been trained and evaluated on is 2D shallow water.
 
-## What it does
-
-- Trains one transformer on a PDE solver's trajectories, with a stencil
-  attention mask so each cell only looks at nearby cells, matching how the
-  underlying physics propagates locally.
-- Runs that same model forward (simulate ahead), in reverse (rewind a
-  state to reconstruct its past), or filling in unknown regions of a field
-  from partial observations: forward, inverse and rewind are the same call
-  with different values marked as known.
-- Enforces physical constraints (conserved mass, bounded energy) as a
-  projection step after each prediction, not as a soft loss term.
-- On 2D shallow water: simulates height and velocity fields with a
-  reference solver written in Rust that runs natively and in the browser,
-  and trains the transformer on its trajectories.
-
 ## Results on 2D shallow water
-
-Numbers below are from the run logs under `docs/runs/`, referenced by path.
 
 - Best trained model (`model20`, 128-wide, 4 layers, 995,843 parameters,
   trained with mass and energy projection on) scores correlation 0.9997 at
   10 ticks, 0.9988 at 25 ticks, and 0.9954 at 50 ticks against the solver,
-  with an amplitude ratio of 1.03 and a wavefront lag under 0.02 cells at
-  50 ticks (`docs/runs/2026-09-19-rung6.md`).
+  with an amplitude ratio of 1.03 and a wavefront lag of -0.007 cells at
+  50 ticks (`docs/runs/2026-09-19-step6.md`).
 - Its maximum relative energy violation along a projected rollout is
   0.000e0, against a bound of 1e-6 (`docs/runs/2026-09-19-acceptance-2.md`).
 - A 5x wider model (256-wide, 6 layers, 5,427,971 parameters) trained on a
-  separate RTX 3080 machine does not beat `model20` on this evaluation at matched
+  desktop GPU does not beat `model20` on this evaluation at matched
   horizons, despite more parameters and more training steps
-  (`docs/runs/2026-09-19-rung6.md`).
-- Rewinding a state works well at short horizons and degrades gracefully:
-  correlation to the true past is 0.98 at 10 ticks back, 0.93 at 25 ticks,
-  and 0.80 at 50 ticks, using a reverse model trained at the same viscosity
-  as the forward one (`docs/runs/2026-09-20-rewind-round-trip.md`).
-- A full-attention baseline model (`model12`, no stencil mask, not trained
-  with the energy projection) fails the same evaluation at 25 and 50 ticks,
-  showing the stencil mask and the projection both matter
-  (`docs/runs/2026-09-19-acceptance-2.md`).
-
-See `CONCEPT.md` for the full design note, including the longer-term idea:
-that iterating a masked model to a fixed point can act as a parallel-in-time
-solver, converging in a small, roughly constant number of passes regardless
-of how many time steps the trajectory covers.
-
+  (`docs/runs/2026-09-19-step6.md`).
 ## Running it
 
 ### Native
@@ -112,7 +81,7 @@ cargo run -p engine-cli --release --bin rollout -- \
 ```
 
 `--backend auto|cpu|webgpu` picks the backend (`auto`, the default, tries
-WebGPU and falls back to CPU — capability, not a benchmark); `--backend
+WebGPU and falls back to CPU); `--backend
 webgpu`/`threads` need this crate built with `--features wgpu`/`threads`
 respectively. `--case drop|dam_break` picks the initial condition, and
 `--out field.npy` dumps the final decoded height field as a NumPy `.npy`
@@ -133,28 +102,25 @@ cargo run -p engine-cli --release --bin rollout -- \
     --model artifacts/model --steps 50 --backend cpu
 ```
 
-`train.py` runs on a CUDA GPU when there is one and on the CPU otherwise.
-Its defaults (`--dim 128 --layers 4`) match `model20`'s architecture;
-`--steps 300` on a small dataset is a short run to check the pipeline, not
-the full model20 recipe. `python -m jacobi2000_pt.curriculum` runs the
-six-stage recipe (`docs/runs/2026-09-29-pytorch-training.md`), and
-`docs/runs/2026-09-19-2.md` has the flags model20 itself was trained with.
 
 ## Layout
 
-- `crates/solvers` — the reference shallow-water solver.
-- `crates/engine` — inference: a hand-written CPU (optionally
+- `crates/solvers`: the reference shallow-water solver.
+- `crates/engine`: inference: a hand-written CPU (optionally
   `rayon`-threaded) and WebGPU (hand-written WGSL) forward pass, reading
   `model.safetensors` + `config.json` checkpoints.
-- `crates/engine-cli` — `rollout`, `eval-metrics` and `dump-dataset`, the
+- `crates/engine-cli`: `rollout`, `eval-metrics` and `dump-dataset`, the
   command-line tools around `engine` and `solvers`.
-- `crates/web` — the WASM build of `engine` and the solver for the browser.
-- `crates/lean-runtime` — device acquisition, buffers, pipelines and the
+- `crates/fhp`: the FHP-III lattice gas (and ternary and signed variants) as per-site reference, bit-sliced CPU and wgpu/WGSL engines, native and wasm from one source; see its README.
+- `crates/jacobi`: 2D Laplace by Jacobi iteration as a bit-sliced gate circuit at 4, 8, 12 and 16 bits, with integer and f32 references and bit-sliced CPU and wgpu/WGSL engines.
+- `crates/life-models`: the three small Game of Life models (BERT of Life, the 9-number MLP, the toroidal stencil model), CPU and WGSL forward passes reading safetensors + config.json.
+- `crates/web`: the WASM build of `engine` and the solver for the browser.
+- `crates/lean-runtime`: device acquisition, buffers, pipelines and the
   backend ladder (WebGPU, CPU threads, single thread, by capability).
-- `training/jacobi2000_pt` — PyTorch model, training loop, curriculum and
+- `training/jacobi2000_pt`: PyTorch model, training loop, curriculum and
   export.
-- `web/` — the demo page.
-- `docs/runs/` — dated research-log entries: parameters, commands, results.
+- `web/`: the demo page.
+- `docs/runs/`: dated research-log entries: parameters, commands, results.
 
 ## License
 

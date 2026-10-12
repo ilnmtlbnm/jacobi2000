@@ -16,7 +16,7 @@ The total energy is about 20,150 on the training distribution, and almost all of
 flat pond's `1/2 g H^2`. The part a wave carries is about 0.6 (p50). So the bound lets the
 total rise by about 2 units per tick, which is more than the whole wave's energy, every tick.
 
-The "max relative energy violation 0" rows in `2026-09-19-rung6.md` and
+The "max relative energy violation 0" rows in `2026-09-19-step6.md` and
 `2026-09-29-pytorch-training.md` come from this looseness, not from a model that conserves
 energy.
 
@@ -139,7 +139,7 @@ therefore uses edges from about 90,000 ticks (section 6).
 
 ## 6. 3080 sweep (prepared, not run)
 
-**Question.** In `2026-09-19-rung6.md`, widening 128/4 to 256/6 bought nothing. At a matched
+**Question.** In `2026-09-19-step6.md`, widening 128/4 to 256/6 bought nothing. At a matched
 budget, with seeds, does a hard energy constraint change that verdict or reduce seed-to-seed
 spread?
 
@@ -155,14 +155,14 @@ Measured on the Burn path the same day:
   - sizes: 128/4 and 256/6;
   - arms: off, upper (`r_max`), band (`r_min`, `r_max`);
   - seeds: 20, the seed of `model-wide-1`, plus 21 and 22.
-- All on the rung6 width-comparison recipe (`2026-09-19-3.md`): 3000 steps, lr 3e-4, batch 16,
+- All on the step6 width-comparison recipe (`2026-09-19-3.md`): 3000 steps, lr 3e-4, batch 16,
   rollout 4 after 200 steps, noise 0.04, spectral 1, constant lr, mass projection on, total
   energy projection off, from scratch. `train.py`'s defaults already match this.
 - Data: the section-3 dump of `2026-09-29-pytorch-training.md` (`dump-dataset --pool 1000 --nu
   0.001 --seed 20`).
 - Band: `r_min = 0.99975`, `r_max = 1.00036`, the extremes of the two `nu = 0.001` samples in
   section 2 with a small margin.
-- Every checkpoint is imported into Burn and scored with the standard rung6 eval (`eval-metrics
+- Every checkpoint is imported into Burn and scored with the standard step6 eval (`eval-metrics
   --horizons 10,25,50 --trajectories 24 --seed 0 --project true`):
   - with the constraint off and with its own constraint on;
   - the off-trained checkpoints also get both the upper and the band constraint at inference.
@@ -231,7 +231,7 @@ returned nonzero on `*.eval-off.txt` files. That is fixed in `89b5eef`. `summary
 regenerated locally from the raw files with the fixed tail; nothing was rerun.
 
 The table below is at 50 ticks, mean ± sd over seeds 20/21/22: 24 held-out trajectories per
-eval, the rung6 protocol.
+eval, the step6 protocol.
 
 | size | train | inference | n | corr@50 | active RMSE@50 | amp@50 | global RMSE@50 | E'_50/E'_0 (ON) | active ticks % |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|
@@ -320,7 +320,7 @@ already as good: 128/4 off matches 256/6 off (corr@50 0.982 vs 0.982, active RMS
 
 **Does width help once the constraint is on?** No. 256/6 trained with the upper bound scores
 corr@50 0.9859 ± 0.0070 and active RMSE 0.122 ± 0.037, worse than 128/4 with the same
-constraint, and its seed spread stays large. As in rung6, width does not help at this budget;
+constraint, and its seed spread stays large. As in step6, width does not help at this budget;
 the constraint does, for the small model.
 
 Applying the constraint at inference only (off-trained checkpoints) trims active RMSE by about
