@@ -427,8 +427,9 @@ impl GpuModel {
         self.dispatch2d(&mut encoder, &self.pl_conv2d, &self.head_conv2_bg, ceil_div(ny * nx, 32), ceil_div(channels, 32));
         let _ = patch;
 
+        let staging = buffers::stage(&self.device, &mut encoder, &self.increment_buf, 0, self.readback_len * 4);
         self.queue.submit(Some(encoder.finish()));
-        buffers::read(&self.device, &self.queue, &self.increment_buf, 0, self.readback_len * 4, |bytes| bytemuck::cast_slice::<u8, f32>(bytes).to_vec())
+        buffers::map_read(&self.device, &staging, |bytes| bytemuck::cast_slice::<u8, f32>(bytes).to_vec())
             .await
             .expect("GPU readback failed")
     }
