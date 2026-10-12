@@ -15,7 +15,7 @@ The model is trained in PyTorch. Inference is a Rust engine with hand-written WG
 - The best model (`model20`: 128 wide, 4 layers, 995,843 parameters, trained with mass and energy projection on) has a correlation with the solver of 0.9997 at 10 ticks, 0.9988 at 25 ticks and 0.9954 at 50 ticks. At 50 ticks its amplitude ratio is 1.03 and its wavefront lag is -0.007 cells (`docs/runs/2026-09-19-step6.md`).
 - Along a projected rollout its maximum relative energy violation is 0.000e0, against a bound of 1e-6 (`docs/runs/2026-09-19-acceptance-2.md`).
 - Rewinding works over short horizons. A forward model steps a state N ticks ahead, and a reverse model, trained with the time axis flipped, steps it back. The correlation with the original state is 0.98 after 10 ticks, 0.93 after 25 and 0.80 after 50, with the reverse model trained at the same viscosity as the forward one (0.9817, 0.9263 and 0.8025 in `docs/runs/2026-09-20-rewind-round-trip.md`). The same table shows what is hard: amplitude comes back 10 to 25 percent low, and a reverse model trained without viscosity does worse at every horizon.
-- Two choices in the architecture carry the long-horizon accuracy. A full-attention model of the same kind (`model12`, no stencil mask, no energy projection) fails the same evaluation: its correlation is 0.2242 at 25 ticks and -0.0637 at 50 ticks, where `model20` stays above 0.99 (`docs/runs/2026-09-19-acceptance-2.md`). That baseline differs from `model20` in both choices at once, so this run does not separate the contribution of each.
+- A full-attention model of the same kind (`model12`, no stencil mask, no energy projection) fails the same evaluation: its correlation is 0.2242 at 25 ticks and -0.0637 at 50 ticks, where `model20` stays above 0.99 (`docs/runs/2026-09-19-acceptance-2.md`). That baseline differs from `model20` in both choices at once, so this run does not say which of the two matters more.
 - A 5x wider model (256 wide, 6 layers, 5,427,971 parameters), trained on a desktop GPU, does not beat `model20` on this evaluation at matched horizons, despite more parameters and more training steps (`docs/runs/2026-09-19-step6.md`).
 
 ## Running it
@@ -99,7 +99,7 @@ cargo run -p engine-cli --release --bin rollout -- \
 
 - **A lattice gas.** `crates/fhp` is the FHP-III lattice gas (Frisch, Hasslacher and Pomeau), with ternary and signed ternary variants, as a per-site reference and bit-sliced CPU and WGSL engines that agree bit for bit. Flow past a plate forms a von Karman vortex street (below: the signed ternary variant on WebGPU, a 4096 x 1024 lattice after 13,000 steps, Reynolds number about 200, coloured by vorticity). The dev page at `crates/fhp/www` runs it in the browser; `crates/fhp/README.md` has the model, the collision circuit and the sources.
 
-![The wake behind a plate in the signed ternary lattice gas: two vortices of opposite sign have formed and a third is starting to shed](docs/images/fhp-street.png)
+![The wake behind a plate in the signed ternary lattice gas: a pair of vortices of opposite sign behind the plate, with the start of a street trailing off to the right](docs/images/fhp-street.png)
 
 - **A bit-sliced Jacobi stencil.** `crates/jacobi` solves the 2D Laplace equation by Jacobi iteration as a gate circuit at 4, 8, 12 and 16 bits, next to integer and f32 references.
 - **Three small Game of Life models.** `crates/life-models` has a BERT-style model, a 9-number MLP and a toroidal stencil model, with CPU and WGSL forward passes.
