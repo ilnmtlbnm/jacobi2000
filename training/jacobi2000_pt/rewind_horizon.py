@@ -1,6 +1,6 @@
 """Roadmap item 4: negative time, building on the rewind model.
 
-CONCEPT.md section 4.3 (the Janssen loop, "ensemble over discretizations"):
+Design notes, section 4.3 (the Janssen loop, "ensemble over discretizations"):
 "jitter the patch-grid offset per realization, same weights, average +
 spread... Gives uncertainty for free." Section 11 lists as a measurable,
 not yet done anywhere in this repo's run log: "rewind horizon (ticks until

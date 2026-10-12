@@ -1,12 +1,12 @@
 """Roadmap item 2: mode models.
 
-CONCEPT.md does not define "mode models" anywhere (grepped; the word "mode"
-only appears for step/block/control/rewind *modes*, a different sense).
-Interpretation written before implementing, per the brief: a "mode model"
+The design notes do not define "mode models"; the word "mode" only appears
+for step/block/control/rewind *modes*, a different sense. Interpretation
+written before implementing: a "mode model"
 here means a spectral operator -- decompose the field into its leading 2D
 Fourier modes (a truncated `rfft2`), and learn the dynamics of the retained
 mode coefficients directly, instead of the patch-transformer's pixel/patch
-tokens. This is the concrete, minimal reading of CONCEPT.md section 2's
+tokens. This is the concrete, minimal reading of the design notes, section 2's
 "spectral term" and the prior-art line "FNO ... (mesh operators)" -- a small
 Koopman/DMD-style operator on a truncated spectral basis, testing whether
 shallow water's dominant (long-wavelength) modes evolve with a much smaller

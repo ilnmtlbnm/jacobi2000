@@ -1,6 +1,6 @@
 """Roadmap item 3: forward time with bigger steps.
 
-CONCEPT.md section 15 (`Multi-horizon operators`): "A solver must step; a
+the design notes, section 15 (`Multi-horizon operators`): "A solver must step; a
 learned operator need not... Horizon as input: dt is already conditioning
 -- train on (state_t, state_{t+k}) with random k... Measure: error vs
 horizon for direct k-step prediction against k one-step applications; wall

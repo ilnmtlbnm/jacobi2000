@@ -1,4 +1,4 @@
-"""Roadmap item 1: a Lagrangian formulation, per CONCEPT.md section 9:
+"""Roadmap item 1: a Lagrangian formulation, per the design notes, section 9:
 
     "mask = neighbor list (rebuilt each tick, spatial hash); position = edge
     feature (relative offset, distance) -- mandatory; mass per particle

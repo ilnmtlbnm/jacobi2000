@@ -1,5 +1,5 @@
-"""Follow-up to roadmap item 3: random-k conditioning, per CONCEPT.md
-section 15's actual proposal ("Horizon as input: dt is already conditioning
+"""Follow-up to roadmap item 3: random-k conditioning, per the
+design notes, section 15's actual proposal ("Horizon as input: dt is already conditioning
 -- train on (state_t, state_{t+k}) with random k in the metadata; one model
 answers 'next', '10th', '40th' from the same weights"), rather than
 `bigstep.py`'s single fixed k=8.

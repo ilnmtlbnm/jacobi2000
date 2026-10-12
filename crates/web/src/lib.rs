@@ -78,8 +78,8 @@ const CHECKPOINTS: [usize; 3] = [10, 50, 200];
 /// solver) refresh every this many ticks.
 const METRICS_EVERY: usize = 10;
 
-/// Preset initial conditions for the case picker (CONCEPT sec. 6's
-/// "generalization exhibit": trained on random ripples, shown a dam break,
+/// Preset initial conditions for the case picker (a generalization
+/// exhibit: trained on random ripples, shown a dam break,
 /// a drop, a stacked/near-wall case it never saw at this amplitude).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum CaseKind {
@@ -499,8 +499,8 @@ pub fn reset() {
 }
 
 /// Step one loaded model forward once, applying whichever projections are
-/// currently on (mass equality, energy inequality — CONCEPT sec. 4 step 2:
-/// propose, then project). Takes the model handle and state by value/ref
+/// currently on (mass equality, energy inequality: propose,
+/// then project). Takes the model handle and state by value/ref
 /// (not a `LoadedModel`/`App` borrow) so the caller can hold nothing from
 /// `APP` across the `.await` inside `model.step`.
 async fn step_model(model: &Backend, x: &[f32], mass0: f32, meta: &[f32], mass_projection: bool, energy_projection: bool, params: &Params) -> Vec<f32> {
@@ -682,7 +682,7 @@ pub fn compare_metrics() -> Vec<f32> {
     APP.with(|a| a.borrow().as_ref().unwrap().compare_metrics.to_vec())
 }
 
-/// Per-cell xr ensemble spread (CONCEPT sec. 4, task 10): not implemented
+/// Per-cell xr ensemble spread (jittered patch-grid offsets): not implemented
 /// in this engine: `app.js` never calls it and the page's acceptance checks
 /// do not cover it. Returns empty.
 #[wasm_bindgen]
