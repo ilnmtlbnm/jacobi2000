@@ -1,17 +1,19 @@
 // Bidirectional multi-head attention with an optional Chebyshev-stencil
-// mask. One workgroup of 64 threads per (head, query) pair: the threads
-// stride over the keys for the scores, the max and the sum are
-// shared-memory tree reductions (the rmsnorm/layernorm pattern of this
-// project's kernels), and then the threads stride over the head_dim
-// outputs. Non-causal, so no online softmax is needed (unlike lean's
-// attn_prefill.wgsl): every token attends to a small fixed neighbourhood
-// or to everything, and the whole score row fits in workgroup memory.
+// mask. One workgroup of 64 threads per (head, query) pair. Only the
+// candidate keys are visited: all `tokens` keys for the full mask, or the
+// (2r+1)^2 stencil offsets (dilated, clipped to the token grid) for the
+// stencil mask, so the work per query is the neighbourhood, not the grid.
+// Threads stride over the candidates for the scores, the max and the sum
+// are shared-memory tree reductions (the layernorm pattern of this
+// project's kernels), then threads stride over the head_dim outputs.
+// Non-causal, so no online softmax is needed (unlike lean's
+// attn_prefill.wgsl): the whole score row fits in workgroup memory.
 // `q`/`k`/`v`: [tokens, dim], heads occupy contiguous `dim` ranges
 // (`[head*hd, (head+1)*hd)`), matching `cpu.rs::attention`.
-// `MAX_TOKENS` bounds the workgroup `scores` array (WGSL needs a const
-// length); 1024 covers this model's 256-token (64x64, patch 4) grid with
-// headroom for a finer patch.
-const MAX_TOKENS: u32 = 1024u;
+// `MAX_CAND` bounds the workgroup arrays (WGSL needs a const length); 1024
+// covers this model's 256-token (64x64, patch 4) grid with headroom for a
+// finer patch.
+const MAX_CAND: u32 = 1024u;
 
 struct Dims {
     tokens: u32, dim: u32, heads: u32, head_dim: u32,
@@ -25,23 +27,22 @@ struct Dims {
 @group(0) @binding(3) var<storage, read_write> out: array<f32>;
 @group(0) @binding(4) var<uniform> dims: Dims;
 
-fn allowed(qi: u32, ki: u32) -> bool {
-    if (dims.mask_kind == 0u) { return true; }
-    let qx = i32(qi % dims.tokens_x);
-    let qy = i32(qi / dims.tokens_x);
-    let kx = i32(ki % dims.tokens_x);
-    let ky = i32(ki / dims.tokens_x);
-    let d = i32(dims.dilation);
-    let dx = kx - qx;
-    let dy = ky - qy;
-    if (dx % d != 0 || dy % d != 0) { return false; }
-    let r = i32(dims.radius);
-    return abs(dx / d) <= r && abs(dy / d) <= r;
-}
-
 const WG: u32 = 64u;
-var<workgroup> scores: array<f32, MAX_TOKENS>;
+var<workgroup> scores: array<f32, MAX_CAND>;
+var<workgroup> keys: array<u32, MAX_CAND>;
 var<workgroup> red: array<f32, WG>;
+
+// Key index of candidate `c` for query `qi`, or `dims.tokens` when the
+// candidate falls outside the grid.
+fn candidate(qi: u32, c: u32) -> u32 {
+    if (dims.mask_kind == 0u) { return c; }
+    let side = 2u * dims.radius + 1u;
+    let tokens_y = dims.tokens / dims.tokens_x;
+    let kx = i32(qi % dims.tokens_x) + (i32(c % side) - i32(dims.radius)) * i32(dims.dilation);
+    let ky = i32(qi / dims.tokens_x) + (i32(c / side) - i32(dims.radius)) * i32(dims.dilation);
+    if (kx < 0 || ky < 0 || kx >= i32(dims.tokens_x) || ky >= i32(tokens_y)) { return dims.tokens; }
+    return u32(ky) * dims.tokens_x + u32(kx);
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) tid: u32) {
@@ -49,11 +50,14 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
     let qi = wg.y;
     let hd = dims.head_dim;
     let q_base = qi * dims.dim + head * hd;
+    let side = 2u * dims.radius + 1u;
+    let n_cand = select(side * side, dims.tokens, dims.mask_kind == 0u);
 
     var local_max: f32 = -1e30;
-    for (var ki: u32 = tid; ki < dims.tokens; ki = ki + WG) {
+    for (var c: u32 = tid; c < n_cand; c = c + WG) {
+        let ki = candidate(qi, c);
         var s: f32 = -1e30;
-        if (allowed(qi, ki)) {
+        if (ki < dims.tokens) {
             let k_base = ki * dims.dim + head * hd;
             var dot: f32 = 0.0;
             for (var d: u32 = 0u; d < hd; d = d + 1u) {
@@ -61,7 +65,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
             }
             s = dot * dims.scale;
         }
-        scores[ki] = s;
+        keys[c] = ki;
+        scores[c] = s;
         local_max = max(local_max, s);
     }
     red[tid] = local_max;
@@ -74,9 +79,9 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
     workgroupBarrier();
 
     var local_sum: f32 = 0.0;
-    for (var ki: u32 = tid; ki < dims.tokens; ki = ki + WG) {
-        let e = exp(scores[ki] - max_s);
-        scores[ki] = e;
+    for (var c: u32 = tid; c < n_cand; c = c + WG) {
+        let e = select(0.0, exp(scores[c] - max_s), keys[c] < dims.tokens);
+        scores[c] = e;
         local_sum = local_sum + e;
     }
     red[tid] = local_sum;
@@ -89,10 +94,10 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
 
     for (var d: u32 = tid; d < hd; d = d + WG) {
         var acc: f32 = 0.0;
-        for (var ki: u32 = 0u; ki < dims.tokens; ki = ki + 1u) {
-            let p = scores[ki];
+        for (var c: u32 = 0u; c < n_cand; c = c + 1u) {
+            let p = scores[c];
             if (p != 0.0) {
-                acc = acc + p * v[ki * dims.dim + head * hd + d];
+                acc = acc + p * v[keys[c] * dims.dim + head * hd + d];
             }
         }
         out[q_base + d] = acc / denom;
