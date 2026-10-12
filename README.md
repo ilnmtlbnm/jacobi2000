@@ -25,6 +25,7 @@ The first system it has been trained and evaluated on is 2D shallow water.
   desktop GPU does not beat `model20` on this evaluation at matched
   horizons, despite more parameters and more training steps
   (`docs/runs/2026-09-19-step6.md`).
+
 ## Running it
 
 ### Native
