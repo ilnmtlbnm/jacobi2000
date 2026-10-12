@@ -20,7 +20,6 @@ use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 use lean_runtime::{buffers, gpu as rtgpu, pipeline};
-use wgpu::util::DeviceExt as _;
 
 use crate::config::Config;
 use crate::mask::Mask;
@@ -217,6 +216,8 @@ impl GpuModel {
     pub async fn new(cfg: Config, w: &Weights) -> Result<GpuModel, lean_runtime::Error> {
         let adapter = rtgpu::request_adapter().await?;
         let (device, queue) = rtgpu::request_device(&adapter, "jacobi2000-engine", wgpu::Features::empty()).await?;
+        // The linear kernel runs 16x16 workgroups and the layernorm 256 invocations.
+        lean_runtime::limits::require_compute(&device.limits(), 256, 16384)?;
         Ok(Self::from_device(device, queue, cfg, w))
     }
 
@@ -238,7 +239,7 @@ impl GpuModel {
         let mut wbuf: HashMap<String, wgpu::Buffer> = HashMap::new();
         for (name, t) in w.iter() {
             let bytes: &[u8] = bytemuck::cast_slice(&t.data);
-            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(name), contents: bytes, usage: wgpu::BufferUsages::STORAGE });
+            let buf = buffers::upload(&device, &queue, name, bytes, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
             wbuf.insert(name.clone(), buf);
         }
         let wb = |name: &str| wbuf.get(name).unwrap_or_else(|| panic!("missing tensor `{name}`"));

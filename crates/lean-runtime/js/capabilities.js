@@ -2,13 +2,18 @@
 // is lean-runtime's backend.rs, same rule). Detection only: no benchmark,
 // no tuning. Works in a window or a worker.
 
-export async function capabilities() {
+// `mtBuilt`: whether this deployment shipped a threads build. A page passes it
+// in (a build-time constant) rather than probing the network, so a
+// threads-capable browser without the build reports "not built" instead of
+// fetching a module that 404s.
+export async function capabilities(mtBuilt = true) {
   const caps = {
     hardwareConcurrency: navigator.hardwareConcurrency || 1,
     crossOriginIsolated: self.crossOriginIsolated === true,
     sharedArrayBuffer: typeof SharedArrayBuffer !== "undefined",
     adapter: "none",
     hasAdapter: false,
+    mtBuilt: !!mtBuilt,
   };
   if (navigator.gpu) {
     try {
@@ -26,7 +31,7 @@ export async function capabilities() {
   } else {
     caps.adapter = "no navigator.gpu (WebGPU not available in this browser)";
   }
-  caps.threadsCapable = caps.crossOriginIsolated && caps.sharedArrayBuffer && caps.hardwareConcurrency > 1;
+  caps.threadsCapable = caps.mtBuilt && caps.crossOriginIsolated && caps.sharedArrayBuffer && caps.hardwareConcurrency > 1;
   return caps;
 }
 
@@ -44,7 +49,9 @@ export function availableBackends(caps) {
     available.push("threads");
   } else {
     reasons.threads =
-      !caps.crossOriginIsolated
+      !caps.mtBuilt
+        ? "not built"
+        : !caps.crossOriginIsolated
         ? "not cross-origin isolated"
         : !caps.sharedArrayBuffer
         ? "no SharedArrayBuffer"
