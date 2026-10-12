@@ -382,7 +382,7 @@ impl GpuModel {
         let cfg = &self.cfg;
         let (tokens, dim, ff_inner) = (cfg.tokens as u32, cfg.dim as u32, cfg.ff_inner as u32);
         let (ny, nx, head_dim, channels) = (cfg.ny as u32, cfg.nx as u32, cfg.head_dim as u32, cfg.channels as u32);
-        let (tokens_y, tokens_x, patch) = (cfg.tokens_y as u32, cfg.tokens_x as u32, cfg.patch as u32);
+        let (tokens_x, patch) = (cfg.tokens_x as u32, cfg.patch as u32);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("jacobi2000-forward") });
 
@@ -410,10 +410,10 @@ impl GpuModel {
 
         self.dispatch1d(&mut encoder, &self.pl_layernorm, &self.final_norm_bg, tokens, 1);
         self.dispatch1d(&mut encoder, &self.pl_transpose, &self.transpose_bg, tokens * dim, 64);
-        self.dispatch1d(&mut encoder, &self.pl_conv2d, &self.token_mix_bg, dim * tokens_y * tokens_x, 64);
+        self.dispatch2d(&mut encoder, &self.pl_conv2d, &self.token_mix_bg, ceil_div(tokens, 32), ceil_div(dim, 32));
         self.dispatch1d(&mut encoder, &self.pl_gelu, &self.mix_gelu_bg, dim * tokens, 64);
         self.dispatch1d(&mut encoder, &self.pl_add_inplace, &self.t0_resid_bg, dim * tokens, 64);
-        self.dispatch1d(&mut encoder, &self.pl_conv2d, &self.to_cells_bg, head_dim * tokens_y * tokens_x, 64);
+        self.dispatch2d(&mut encoder, &self.pl_conv2d, &self.to_cells_bg, ceil_div(tokens, 32), ceil_div(head_dim, 32));
         self.dispatch1d(&mut encoder, &self.pl_upsample, &self.upsample_y_bg, head_dim * ny * tokens_x, 64);
         self.dispatch1d(&mut encoder, &self.pl_upsample, &self.upsample_x_bg, head_dim * ny * nx, 64);
 
@@ -422,9 +422,9 @@ impl GpuModel {
         encoder.copy_buffer_to_buffer(&self.z2_buf, 0, &self.zc_buf, 0, self.zc_z2_bytes);
         encoder.copy_buffer_to_buffer(&self.state_buf, 0, &self.zc_buf, self.zc_z2_bytes, self.zc_state_bytes);
 
-        self.dispatch1d(&mut encoder, &self.pl_conv2d, &self.head_conv1_bg, head_dim * ny * nx, 64);
+        self.dispatch2d(&mut encoder, &self.pl_conv2d, &self.head_conv1_bg, ceil_div(ny * nx, 32), ceil_div(head_dim, 32));
         self.dispatch1d(&mut encoder, &self.pl_gelu, &self.head_conv1_gelu_bg, head_dim * ny * nx, 64);
-        self.dispatch1d(&mut encoder, &self.pl_conv2d, &self.head_conv2_bg, channels * ny * nx, 64);
+        self.dispatch2d(&mut encoder, &self.pl_conv2d, &self.head_conv2_bg, ceil_div(ny * nx, 32), ceil_div(channels, 32));
         let _ = patch;
 
         self.queue.submit(Some(encoder.finish()));
