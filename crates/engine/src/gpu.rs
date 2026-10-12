@@ -387,24 +387,24 @@ impl GpuModel {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("jacobi2000-forward") });
 
         self.dispatch1d(&mut encoder, &self.pl_patchify, &self.patchify_bg, tokens * cfg.patch_dim as u32, 64);
-        self.dispatch2d(&mut encoder, &self.pl_linear, &self.embed_bg, ceil_div(dim, 16), ceil_div(tokens, 16));
+        self.dispatch2d(&mut encoder, &self.pl_linear, &self.embed_bg, ceil_div(dim, 32), ceil_div(tokens, 32));
         self.dispatch1d(&mut encoder, &self.pl_add_inplace, &self.add_pos_bg, tokens * dim, 64);
-        self.dispatch2d(&mut encoder, &self.pl_linear, &self.meta_linear_bg, ceil_div(dim, 16), 1);
+        self.dispatch2d(&mut encoder, &self.pl_linear, &self.meta_linear_bg, ceil_div(dim, 32), 1);
         self.dispatch1d(&mut encoder, &self.pl_add_broadcast, &self.add_meta_bg, tokens * dim, 64);
 
         for i in 0..cfg.layers {
             self.dispatch1d(&mut encoder, &self.pl_layernorm, &self.norm1[i], tokens, 1);
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.q[i], ceil_div(dim, 16), ceil_div(tokens, 16));
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.k[i], ceil_div(dim, 16), ceil_div(tokens, 16));
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.v[i], ceil_div(dim, 16), ceil_div(tokens, 16));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.q[i], ceil_div(dim, 32), ceil_div(tokens, 32));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.k[i], ceil_div(dim, 32), ceil_div(tokens, 32));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.v[i], ceil_div(dim, 32), ceil_div(tokens, 32));
             self.dispatch2d(&mut encoder, &self.pl_attention, &self.attention_bg, cfg.heads as u32, tokens);
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.proj[i], ceil_div(dim, 16), ceil_div(tokens, 16));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.proj[i], ceil_div(dim, 32), ceil_div(tokens, 32));
             self.dispatch1d(&mut encoder, &self.pl_add_inplace, &self.resid1_bg, tokens * dim, 64);
 
             self.dispatch1d(&mut encoder, &self.pl_layernorm, &self.norm2[i], tokens, 1);
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.ff1[i], ceil_div(ff_inner, 16), ceil_div(tokens, 16));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.ff1[i], ceil_div(ff_inner, 32), ceil_div(tokens, 32));
             self.dispatch1d(&mut encoder, &self.pl_gelu, &self.ff1_gelu_bg, tokens * ff_inner, 64);
-            self.dispatch2d(&mut encoder, &self.pl_linear, &self.ff2[i], ceil_div(dim, 16), ceil_div(tokens, 16));
+            self.dispatch2d(&mut encoder, &self.pl_linear, &self.ff2[i], ceil_div(dim, 32), ceil_div(tokens, 32));
             self.dispatch1d(&mut encoder, &self.pl_add_inplace, &self.resid2_bg, tokens * dim, 64);
         }
 
