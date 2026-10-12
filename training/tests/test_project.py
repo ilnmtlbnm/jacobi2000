@@ -1,8 +1,9 @@
 """Excess-energy band (project.py), the same guarantees the Rust tests in
-crates/jacobi2000/src/project.rs and crates/train/src/fit.rs check.
+crates/engine/src/project.rs checks.
 Run from training/: `python -m unittest discover tests`. The solver test
-needs the release `jacobi` binary (`cargo build --release -p cli`) and fails
-if it is missing."""
+needs the release `dump-dataset` binary
+(`cargo build --release -p engine-cli --bin dump-dataset`) and fails if it
+is missing."""
 
 import subprocess
 import tempfile
@@ -65,11 +66,11 @@ class ExcessBand(unittest.TestCase):
         self.assertTrue(torch.isfinite(x.grad).all())
 
     def test_solver_trajectory_untouched_by_its_measured_band(self):
-        exe = REPO / "target" / "release" / "jacobi"
-        self.assertTrue(exe.exists(), f"{exe} missing: cargo build --release -p cli")
+        exe = REPO / "target" / "release" / "dump-dataset"
+        self.assertTrue(exe.exists(), f"{exe} missing: cargo build --release -p engine-cli --bin dump-dataset")
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(
-                [str(exe), "dump-dataset", "--pool", "2", "--nu", "0.01", "--seed", "3", "--out", tmp],
+                [str(exe), "--pool", "2", "--nu", "0.01", "--seed", "3", "--out", tmp],
                 check=True, capture_output=True,
             )
             ds = TrajectoryDataset(tmp)

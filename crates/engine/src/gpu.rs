@@ -309,8 +309,10 @@ impl GpuModel {
             Mask::Stencil { radius, dilation } => (1u32, radius as u32, dilation as u32),
         };
         let attention_bg = {
-            let scale = 1.0 / (cfg.head_dim as f32).sqrt();
-            let dims = uniform(&device, &queue, "attn_dims", &AttentionDims { tokens, dim, heads: cfg.heads as u32, head_dim, tokens_x, mask_kind, radius, dilation, scale, _p0: 0, _p1: 0, _p2: 0 });
+            // Attention heads split `dim`; `cfg.head_dim` is the width of the cell head's convolutions.
+            let attn_head_dim = (cfg.dim / cfg.heads) as u32;
+            let scale = 1.0 / (attn_head_dim as f32).sqrt();
+            let dims = uniform(&device, &queue, "attn_dims", &AttentionDims { tokens, dim, heads: cfg.heads as u32, head_dim: attn_head_dim, tokens_x, mask_kind, radius, dilation, scale, _p0: 0, _p1: 0, _p2: 0 });
             pipeline::bind_group(&device, &pl_attention, 0, &[
                 wgpu::BindGroupEntry { binding: 0, resource: q_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: k_buf.as_entire_binding() },

@@ -26,11 +26,5 @@ wgpu = { version = "26", optional = true, features = ["fragile-send-sync-non-ato
 bytemuck = { version = "1.25", optional = true, features = ["derive"] }
 
 [dev-dependencies]
-# Parity baseline only (tests/parity.rs): builds and exports a random-init
-# Burn model to compare this crate's forward pass against. Never a
-# production dependency of this crate.
-jacobi2000 = { path = "../jacobi2000" }
-burn = { version = "0.20", default-features = false, features = ["std", "ndarray"] }
-rand = { workspace = true }
 # Blocks on GpuModel::new/forward's async in native tests only.
 pollster = "0.4"
