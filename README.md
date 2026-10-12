@@ -60,68 +60,56 @@ of how many time steps the trajectory covers.
 
 ### Native
 
-Requires a Rust toolchain. Training and evaluation use a GPU backend
-(Metal on macOS, Vulkan or CUDA on Linux) through Burn/wgpu; tests and CPU
-inference use the ndarray backend and need no GPU.
+Requires a Rust toolchain. Training is PyTorch (below); the Rust crates run
+inference on the CPU, or on a GPU through wgpu (Metal on macOS, Vulkan on
+Linux) when built with `--features wgpu`. Tests need no GPU.
 
 ```
 cargo build --release
 cargo test --workspace
 ```
 
-The `cli` binary (`jacobi`) generates training data, trains models, and
-evaluates checkpoints:
+`crates/engine-cli` has three binaries: `dump-dataset` writes training
+trajectories from the reference solver, `rollout` steps a checkpoint next to
+the solver, and `eval-metrics` scores a checkpoint's rollouts against the
+solver at several horizons:
 
 ```
-cargo run --release -p cli -- train --help
-cargo run --release -p cli -- eval-metrics --help
+cargo run --release -p engine-cli --bin eval-metrics -- --model <checkpoint-dir> --project-energy true
 ```
 
 ### Browser
 
 `web/` is a self-contained demo page (solver and model side by side, a
-divergence panel, and controls for time and viscosity). It needs a
-populated `web/model/` directory of exported checkpoints, which is not
-committed (see `web/README.md` and `tools/export_web_models.sh`).
+divergence panel, and controls for time and viscosity). It needs the wasm
+build in `web/pkg` and a populated `web/model/` directory of exported
+checkpoints, neither of which is committed (see `web/README.md`).
 
 ```
-cd web
-npm install
-./tools/export_web_models.sh   # from the repo root, after training a model
+scripts/build_web.sh                                  # needs wasm-pack
+tools/export_web_models.sh model20=models/model20     # a checkpoint directory, see below
+python3 -m http.server 8000 --directory web
 ```
 
-Then serve `web/` with any static file server and open `index.html`.
+Then open `http://localhost:8000`. (`cd web && npm install && npm test` runs
+the headless check of the page.)
 
 ### Run it from the command line
 
-`crates/engine-cli` (binary `rollout`) runs a checkpoint's inference
-off Burn entirely — no Burn anywhere in its dependency tree
-(`cargo tree -p engine-cli | grep -c burn` is `0`). It loads a
-`model.safetensors` + `config.json` checkpoint (the format
-`jacobi export-weights` and the PyTorch training export both write,
-`docs/pytorch-training.md`), steps it next to the reference solver from a
-built-in initial condition, and prints the model's correlation against
-the solver every tick.
+`crates/engine-cli` (binary `rollout`) runs a checkpoint's inference. It loads
+a `model.safetensors` + `config.json` checkpoint (the format the PyTorch
+training export writes, `docs/pytorch-training.md`), steps it next to the
+reference solver from a built-in initial condition, and prints the model's
+correlation against the solver every tick.
 
-There is no public pretrained checkpoint to download yet (`model20` is a
-local training artifact, gitignored under `results/checkpoints` and
-`artifacts/`, never published). Train one with the `cli` crate's `train`
-command (CPU-only `ndarray` backend by default, no GPU needed), export it
-to the `rollout` format, then run it:
+The trained `model20` is on Hugging Face. Download it and run it:
 
 ```
-cargo run --release -p cli -- train --steps 3000 --single-drop true --out artifacts/model
-cargo run --release -p cli -- export-weights --model artifacts/model --out web/model/model20
+pip install huggingface_hub
+hf download ilnmtlbnm/jacobi2000-model20 --local-dir models/model20
 cargo run -p engine-cli --release --bin rollout -- \
-    --model web/model/model20 --steps 50 --backend cpu
+    --model models/model20 --steps 50 --backend cpu
 ```
-
-`train`'s defaults (`--dim 128 --layers 4`) already match `model20`'s
-architecture; `--steps 3000` is a short run, not the full model20 recipe
-(`docs/runs/2026-09-19-2.md` has the exact flags that one was trained
-with, warm-started from earlier checkpoints). Raise `--steps` and add the
-projection/mask flags from that run log for a model that matches the
-correlations quoted above.
 
 `--backend auto|cpu|webgpu` picks the backend (`auto`, the default, tries
 WebGPU and falls back to CPU — capability, not a benchmark); `--backend
@@ -130,21 +118,41 @@ respectively. `--case drop|dam_break` picks the initial condition, and
 `--out field.npy` dumps the final decoded height field as a NumPy `.npy`
 file.
 
+### Train one yourself
+
+Training is PyTorch, in `training/jacobi2000_pt`. The solver stays in Rust:
+`dump-dataset` writes the trajectories once, and Python reads the flat files.
+
+```
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e training
+cargo run --release -p engine-cli --bin dump-dataset -- --pool 24 --out data/ds
+python -m jacobi2000_pt.train --dataset data/ds --steps 300 --out artifacts/model
+cargo run -p engine-cli --release --bin rollout -- \
+    --model artifacts/model --steps 50 --backend cpu
+```
+
+`train.py` runs on a CUDA GPU when there is one and on the CPU otherwise.
+Its defaults (`--dim 128 --layers 4`) match `model20`'s architecture;
+`--steps 300` on a small dataset is a short run to check the pipeline, not
+the full model20 recipe. `python -m jacobi2000_pt.curriculum` runs the
+six-stage recipe (`docs/runs/2026-09-29-pytorch-training.md`), and
+`docs/runs/2026-09-19-2.md` has the flags model20 itself was trained with.
+
 ## Layout
 
-- `crates/jacobi2000` — grid type, attention masks, model, constraint
-  projection, the fill iteration.
 - `crates/solvers` — the reference shallow-water solver.
-- `crates/train` — data generation, training loop, evaluation metrics
-  (Burn).
-- `crates/cli` — the native training/evaluation command-line tool (Burn).
-- `crates/engine` — inference off Burn: a hand-written CPU (optionally
+- `crates/engine` — inference: a hand-written CPU (optionally
   `rayon`-threaded) and WebGPU (hand-written WGSL) forward pass, reading
   `model.safetensors` + `config.json` checkpoints.
-- `crates/engine-cli` — `rollout`, a command-line runner for `engine`
-  (no Burn in its dependency tree; see "Run it from the command line").
-- `crates/web` — the WASM build of `engine` and the solver for the
-  browser, also off Burn.
+- `crates/engine-cli` — `rollout`, `eval-metrics` and `dump-dataset`, the
+  command-line tools around `engine` and `solvers`.
+- `crates/web` — the WASM build of `engine` and the solver for the browser.
+- `crates/lean-runtime` — device acquisition, buffers, pipelines and the
+  backend ladder (WebGPU, CPU threads, single thread, by capability).
+- `training/jacobi2000_pt` — PyTorch model, training loop, curriculum and
+  export.
 - `web/` — the demo page.
 - `docs/runs/` — dated research-log entries: parameters, commands, results.
 
