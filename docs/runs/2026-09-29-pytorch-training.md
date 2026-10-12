@@ -4,10 +4,9 @@ Task: move `jacobi2000`'s training off Burn/wgpu onto PyTorch (`training/`),
 keeping the Rust model, projections, masks, solver and `web/` unchanged.
 Plan and format in `docs/pytorch-training.md`.
 
-Machines: data generation and all Rust steps on an Apple M2 (native, ndarray
-backend, no GPU needed for CPU inference/eval); PyTorch training on an
-RTX 3080 desktop (CUDA 13, `<box>` placeholder for the real host in every
-command below).
+Machines: data generation and all Rust steps on the development machine (native, ndarray
+backend, no GPU needed for CPU inference/eval); PyTorch training on a
+desktop GPU machine (CUDA 13).
 
 ## 1. Parity: PyTorch forward pass vs Burn forward pass, model20's own weights
 
@@ -59,11 +58,11 @@ jacobi dump-dataset --pool 1000 --nu 0.001 --seed 20 --out <dataset-dir>
 1000 single-drop trajectories (same distribution `train --single-drop true
 --long-fraction 0.2 --amplitude-max 0.3 --extra-drop-prob 0.3
 --no-horizon-fraction 0.3 --extended-fraction 0.3` draws), 135,438 total
-ticks, 6.3 GB of raw `f32` fields, generated in **10.3 s** on the M2 (CPU,
+ticks, 6.3 GB of raw `f32` fields, generated in **10.3 s** on the development machine (CPU,
 single-threaded solver). Physics happens once, in Rust; PyTorch only reads
 the files.
 
-## 4. Training: the model20 recipe, from scratch, in PyTorch on the 3080
+## 4. Training: the model20 recipe, from scratch, in PyTorch on the desktop GPU
 
 **Caveat up front**: `model20` itself was not trained from scratch. Its own
 run docs (`docs/runs/2026-09-19-1.md`, `-2.md`) show it as two warm-start
@@ -78,7 +77,7 @@ below are therefore **from-scratch PyTorch vs. warm-started-chain Burn**, not
 a controlled recipe-for-recipe comparison; the honest reading is "does a
 from-scratch PyTorch run at model20's final recipe reach the same acceptance
 bars," not "is PyTorch faster per step than Burn" (the wall-clock gap below
-is dominated by the 3080 vs. M2 difference and the removed warm start, not by
+is dominated by the desktop GPU vs. the development machine difference and the removed warm start, not by
 the framework).
 
 ```
@@ -89,7 +88,7 @@ python -m jacobi2000_pt.train --dataset <dataset-dir> --out <out-dir> \
 ```
 
 995,843 params (same architecture as model20). Wall clock: **290.5 s (4.8
-min)** on the RTX 3080, with no other GPU job running.
+min)** on the desktop GPU, with no other GPU job running.
 
 ## 5. Acceptance: Rust eval-metrics on the imported PyTorch checkpoint
 
@@ -165,9 +164,9 @@ than copied from an interactively-tuned log).
 python -m jacobi2000_pt.curriculum --dataset <dataset-dir> --out curriculum-out --dim 128 --layers 4 --seed 20
 ```
 
-Launched on the RTX 3080 (unit `jacobi-curriculum`).
+Launched on the desktop GPU (unit `jacobi-curriculum`).
 Total wall time **565.1 s** for all 6 stages, vs. model20's own two final
-stages alone at 5941.5 s (M2) — cheap enough that the step budget below is
+stages alone at 5941.5 s (the development machine) — cheap enough that the step budget below is
 generous rather than tuned.
 
 | stage | recipe (on top of stencil r1 d1, dim 128/4 layers) | steps | wall (s) |
@@ -182,7 +181,7 @@ generous rather than tuned.
 Each stage's checkpoint imported into Burn (`jacobi import-weights`) and scored
 with the unchanged step6 command
 (`jacobi eval-metrics --horizons 10,25,50 --trajectories 24 --seed 0
---project true --project-energy true`, backend ndarray/CPU on the M2):
+--project true --project-energy true`, backend ndarray/CPU on the development machine):
 
 | stage | corr@10 | corr@25 | corr@50 | amp@50 | lag@50 | bias@50 | energy violation |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -243,9 +242,9 @@ trading a fraction of a percent of correlation in two categories for a
 better amplitude ratio in all three — not a clean win, not a regression the
 acceptance bar would catch.
 
-## 7. Controlled framework comparison: Burn/wgpu vs PyTorch, same recipe, same hardware (3080)
+## 7. Controlled framework comparison: Burn/wgpu vs PyTorch, same recipe, same hardware (desktop GPU)
 
-Same recipe, both from scratch, both on the 3080, `flock`-serialized (no
+Same recipe, both from scratch, both on the desktop GPU, run one at a time (no
 contention): 1000 steps, `stencil r1 d1`, dim 128/4 layers, rollout 8, noise
 0.04, mass+energy projection ON (`r_max` 1.0001), spectral 1, lr 1e-4,
 seed 100, batch 16.
@@ -278,13 +277,13 @@ python -m jacobi2000_pt.train --dataset <dataset-dir> --out pt-compare \
 | PyTorch/CUDA (3080) | 78.6 s | 0.079 | 0.9972 | 0.9856 | 0.9412 | 0.9648 |
 
 **PyTorch trains this recipe 6.0x faster per step than Burn/wgpu on the same
-3080** (472.9 / 78.6 = 6.02). Both checkpoints are undertrained (1000
+desktop GPU** (472.9 / 78.6 = 6.02). Both checkpoints are undertrained (1000
 steps, from scratch, no curriculum — neither clears the step6 bar, nor is
 meant to at this step count); corr@50 is within noise of the two runs
 (0.9446 vs 0.9412), not a meaningful accuracy difference at this budget.
 Raw eval output: `docs/runs/2026-09-29-burn-vs-pytorch-{burn,pt}-eval.txt`.
 
-The RTX 3080 machine's default binary was rebuilt back to `ndarray` (CPU) features
+The desktop GPU machine's default binary was rebuilt back to `ndarray` (CPU) features
 after this section, so eval-metrics calls elsewhere in this doc are
 unaffected by which feature set was live mid-run.
 
@@ -295,9 +294,9 @@ the frame order in a sampled window (`window.flip(0)`) mirrors
 `crates/train/src/data.rs`'s `reverse` flag exactly (same mask, same
 solver, only the time axis direction the model is trained on changes), and
 `--init` warm-starts from a previous export via the parity module's own
-loader. On the M2 this training was previously blocked entirely by machine
+loader. On the development machine this training was previously blocked entirely by machine
 contention (`docs/runs/2026-09-19-rewind.md`: killed after 8m46s at 14% CPU
-utilization under a load average of 52); on the idle 3080 it trains in
+utilization under a load average of 52); on the idle desktop GPU it trains in
 under a minute.
 
 ```
@@ -308,9 +307,9 @@ python -m jacobi2000_pt.train --dataset <dataset-dir> --out reverse-out \
 ```
 
 Warm-started from the curriculum's s6 checkpoint (section 6), 700 steps,
-**54.3 s** wall clock on the 3080.
+**54.3 s** wall clock on the desktop GPU.
 
-Rewind score (`jacobi eval-metrics --reverse true`, ndarray/CPU on the M2,
+Rewind score (`jacobi eval-metrics --reverse true`, ndarray/CPU on the development machine,
 raw output `docs/runs/2026-09-29-pytorch-reverse-eval.txt`):
 
 | ticks | corr (h,u,v) | amplitude ratio | lag (xcorr) |
@@ -343,7 +342,7 @@ wasn't renamed to fit that convention.
 
 ## Correction: `model20-pt`'s safetensors export was stale
 
-Section 1's parity export directory (`<box>/jacobi2000-pt/model20-pt`)
+Section 1's parity export directory (`jacobi2000-pt/model20-pt`)
 no longer holds real model20's weights: re-running the step6 eval command
 on a checkpoint imported from it reproduced section 4's *from-scratch*
 PyTorch numbers (corr@50 0.9353, amp@50 0.9636) exactly, not model20's
@@ -354,7 +353,7 @@ unaffected (they were measured and written down before the collision), but
 the on-disk export can no longer be used to reproduce them — anyone
 re-running section 1/2 needs a fresh `jacobi export-weights` from a real
 model20 Burn checkpoint. This run's model20 baseline (used in every table
-above) came from `<box>/jacobi2000/web/model/model20`'s native Burn
+above) came from `jacobi2000/web/model/model20`'s native Burn
 checkpoint instead (dated before any PyTorch work started), and its
 eval-metrics numbers match `docs/runs/2026-09-19-step6.md` exactly,
 confirming it's the real thing and confirming the eval pipeline itself.
@@ -373,10 +372,10 @@ confirming it's the real thing and confirming the eval pipeline itself.
   path already drew from; the only new code path in the solver-facing
   direction is writing full fields to disk instead of throwing them away.
 - Training wall time dropped by more than an order of magnitude (5941.5 s ->
-  290.5 s), but that number conflates three things that moved at once: 3080
-  vs. M2, from-scratch vs. warm-started, and Burn/wgpu vs. PyTorch/CUDA. A
+  290.5 s), but that number conflates three things that moved at once: desktop GPU
+  vs. the development machine, from-scratch vs. warm-started, and Burn/wgpu vs. PyTorch/CUDA. A
   controlled same-recipe-same-hardware comparison (PyTorch vs. Burn, both
-  from scratch, both on the 3080) is future work, not something this run's
+  from scratch, both on the desktop GPU) is future work, not something this run's
   numbers can isolate.
 - `web/` and `crates/web` were not touched and were not exercised in this
   run (no `tools/export_web_models.sh` call, no browser test): the
@@ -388,9 +387,7 @@ confirming it's the real thing and confirming the eval pipeline itself.
 
 `wasm-pack build crates/web --target web --out-dir ../../web/pkg --release`
 (clean build, ~3m 30s including `wasm-opt`), then `web/test/gallery.mjs`
-under Playwright's bundled headless Chromium, both locks held
-(`locked browser ... locked gpu ...`, serialized against a concurrent
-worker's own GPU use on this Mac):
+under Playwright's bundled headless Chromium:
 
 ```
 GALLERY: 7 entries: model20, model19, model-wide-1, model-wide-2, model-energy-smoke-2, model-pt-curriculum, model-sph-smoke

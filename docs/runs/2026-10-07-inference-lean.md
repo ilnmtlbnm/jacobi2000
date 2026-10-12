@@ -1,9 +1,5 @@
 # Jacobi2000 inference off Burn
 
-Step 3 of the engine consolidation (1: lean-runtime extracted; 2: fhp/jacobi
-moved onto it in `physics-engine`; 3: this step; 4: a trucs.ai lattice-gas
-demo, later). Branch `inference-lean`, from `physics-engine`.
-
 ## What moved
 
 - New crate `crates/engine`: a hand-written CPU forward pass over flat
@@ -30,7 +26,7 @@ demo, later). Branch `inference-lean`, from `physics-engine`.
   commits to keeping them (eval-metrics and round-trip are the acceptance
   gate for a PyTorch-trained checkpoint). `cli` has no standalone inference
   command outside that tooling, so there was nothing in it to move.
-- `spread_field` (the per-cell xr-ensemble spread, CONCEPT sec. 4 task 10)
+- `spread_field` (the per-cell xr-ensemble spread, the design notes, sec. 4 task 10)
   is not ported. It was never wired into `web/app.js` (a pre-existing TODO
   in the old `crates/web/src/lib.rs`), so it is not part of the page's
   acceptance checks; it now returns an empty vector instead of running
@@ -89,12 +85,12 @@ WebGPU path is checked directly against PyTorch, not against Burn/wgpu).
 
 ## WebGPU kernels, real-checkpoint parity, gallery export, headless check
 
-Follow-up in the same session, after the lead asked for a WebGPU path,
+Follow-up: a WebGPU path,
 parity on the trained model rather than a random-init fixture, the gallery
 re-exported, a headless check, and a command-line entry point. All of the
-below ran on the Linux test machine (RTX 3080, Vulkan), via a git bundle
+below ran on the Linux test machine (desktop GPU, Vulkan), via a git bundle
 into an isolated `RUSTUP_HOME`/`CARGO_HOME` and `systemd-run` for the one
-GPU-dispatching test, per the GPU-box runner's rules.
+GPU-dispatching test.
 
 ### WebGPU kernels
 
@@ -116,15 +112,15 @@ layer); `forward()` only `queue.write_buffer`s state/meta and replays one
 command encoder (~64 dispatches for 4 layers), one submit, one async
 readback (`lean_runtime::buffers::read`).
 
-One real bug caught by actually running this on the box: `patchify.wgsl`'s
+One real bug caught by actually running this on the test machine: `patchify.wgsl`'s
 `Dims` struct named a field `patch`, a WGSL reserved keyword — wgpu's
 shader validation rejected it (`Validation Error ... name 'patch' is a
 reserved keyword`). Renamed to `patch_size`. (It was also caught once by
-an accidental GPU dispatch on the M2's Metal adapter, from cargo unifying
+an accidental GPU dispatch on the development machine's Metal adapter, from cargo unifying
 `engine`'s `wgpu` feature across a multi-package test invocation — not
-repeated; `cargo test -p engine` is run alone on the M2 from here on.)
+repeated; `cargo test -p engine` is run alone on the development machine from here on.)
 
-### Parity, random-init fixture, GPU vs CPU (Vulkan, 3080)
+### Parity, random-init fixture, GPU vs CPU (Vulkan, desktop GPU)
 
 `cargo test -p engine --features wgpu --test parity -- --nocapture`
 (`gpu_matches_cpu_on_random_init`, plus the three CPU-only tests, all pass):
@@ -136,7 +132,7 @@ repeated; `cargo test -p engine` is run alone on the M2 from here on.)
 
 ### Parity, real checkpoint (model20), engine vs PyTorch
 
-`model20` (the README's best checkpoint) exists on the box already
+`model20` (the README's best checkpoint) exists on the test machine already
 exported to safetensors+config.json by the PyTorch training side
 (`jacobi2000_pt.export`); `engine-cli`'s `--probe-out` dumps one forward
 pass on the deterministic sinusoidal probe input (the same fixture
@@ -182,7 +178,7 @@ sensitivity in the eval sampling, not a regression.
 
 `tools/export_web_models.sh`'s new `jacobi export-weights`-based form
 exported 6 of the 7 checkpoints `web/model/index.json` lists
-(`model-pt-curriculum`'s Burn checkpoint was not found on the box; the
+(`model-pt-curriculum`'s Burn checkpoint was not found on the test machine; the
 other six were): `model20` (copied directly from the PyTorch export,
 already in the right format), `model19`, `model-wide-1`, `model-wide-2`,
 `model-sph-smoke`, `model-energy-smoke-2`, plus `model20`'s reverse
@@ -195,9 +191,9 @@ Playwright's bundled Chromium cannot reach a real Vulkan adapter (falls
 back to SwiftShader, software) — confirmed by running `web/test/smoke.mjs`
 unmodified: it passes, `BACKEND: webgpu`, but at 1097 ms for 10 ticks vs
 20 ms headed (below), consistent with software rendering. The real check
-is headed Chromium on the box's own Xwayland display
+is headed Chromium on the test machine's own display
 (`SMOKE_HEADED=1 SMOKE_DISPLAY=:0 node test/smoke.mjs`, `/usr/bin/chromium`,
-the same recipe as llm-web's lean-browser-box run):
+the same recipe as llm-web's headed browser run):
 
 - **WebGPU** (`BACKEND: webgpu`): every check passes — HORIZON, MASK,
   HIGHLIGHT, HEALTH, STEP, RACE, REWIND (peak error 0.00 cells, exact).
@@ -217,11 +213,11 @@ the same recipe as llm-web's lean-browser-box run):
   backend's real async GPU readback is what let this test's premise hold
   before. Not fixed here — flagged as the one open item.
 
-### Timing vs the old Burn/wgpu build, same box, same model, same methodology
+### Timing vs the old Burn/wgpu build, same machine, same model, same methodology
 
 Built the pre-this-task `physics-engine` branch's `crates/web` (Burn/wgpu)
-in a separate checkout, same box, loaded the same `model20` Burn
-checkpoint, same headed-Chromium-on-Xwayland recipe, same probe script
+in a separate checkout, same machine, loaded the same `model20` Burn
+checkpoint, same headed-Chromium recipe, same probe script
 (drop at centre, 5 samples of `step(20)`, median of `ms_per_tick()`):
 
 | build | median ms/tick |
@@ -231,7 +227,7 @@ checkpoint, same headed-Chromium-on-Xwayland recipe, same probe script
 
 **The new engine is slower here, about 2.1x, not faster** — the opposite
 of what this section set out to show. Measured under some CPU contention
-from an unrelated job on the box (a `tts_generate` process at ~720% CPU
+from an unrelated job on the machine (a process at ~720% CPU
 during the run; not re-measured quiet, so take the absolute numbers as
 approximate, though the 2x gap between two runs taken back-to-back under
 the same contention is not explained by that alone). Likely cause, not
@@ -249,7 +245,7 @@ correct, portable, Burn-free, but slower replacement.
    Burn build it replaces (measured above); reducing the ~64
    dispatches/forward is the likely fix, not yet done.
 2. **`model-pt-curriculum`** gallery entry: its Burn checkpoint was not
-   found on the box this session; the other six exported.
+   found on the test machine; the other six exported.
 3. **The RACE headless-check regression** (CPU backend never yields
    mid-rollout, so a concurrent drop_at lands immediately rather than
    queued) — a real behavioral difference from the WebGPU path, not fixed.

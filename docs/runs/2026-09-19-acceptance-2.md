@@ -1,6 +1,6 @@
 # Acceptance check 2 — constrained-wider-reversible, task A3
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty
 immediately before each eval run below). Commit: pending (this task's own
 commit, made after these runs).
@@ -31,7 +31,7 @@ Raw output: `docs/runs/2026-09-19-model20-acceptance2-on.txt`,
 | model | 25 | 0.9988 | 0.9979 | 0.05976 | 1.0076 | +0.726 | +0.007 | 0.03601 |
 | model | 50 | 0.9953 | 0.9956 | 0.09037 | 1.0218 | -0.760 | -0.013 | 0.06673 |
 
-## Four-bar acceptance table (GOAL-2026-09-19.md / 09-18.md xcorr-lag version)
+## Four-bar acceptance table (xcorr-lag version)
 
 | bar | required | model20 (ON) | pass/fail |
 |---|---|---:|---|
@@ -43,7 +43,7 @@ Raw output: `docs/runs/2026-09-19-model20-acceptance2-on.txt`,
 **All four bars PASS for model20 with mass and energy projection ON, fresh
 seed 2027.**
 
-## Energy-drift table (task 3, GOAL-2026-09-19.md acceptance clause)
+## Energy-drift table (task 3)
 
 Per-tick total physical energy (`E = sum 1/2 g h^2 + 1/2 h(u^2+v^2)`,
 `jacobi2000::energy`), mean over the same 24 held-out trajectories, model

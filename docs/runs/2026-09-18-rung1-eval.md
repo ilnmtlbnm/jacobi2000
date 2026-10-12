@@ -1,6 +1,6 @@
 # Rung-1 re-score of run 2026-09-18-8
 
-Machine: Apple M2, 16 GB. No timings reported (metrics only). GPU checked
+Machine: a 16 GB consumer machine. No timings reported (metrics only). GPU checked
 uncontended before the run: `ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'`
 printed nothing.
 
@@ -36,7 +36,7 @@ printed nothing.
 | model | 50 | 0.2642 | 0.3889 | 0.82966 | 1.3417 | -10.626 | 0.10690 | 0.15660 | 0.24742 | 0.57123 |
 | frozen field | 50 | -0.2064 | -0.4485 | 1.23478 | 3.7638 | -10.787 | 0.13034 | 0.27024 | 0.53766 | 0.76121 |
 
-## Acceptance bar (GOAL-2026-09-18)
+## Acceptance bar
 
 | quantity | bar | run 8 |
 |---|---|---:|

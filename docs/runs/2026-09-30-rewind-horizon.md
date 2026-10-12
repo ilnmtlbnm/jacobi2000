@@ -1,12 +1,12 @@
 # Roadmap item 4 — negative time, building on the rewind model
 
-Machine: data generation on an Apple M2 (native, CPU); training and eval on
-an RTX 3080 desktop (CUDA), under `flock`, no other GPU job
+Machine: data generation on the development machine (native, CPU); training and eval on
+a desktop GPU machine (CUDA), with no other GPU job
 running.
 
 ## What this is
 
-CONCEPT.md section 11 lists a measurable never yet produced in this repo's
+the design notes, section 11 lists a measurable never yet produced in this repo's
 run log: "rewind horizon (ticks until ensemble spread exceeds threshold) vs
 viscosity." Section 4.3 (the Janssen loop): "Ensemble over discretizations,
 not over models: jitter the patch-grid offset per realization, same weights,
@@ -71,7 +71,7 @@ Raw spread curves: `results/rewind-nu0.json`, `results/rewind-nu001.json`,
 
 ## Observations
 
-- **This is not the clean "horizon vs viscosity" result CONCEPT predicts**,
+- **This is not the clean "horizon vs viscosity" result the design notes predict**,
   and the likely reason is visible in the checkpoint table above, not in the
   physics: nu=0.001's reverse model is warm-started from the curriculum's
   fully-converged, 6-stage, 1000-trajectory s6 checkpoint (the repo's best),
@@ -84,7 +84,7 @@ Raw spread curves: `results/rewind-nu0.json`, `results/rewind-nu001.json`,
   confounded here, and this run cannot separate them. **A clean version of
   this experiment needs three forward+reverse pairs trained to the same
   budget** (ideally a matched short curriculum, not the full 6-stage one
-  for nu=0.001 alone); not done tonight, time budget.
+  for nu=0.001 alone); not done, time budget.
 - Taken at face value anyway: nu=0 and nu=0.01 track each other closely at
   every tick (0.0050 vs 0.0049 at tick 10, 0.0405 vs 0.0531 at tick 80) --
   no signal in this run that inviscid (theoretically well-posed, reversible)
@@ -140,7 +140,7 @@ at tick 62 while nu=0/0.01 didn't reach it by tick 80) is gone once training
 budgets match: none of the three cross the 0.08 threshold within 80 ticks,
 and at tick 80 the ordering is nu=0 (0.0405) < nu=0.01 (0.0531) < nu=0.001
 (0.0609) -- **not monotonic in nu**. If viscosity cleanly controlled
-reversibility the way CONCEPT section 6 predicts ("switch viscosity on: the
+reversibility the way the design notes, section 6 predicts ("switch viscosity on: the
 horizon collapses to almost nothing"), nu=0.01 (10x more viscous) should
 show the largest spread, not the middle value. The gaps between all three
 (0.041-0.061 at tick 80) are also small relative to the run-to-run variation

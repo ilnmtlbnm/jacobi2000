@@ -1,6 +1,6 @@
 # Task 11 — energy-projection smoke run (FAILED: diverged)
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
 launch). Commit at launch: `053c6a3`. Warm start: `artifacts/model19`
 (BEST, task 8c).
@@ -25,7 +25,7 @@ trained/warm-started with mass projection alone.
 
 The `train` subcommand does not write its own run-doc file when it exits
 abnormally (it did not exit normally here), so this doc is written by hand
-from the raw stdout log (preserved at `/tmp/energy_smoke.log`). No checkpoint was
+from the raw stdout log. No checkpoint was
 written to `artifacts/model-energy-smoke` (the run never reached a save
 point).
 
@@ -78,7 +78,7 @@ stop rather than fix in this step.
 
 Either:
 1. **Stop-gradient / detach `scale`.** The projection is a hard
-   post-hoc correction (CONCEPT sec. 4, "propose, then project"), not
+   post-hoc correction (the design notes, sec. 4, "propose, then project"), not
    something the model should be learning to anticipate through its
    gradient; detaching `scale` (and/or `budget`/`kinetic` going into it)
    from the autodiff graph removes the singular derivative entirely while

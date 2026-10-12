@@ -1,6 +1,6 @@
 # Energy smoke 2 — 2026-09-19 (task A1, after the detach fix)
 
-Machine: Apple M2 16 GB. wgpu (Metal). Timings **provisional** (llm-life engine tests shared the GPU: ~5 s/step).
+Machine: a 16 GB consumer machine. wgpu (Metal). Timings **provisional** (llm-life engine tests shared the GPU: ~5 s/step).
 - commit: `666119c` (detach the energy-projection scale; gradient-finiteness test)
 - command: `./target/release/jacobi train --init artifacts/model19 --mask stencil --radius 1 --dilation 1 --steps 300 --single-drop true --extended-fraction 0.3 --amplitude-max 0.3 --extra-drop-prob 0.3 --no-horizon-fraction 0.3 --project true --project-energy true --nu 0.001 --rollout 4 --rollout-after 0 --noise 0.04 --spectral 1 --lr 0.0001 --batch 16 --pool 64 --seed 9 --layers 4 --dim 128 --out artifacts/model-energy-smoke-2`
 - the train subcommand's own log: `docs/runs/2026-09-19-1.md`

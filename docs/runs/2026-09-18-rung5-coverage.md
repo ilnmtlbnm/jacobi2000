@@ -1,6 +1,6 @@
 # Rung-5 coverage attempt 2 (task 8b, run 15 -> model17)
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
 scoring). Commit: `6fa22bb`. Checkpoint: `artifacts/model17` (run 15,
 docs/runs/2026-09-18-15.md, warm start from model15 on extended-coverage
@@ -65,7 +65,7 @@ substantially (+0.175, +0.102). model17 is a much better trade-off than
 model16 (which failed both criteria far worse: -0.278 on standard, and
 regressed corner by -0.2526), but does not clear the bar set by task 8b.
 
-## Acceptance bars (docs/GOAL-2026-09-18.md) on model17, standard set
+## Acceptance bars on model17, standard set
 
 | bar | required | measured (model17) | pass/fail |
 |---|---|---|---|
@@ -80,7 +80,7 @@ left untouched (still serving model14).
 
 ## Attempt 2b (run 16, model18)
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
 scoring). Checkpoint: `artifacts/model18` (run 16,
 docs/runs/2026-09-18-16.md, warm start from model17, extended-coverage data,
@@ -144,7 +144,7 @@ training with warm start from model17 did not fix the corner regression —
 it deepened it — while trading away standard-set accuracy relative to
 model17.
 
-### Acceptance bars (docs/GOAL-2026-09-18.md) on model18, standard set
+### Acceptance bars on model18, standard set
 
 | bar | required | measured (model18) | pass/fail |
 |---|---|---|---|
@@ -170,7 +170,7 @@ promoted.
 
 ## Attempt 3 (run 17, model19)
 
-Machine: Apple M2, 16 GB. Backend: ndarray (CPU, eval-only). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: ndarray (CPU, eval-only). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
 scoring). Checkpoint: `artifacts/model19` (run 17,
 docs/runs/2026-09-18-17.md, warm start from model17, `--extended-fraction
@@ -240,7 +240,7 @@ model19 is the best checkpoint at every rung-5 gate: it is the only
 attempt (of 15/16/17/18/19) that passes both task 8b/8c criteria, it
 matches or exceeds model15's stress-set scores in all three categories, and
 its standard-set regression from model15 (-0.0047) is an order of magnitude
-smaller than model17's (-0.0279). All four GOAL-2026-09-18.md acceptance
+smaller than model17's (-0.0279). All four acceptance
 bars pass on model19's standard set (see docs/runs/2026-09-18-17.md /
 acceptance check). **model19 is BEST for the remainder of this project**
 (task 9's widened model, if attempted, would supersede it; absent that,

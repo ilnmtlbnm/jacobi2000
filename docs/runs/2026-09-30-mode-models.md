@@ -1,18 +1,16 @@
 # Roadmap item 2 — mode models
 
-Machine: data generation on an Apple M2 (native, CPU); training on a Linux
-desktop with an RTX 3080 (CUDA), under `flock`, no other GPU job running.
+Machine: data generation on the development machine (native, CPU); training on a Linux
+desktop with a desktop GPU (CUDA), with no other GPU job running.
 
-## Interpretation (undefined in CONCEPT.md, written before implementing)
+## Interpretation (undefined in the design notes, written before implementing)
 
-Grepped CONCEPT.md for "mode": every hit is `step` / `block` / `control` /
-`rewind` *mode* (a different sense of the word), never a "mode model."
-Interpretation used here, per the brief's instruction to write down a
-minimal reading when a roadmap item is undefined: a **mode model** is a
+Interpretation used here, as a minimal reading of an undefined roadmap
+item: a **mode model** is a
 spectral operator -- decompose the field into its leading 2D Fourier modes
 (a truncated `rfft2`) and learn the dynamics of the retained mode
 coefficients directly, instead of the patch-transformer's pixel/patch
-tokens. This is the concrete reading of CONCEPT section 2's "spectral term"
+tokens. This is the concrete reading of the design notes, section 2's "spectral term"
 and the prior-art line "FNO ... (mesh operators)": a small Koopman/DMD-style
 operator on a truncated spectral basis, testing whether shallow water's
 dominant long-wavelength modes evolve with a much smaller, much cheaper
@@ -37,7 +35,7 @@ python -m jacobi2000_pt.modes --dataset data/sw-nu001 --out results/modes \
 
 Same dataset as the curriculum baseline (`jacobi dump-dataset --pool 1000
 --nu 0.001 --seed 20`, `docs/runs/2026-09-29-pytorch-training.md` section 3).
-Wall clock: **64.2 s** on the 3080.
+Wall clock: **64.2 s** on the desktop GPU.
 
 ## Results
 
@@ -46,7 +44,7 @@ Scored in Python (`metrics.py`, the same formulas
 the dataset dump, since this is a new architecture with no Rust-side
 `Jacobi2000` tensor names to import through `jacobi import-weights` --
 `docs/pytorch-training.md`'s acceptance path (Rust `eval-metrics` as the
-numbers of record) does not apply to this architecture tonight.
+numbers of record) does not apply to this architecture.
 
 | horizon (ticks) | mean corr | mean rmse |
 |---:|---:|---:|
@@ -78,8 +76,8 @@ Full per-trajectory rows: `results/modes-log.json`. Raw run log:
   waves from a localized drop carry meaningful energy well past that cutoff
   at short range -- the truncation itself, not the operator's dynamics, is
   likely the dominant error source at these horizons. This was not
-  ablated tonight (no sweep over `k`).
-- The result is consistent with CONCEPT's own framing of the mask
+  ablated (no sweep over `k`).
+- The result is consistent with the design notes' own framing of the mask
   as the problem statement: full patch attention (or even the stencil mask
   the curriculum model uses) sees local structure the 10x10 mode truncation
   simply discards. A mode model may be a better fit for smoother fields
@@ -129,7 +127,7 @@ consistently. The more likely explanation is a fixed 4000-step budget
 becoming steadily less sufficient as the mode-space dimension (and parameter
 count) grows 16x from k=4 to k=24 -- the same MLP depth/width has to fit a
 much higher-dimensional input/output space in the same number of gradient
-steps. Not ablated further tonight (would need a per-k step-count or
+steps. Not ablated further (would need a per-k step-count or
 learning-rate sweep to separate "needs more steps" from "the architecture
 doesn't scale to larger k" cleanly).
 - Practical read: k=4 (115K params, the smallest and cheapest model in the

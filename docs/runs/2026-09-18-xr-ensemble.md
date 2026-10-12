@@ -1,6 +1,6 @@
 # Task 10 — xr ensemble at inference
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
 the run). Commit: `fbb874b`. Checkpoint: `artifacts/model19` (BEST, task
 8c, docs/runs/2026-09-18-17.md / docs/runs/2026-09-18-rung5-coverage.md).
@@ -15,7 +15,7 @@ cargo run --release -p cli --features wgpu --no-default-features -- eval-metrics
 the eval-metrics binary always draws from a fixed larger candidate pool and
 keeps only pre-reflection trajectories at every requested horizon.
 
-Implements jittered patch-grid offsets (CONCEPT §4): K=4 offsets of the
+Implements jittered patch-grid offsets (design notes §4): K=4 offsets of the
 same weights, mean + per-cell spread across offsets.
 
 ## Baseline (single-offset) rung-1 metrics

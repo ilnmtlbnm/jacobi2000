@@ -1,6 +1,6 @@
 # Stress-set baseline (task 8b)
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty before
 the run). Commit: `bc34aac` (adds the `--stress` eval set, 9c821db, and the
 `xcorr_lag` NaN-on-short-profile fix it surfaced, bc34aac).

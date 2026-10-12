@@ -24,7 +24,7 @@ Cites `docs/runs/2026-09-18-rung4-full.md` (run 10, `artifacts/model12`) and `do
 | full (run 10) | 200 | 2.48337 | 1.62202 |
 | stencil r1 (run 11) | 200 | 0.36497 | 1.62202 |
 
-## Acceptance bars (docs/GOAL-2026-09-18.md)
+## Acceptance bars
 
 | bar | required | full (run 10) | pass/fail | stencil r1 (run 11) | pass/fail |
 |---|---|---|---|---|---|

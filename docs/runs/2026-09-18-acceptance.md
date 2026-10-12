@@ -1,6 +1,6 @@
 # Acceptance check — stay-true-for-longer
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty
 immediately before this run). Commit: `4e8673b`.
 
@@ -18,7 +18,7 @@ Models scored independently:
   required to pass.
 - (b) **artifacts/model19** — best stencil-trained checkpoint (task 8c,
   BEST), the model the acceptance bar applies to per the 2026-09-18
-  14:55 amendment ("locality is the thesis", docs/GOAL-2026-09-18.md).
+  14:55 amendment ("locality is the thesis").
 
 Commands:
 
@@ -54,7 +54,7 @@ argmax radius error at 50 ticks — +4.494 cells for model12, +2.609 for
 model19 — despite very high correlation and a small, stable xcorr lag).
 The acceptance bar uses the xcorr lag column, not this one.
 
-## Acceptance bars (docs/GOAL-2026-09-18.md)
+## Acceptance bars
 
 | bar | required | model12 (baseline) | pass/fail | model19 (BEST, bar applies) | pass/fail |
 |---|---|---:|---|---:|---|
@@ -67,7 +67,7 @@ The acceptance bar uses the xcorr lag column, not this one.
 
 The bar applies to the best stencil-trained checkpoint (model19), per the
 2026-09-18 14:55 amendment ("locality is the thesis, not an
-option", docs/GOAL-2026-09-18.md). model19 passes all four acceptance bars independently, on fresh
+option"). model19 passes all four acceptance bars independently, on fresh
 held-out single-drop pre-reflection trajectories at a seed (2026) never
 used anywhere else in this project's runs, with the GPU uncontended.
 

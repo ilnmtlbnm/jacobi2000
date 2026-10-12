@@ -22,7 +22,7 @@ backend: wgpu (Metal), mass projection: false, mask: --mask stencil --radius 1 -
 | model | 50 | 0.9925 | 0.9964 | 0.12951 | 1.0561 | +3.196 | 0.01469 | 0.02639 | 0.03375 | 0.10577 |
 | frozen field | 50 | -0.2532 | -0.4485 | 2.12042 | 3.7638 | -10.787 | 0.22334 | 0.46304 | 0.92126 | 1.30727 |
 
-## Acceptance bars (docs/GOAL-2026-09-18.md)
+## Acceptance bars
 
 Measured on held-out single-drop trajectories, pre-reflection.
 

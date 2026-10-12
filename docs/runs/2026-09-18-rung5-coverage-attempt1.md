@@ -1,6 +1,6 @@
 # Rung-5 coverage attempt 1 (task 8b, run 14 -> model16)
 
-Machine: Apple M2, 16 GB. Backend: wgpu (Metal). GPU uncontended
+Machine: a 16 GB consumer machine. Backend: wgpu (Metal). GPU uncontended
 (`ps -A -o comm | grep -E 'target/release/(jacobi|llm-life)'` empty).
 Commit: `103cdc6`. Checkpoint: `artifacts/model16` (run 14,
 docs/runs/2026-09-18-14.md, warm start from model15 on extended-coverage

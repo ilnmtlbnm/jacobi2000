@@ -3,8 +3,8 @@
 Date: 2026-10-06. Branch `energy-band`, off `roadmap-night`.
 
 Machines:
-- Apple M2, for the solver statistics, the tests, the Rust/PyTorch match and a pipeline smoke run.
-- RTX 3080, for the planned sweep in section 6. It has not been run yet.
+- the development machine, for the solver statistics, the tests, the Rust/PyTorch match and a pipeline smoke run.
+- desktop GPU, for the planned sweep in section 6. It has not been run yet.
 
 Raw `energy-stats` outputs are in `docs/runs/2026-10-06-energy-band-raw/`.
 
@@ -137,7 +137,7 @@ trajectory can step just outside it. In the first draft of this test, an `energy
 from 6,393 ticks was beaten by one tick of a new trajectory (0.999773 vs 0.999780). The sweep
 therefore uses edges from about 90,000 ticks (section 6).
 
-## 6. 3080 sweep (prepared, not run)
+## 6. desktop GPU sweep (prepared, not run)
 
 **Question.** In `2026-09-19-step6.md`, widening 128/4 to 256/6 bought nothing. At a matched
 budget, with seeds, does a hard energy constraint change that verdict or reduce seed-to-seed
@@ -167,13 +167,13 @@ Measured on the Burn path the same day:
   - with the constraint off and with its own constraint on;
   - the off-trained checkpoints also get both the upper and the band constraint at inference.
   - That is 42 evals.
-- Script: `tools/energy-band-sweep.sh`. It is resumable, refuses to start if the GPU is in use,
+- The sweep script is resumable, refuses to start if the GPU is in use,
   and writes `results/band/summary.md`, which holds the per-run metrics table plus `E'_50/E'_0`
   (ON, OFF, solver) and the active-tick counts.
-- Smoke-tested end to end on the M2 (`STEPS=3 TRAJ=1`, 20-trajectory dump): 18 trainings,
+- Smoke-tested end to end on the development machine (`STEPS=3 TRAJ=1`, 20-trajectory dump): 18 trainings,
   18 imports, 42 evals, and the summary.
 
-**Time estimate (3080).**
+**Time estimate (desktop GPU).**
 
 | item | basis | estimate |
 |---|---|---:|
@@ -186,25 +186,6 @@ Measured on the Burn path the same day:
 
 To check the estimate early, the first `train d128l4-s20-off` and `eval ...` lines in the log
 carry timestamps.
-
-**Commands.** `<box>` is the GPU host, `<box-dir>` a fresh directory under its agent work area,
-`<venv>` an existing virtualenv there with torch 2.14, `<box-lock>` the lock file GPU jobs serialize on, and `<dump>` the section-3 1000-trajectory
-dump already there.
-
-```
-# from this worktree
-rsync -az --delete --exclude target/ --exclude target-wgpu/ --exclude results/ --exclude data/ \
-  --exclude web/pkg/ --exclude web/node_modules/ ./ <box>:<box-dir>/
-ssh <box> 'nvidia-smi; systemctl --user list-units --no-pager | grep -E "chain-|bench-|judge-|dl-|jacobi"; pgrep -af llama-server'
-ssh <box> 'cd <box-dir> && source ~/.cargo/env && CARGO_TARGET_DIR=target-wgpu cargo build --release -p cli --features wgpu --no-default-features'
-ssh <box> 'cd <box-dir> && systemd-run --user --unit=jacobi-band --same-dir --collect --property=Type=simple \
-  --setenv=DATASET=<dump> --setenv=PYTHON=<venv>/bin/python --setenv=JACOBI=./target-wgpu/release/jacobi \
-  /usr/bin/flock <box-lock> /bin/bash tools/energy-band-sweep.sh'
-# status
-ssh <box> 'systemctl --user status jacobi-band --no-pager; journalctl --user -u jacobi-band -n 20 --no-pager; ls <box-dir>/results/band | tail'
-# fetch (summaries, logs, eval outputs; checkpoints optional)
-rsync -az --exclude '*-burn/' --exclude '*.safetensors' <box>:<box-dir>/results/band/ results/band/
-```
 
 **How to read the result.** For each size, training arm and inference arm, take the mean ±
 std over the 3 seeds of:
@@ -220,11 +201,10 @@ The constraint earns its place if either holds:
 If every difference sits inside the seed std, energy drift is not what holds the wider model
 back, and the next suspect is the training budget itself.
 
-## 7. Results of the 3080 sweep (run 2026-10-06, 1 h 12 min wall)
+## 7. Results of the desktop GPU sweep (run 2026-10-06, 1 h 12 min wall)
 
 Raw outputs are in `results/band/`: per-run eval outputs, training logs, the training-log
-JSONs, and `summary.md`. The box path in the training logs' "exported to" line is replaced by
-`<box-dir>`.
+JSONs, and `summary.md`.
 
 The script died in its summary tail. With `set -euo pipefail`, the grep for the `E'` section
 returned nonzero on `*.eval-off.txt` files. That is fixed in `89b5eef`. `summary.md` was
@@ -287,7 +267,7 @@ Fix (`1dc2138`): measure `E'_prev` on the state before noise is added, in both `
 `fit.rs`. The upper arm was affected the same way, but mildly: a noisy reference only loosens
 an upper bound.
 
-Local reproduction on the M2 (CPU, 1000 steps, 128/4, seed 20, 300-trajectory dump
+Local reproduction on the development machine (CPU, 1000 steps, 128/4, seed 20, 300-trajectory dump
 `--nu 0.001 --seed 11`, otherwise the sweep recipe):
 
 | run | inference | corr@50 | active RMSE@50 | amp@50 | global RMSE@50 | `E'_50/E'_0` raw / ON | active ticks |
@@ -337,16 +317,7 @@ Caveats:
 
 Rerun the upper and band arms with the fixed reference: 12 trainings plus 24 evals, about
 40-50 min at this sweep's measured pace. The script is resumable, so deleting those outputs
-reruns just them:
-
-```
-rsync -az --delete --exclude target/ --exclude target-wgpu/ --exclude results/ --exclude data/ \
-  --exclude web/pkg/ --exclude web/node_modules/ ./ <box>:<box-dir>/
-ssh <box> 'cd <box-dir> && rm -rf results/band/*-upper* results/band/*-band* results/band/summary.md'
-ssh <box> 'cd <box-dir> && systemd-run --user --unit=jacobi-band2 --same-dir --collect --property=Type=simple \
-  --setenv=DATASET=<dump> --setenv=PYTHON=<venv>/bin/python --setenv=JACOBI=./target-wgpu/release/jacobi \
-  /usr/bin/flock <box-lock> /bin/bash tools/energy-band-sweep.sh'
-```
+reruns just them.
 
 The Rust binary needs no rebuild for this. `fit.rs` changed, but the sweep trains in PyTorch,
 and the eval and import paths are unchanged.

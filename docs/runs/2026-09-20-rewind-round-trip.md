@@ -1,11 +1,11 @@
 # Rewind: reverse checkpoints and round-trip (C5 + C6)
 
-Date: 2026-09-20 00:44–01:05. Reverse training on the 3080 (unit `jacobi-reverse`, log `logs/jacobi-reverse.log`), round-trip scoring on the M2 (wgpu).
+Date: 2026-09-20 00:44–01:05. Reverse training on the desktop GPU (unit `jacobi-reverse`, log `logs/jacobi-reverse.log`), round-trip scoring on the development machine (wgpu).
 
 ## C5 — reverse checkpoints
 
 Three runs, model20's recipe with `--init artifacts/model19 --reverse true --steps 250`, projections on
-(`--project true --project-energy true --r-max 1.0001`), `--nu` ∈ {0, 0.001, 0.01}. Wall: ≈2 min each on the 3080 (0.48 s/step).
+(`--project true --project-energy true --r-max 1.0001`), `--nu` ∈ {0, 0.001, 0.01}. Wall: ≈2 min each on the desktop GPU (0.48 s/step).
 
 | checkpoint | ν | final loss (step 200) |
 |---|---:|---:|

@@ -1,11 +1,11 @@
 # Roadmap item 1 — a Lagrangian formulation
 
-Machine: data generation on an Apple M2 (native, CPU); training on a Linux
-desktop with an RTX 3080 (CUDA), under `flock`, no other GPU job running.
+Machine: data generation on the development machine (native, CPU); training on a Linux
+desktop with a desktop GPU (CUDA), with no other GPU job running.
 
 ## What "a Lagrangian formulation" means here
 
-CONCEPT.md section 9 defines the branch: "mask = neighbor list (rebuilt each
+the design notes, section 9 defines the branch: "mask = neighbor list (rebuilt each
 tick, spatial hash); position = edge feature (relative offset, distance) --
 mandatory; mass per particle constant by construction; momentum exact via
 antisymmetrized pairwise predictions (Newton III as a layer)." This is
@@ -13,7 +13,7 @@ distinct from the repo's existing "Lagrangian" work
 (`crates/train/src/lagrangian.rs`, `artifacts/model-sph-smoke`,
 `docs/runs/2026-09-19-sph-smoke.md`), which splats SPH particles onto a grid
 and reuses the grid patch-transformer unchanged -- not a particle-native
-model. Tonight's item is the particle-native model section 9 actually
+model. This item is the particle-native model section 9 actually
 describes.
 
 ## Data
@@ -50,7 +50,7 @@ python -m jacobi2000_pt.lagrangian --data data/sph --out results/lagrangian \
   --horizons 5,10,20,40,59
 ```
 
-Wall clock: **192.4 s** on the 3080.
+Wall clock: **192.4 s** on the desktop GPU.
 
 ## Results
 
@@ -94,9 +94,9 @@ format since this is not the `Jacobi2000` architecture).
   momentum-conservation structure), reaching 1.2-2.9 position units (the
   domain is `nx*dx = 64` units wide) by tick 59 -- particles are still
   broadly in the right place, not yet visibly diverged, but this is not
-  checked visually (no picture dump for the particle model tonight).
+  checked visually (no picture dump for the particle model).
 - What's not done: a spatial hash (particle counts here are small enough
-  that the brute-force `cdist` neighbor search was fine; CONCEPT's "rebuilt
+  that the brute-force `cdist` neighbor search was fine; the design notes' "rebuilt
   each tick, spatial hash" is a scaling concern for larger particle counts,
   not exercised here -- see the follow-up below), comparing against a
   from-scratch grid-splat baseline trained on the same trajectories (the
@@ -117,7 +117,7 @@ python -m jacobi2000_pt.lagrangian --data data/sph --out results/lagrangian-spli
   --horizons 5,10,20,40,59 --held-out-prefix drop
 ```
 
-30,822 params (unchanged), wall clock **193.0 s** on the 3080 (effectively
+30,822 params (unchanged), wall clock **193.0 s** on the desktop GPU (effectively
 the same as the first pass's 192.4 s -- training set size doesn't change
 per-step cost, since each step draws one trajectory).
 
@@ -156,4 +156,4 @@ repeat), and the two families may simply be similar enough in local
 dynamics (both are gravity-driven free-surface flows the same message-
 passing rule handles the same way) that this isn't a hard generalization
 test. `k`-NN neighbor search stayed brute-force (`cdist`, still fine at
-these particle counts); no spatial hash was needed or built tonight.
+these particle counts); no spatial hash was needed or built.

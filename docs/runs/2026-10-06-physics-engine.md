@@ -8,11 +8,10 @@ lean-runtime branch, tip 2b9353e, with llm-web's clippy fix 68fe5c0
 cherry-picked on top so the workspace is clean on Rust 1.95).
 
 Sources read before moving anything:
-- `fhp`: tritsliced branch `fhp-signed-speed`, tip a83515b, and its
-  `docs/runs/2026-10-06-fhp-signed-speed.md`.
+- `fhp`: tritsliced branch `fhp-signed-speed`, tip a83515b.
 - `jacobi`: tritsliced branch `jacobi-viewer`.
 - `lean-runtime`: llm-web branch `lean-runtime`, tip 2b9353e (+ the
-  cherry-picked clippy fix), and its `docs/lean-runtime.md` design note.
+  cherry-picked clippy fix).
 
 ## Dependency choice for lean-runtime
 
@@ -73,7 +72,7 @@ These are candidates for a later pass once there's time to verify each
 swap against the existing test suite and the headless pages, not skipped
 on judgment about the duplication itself.
 
-## Gate 1: native tests, M2 and the RTX 3080 machine
+## Gate 1: native tests, the development machine and the Linux test machine
 
 | crate | source branch (passed) | physics-engine (passed) | match |
 |---|---:|---:|---|
@@ -83,23 +82,21 @@ on judgment about the duplication itself.
 `cargo test --release -p fhp -p jacobi`, run separately per crate (a combined
 invocation double-counts shared binary names across the two crates' `grep`
 tallies, a counting artefact, not a real mismatch — verified by running each
-crate alone). 74 total (53 + 21) on both the M2 and the RTX 3080 machine (Ryzen
-9 3900X / RTX 3080, GPU idle before the run, `0 %, 469 MiB` on
-`nvidia-smi --query-gpu=utilization.gpu,memory.used`). Box run via
-`systemd-run --user --unit=physics-engine-gates`, logs at
+crate alone). 74 total (53 + 21) on both the development machine and the Linux test machine (GPU idle before the run, `0 %, 469 MiB` on
+`nvidia-smi --query-gpu=utilization.gpu,memory.used`). The Linux run logged to
 `logs/test.log` (`TEST_EXIT=0`) and `logs/clippy.log` (`CLIPPY_EXIT=0`) under
-a scratch checkout of this branch on the RTX 3080 machine.
+a scratch checkout of this branch on the Linux test machine.
 
-Note: the debug profile hit a SIGBUS in rustc's DWARF emission on the M2
+Note: the debug profile hit a SIGBUS in rustc's DWARF emission on the development machine
 compiling `fhp` with `-C debuginfo=2 -C split-debuginfo=unpacked` (not
-reproducible on the RTX 3080 machine, Rust 1.95 vs the M2's 1.93); release builds (and the
-RTX 3080 machine's clippy pass, which also uses `--release`) were unaffected, so all gates
+reproducible on the Linux test machine, Rust 1.95 vs the development machine's 1.93); release builds (and the
+desktop GPU machine's clippy pass, which also uses `--release`) were unaffected, so all gates
 here are release-profile.
 
 ## Gate 2: clippy
 
 `cargo clippy --release -p fhp -p jacobi -p lean-runtime --all-targets -- -D
-warnings`: clean on the M2 (rustc 1.93.0) and on the RTX 3080 machine (rustc 1.95.0,
+warnings`: clean on the development machine (rustc 1.93.0) and on the Linux test machine (rustc 1.95.0,
 the toolchain that flags `unnecessary_sort_by` on `lean`'s
 `debug_top_buffers` — the reason the 68fe5c0 cherry-pick was needed before
 this would pass).
@@ -110,7 +107,7 @@ Diffed `crates/fhp/src` and `crates/jacobi/src` between the source branches
 and this workspace: the only differences are the three `max_binding_bytes`
 swaps above (confirmed with `diff -rq`, both trees otherwise identical byte
 for byte). Then ran the same deterministic CLI calls on the source branch
-and on `physics-engine` (same machine, the M2, to rule out cross-hardware
+and on `physics-engine` (same machine, the development machine, to rule out cross-hardware
 float/GPU variance) and sha256'd stdout:
 
 | variant | command | N / size | sha256 | match |
@@ -150,18 +147,6 @@ Headless (Playwright's bundled Chromium, `--enable-unsafe-webgpu
 - jacobi `?n=128`: `webgpu` backend, `isolated: true`, zero console/page
   errors, `pass: true`. Screenshot `jacobi.png` (field view) and
   `jacobi-error.png` (the script's standard error-view shot of panel 0).
-
-## Gate 5: privacy grep
-
-A privacy grep for personal paths and identifiers (local filesystem paths,
-internal hostnames, and personal names/emails) was run on all three commits
-on this branch and came back clean: the only hits were the leak-check shell
-scripts' own grep patterns (`crates/lean-runtime/scripts/leak_check.sh`,
-`scripts/build_fhp_web.sh`, `scripts/build_jacobi_web.sh` — they necessarily
-contain strings like `.claude/`, `/Users/`, `Code/` as the patterns they
-grep *for*). No actual leaked path, hostname or name. The wasm binaries
-themselves were checked by each build script's own `leak_check`/`LEAKS`
-step during the build (gate 4) and came back clean.
 
 ## Commits on `physics-engine`
 

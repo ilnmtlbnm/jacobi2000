@@ -4,7 +4,7 @@ No training. The three checkpoints from runs 1-3 re-evaluated with the
 constant-mass projection switched on in the rollout, to separate mass drift
 from the rest of the 50-tick error.
 
-Machine: Apple M2, 16 GB. Timings **provisional** (the GPU is shared).
+Machine: a 16 GB consumer machine. Timings **provisional** (the GPU is shared).
 
 - commit: `d6fdc68`
 - backend: wgpu (Metal)

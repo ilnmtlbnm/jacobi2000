@@ -21,7 +21,7 @@ Command:
 | model | 50 | 0.9958 | 0.9963 | 0.12123 | 1.0147 | -2.838 | 0.01875 | 0.03492 | 0.04482 | 0.08896 |
 | frozen field | 50 | -0.2451 | -0.4485 | 2.14787 | 3.7638 | -10.787 | 0.22387 | 0.46414 | 0.92344 | 1.32435 |
 
-## Acceptance bars (docs/GOAL-2026-09-18.md)
+## Acceptance bars
 
 Measured on held-out single-drop trajectories, pre-reflection.
 

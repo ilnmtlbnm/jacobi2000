@@ -1,6 +1,6 @@
 # Energy stats — 2026-09-19 (task A2, measuring the bound from data)
 
-Machine: Apple M2 16 GB. Backend: ndarray (CPU) — `energy-stats` needs no GPU.
+Machine: a 16 GB consumer machine. Backend: ndarray (CPU) — `energy-stats` needs no GPU.
 
 - commit: `6fac81c`
 - command: `./target/release/jacobi energy-stats --pool 32 --ticks 100 --nu 0.001 --seed 42`
