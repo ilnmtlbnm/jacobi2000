@@ -3,6 +3,7 @@ name = "jacobi"
 description = "2D Laplace by Jacobi iteration as a bit-sliced gate circuit at b bits (4, 8, 12, 16): integer and f32 references, bit-sliced CPU and wgpu/WGSL engines, native and wasm from one source."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [lib]

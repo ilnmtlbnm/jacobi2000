@@ -3,6 +3,7 @@ name = "fhp"
 description = "FHP-III lattice gas (Frisch, Hasslacher, Pomeau 1986): per-site reference, bit-sliced CPU, and wgpu/WGSL engines, native and wasm from one source."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [lib]

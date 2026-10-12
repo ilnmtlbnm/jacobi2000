@@ -23,7 +23,6 @@ opt-level = 3
 debug = false
 
 # fhp and jacobi's parity tests evaluate bit-sliced circuits over millions of
-# lanes; unoptimized they take minutes (carried over from their source
-# workspace in tritsliced).
+# lanes; unoptimized they take minutes.
 [profile.test]
 opt-level = 3
