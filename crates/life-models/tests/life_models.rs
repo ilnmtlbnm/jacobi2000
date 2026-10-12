@@ -1,6 +1,6 @@
-//! Parity gates for the three Life models. Weights are the published Burn
+//! Parity gates for the three Life models. Weights are the published llm-life
 //! checkpoints converted to the PyTorch `state_dict` layout; references are
-//! the Burn oracle logits (all 512 neighbourhoods for `bert` and `mlp2`, a
+//! the reference logits of those checkpoints (all 512 neighbourhoods for `bert` and `mlp2`, a
 //! 16x16 board for `stencil`) and PyTorch logits on boards of several
 //! shapes. `tools/make_fixtures.py` builds `tests/fixtures/`.
 //!
@@ -124,7 +124,7 @@ fn cpu_exhaustive_logits_match_references() {
 }
 
 #[test]
-fn cpu_stencil_matches_burn_on_its_16x16_board() {
+fn cpu_stencil_matches_reference_on_its_16x16_board() {
     let r = reference();
     let b = &r["burn"]["stencil"];
     let (w, h) = (b["w"].as_u64().unwrap() as usize, b["h"].as_u64().unwrap() as usize);
@@ -271,7 +271,7 @@ mod gpu {
     }
 
     #[test]
-    fn stencil_matches_burn_on_its_16x16_board() {
+    fn stencil_matches_reference_on_its_16x16_board() {
         let Some((_, g)) = gpu(Kind::Stencil) else { return };
         let r = reference();
         let b = &r["burn"]["stencil"];

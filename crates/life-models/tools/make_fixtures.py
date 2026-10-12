@@ -1,4 +1,5 @@
-"""Builds crates/life-models/tests/fixtures/ from the published Burn checkpoints.
+"""Builds crates/life-models/tests/fixtures/ from the published checkpoints of llm-life
+(https://github.com/idle-intelligence/llm-life).
 
 Input: a directory holding the safetensors and oracle files that llm-life's
 `export` tool writes from its Burn checkpoints (Burn tensor names and
