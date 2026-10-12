@@ -7,7 +7,7 @@
 //! The GPU tests need a WebGPU adapter and are skipped, with a line saying
 //! so, when there is none.
 
-use life::{is_alive, Kind, Model};
+use life_models::{is_alive, Kind, Model};
 use serde_json::Value;
 
 const TOL: f32 = 1e-4;
@@ -59,7 +59,7 @@ fn life_rule(case: usize) -> bool {
 fn life_step(c: &[u8], w: usize, h: usize) -> Vec<u8> {
     (0..w * h)
         .map(|i| {
-            let nb = life::cpu::taps(i % w, i / w, w, h);
+            let nb = life_models::cpu::taps(i % w, i / w, w, h);
             let n = nb.iter().filter(|&&j| c[j] != 0).count();
             matches!((c[i] != 0, n), (true, 2) | (true, 3) | (false, 3)) as u8
         })
@@ -208,7 +208,7 @@ fn bad_boards_and_configs_are_errors() {
 #[cfg(feature = "wgpu")]
 mod gpu {
     use super::*;
-    use life::gpu::GpuModel;
+    use life_models::gpu::GpuModel;
 
     fn gpu(kind: Kind) -> Option<(Model, GpuModel)> {
         let m = fixture(kind);

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/web", "crates/solvers", "crates/fhp", "crates/jacobi", "crates/lean-runtime", "crates/engine", "crates/engine-cli", "crates/life"]
+members = ["crates/web", "crates/solvers", "crates/fhp", "crates/jacobi", "crates/lean-runtime", "crates/engine", "crates/engine-cli", "crates/life-models"]
 resolver = "2"
 
 [workspace.package]

@@ -1,4 +1,4 @@
-"""Builds crates/life/tests/fixtures/ from the published Burn checkpoints.
+"""Builds crates/life-models/tests/fixtures/ from the published Burn checkpoints.
 
 Input: a directory holding the safetensors and oracle files that llm-life's
 `export` tool writes from its Burn checkpoints (Burn tensor names and
@@ -201,7 +201,7 @@ def main():
 
         if args.llm_life_pytorch:
             sys.path.insert(0, args.llm_life_pytorch)
-            from life import Grid  # llm-life's port of crates/life (xorshift RNG)
+            from life import Grid  # llm-life's port of crates/life-models (xorshift RNG)
 
             g = Grid.random(16, 16, 1_000_000, 0.28)
             want = np.array(json.load(open(os.path.join(src, "stencil-oracle.json")))["logits"], dtype=np.float32)

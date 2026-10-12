@@ -1,7 +1,7 @@
 //! Time per generation of each model on the CPU (one thread, all threads)
 //! and on WebGPU, at 16x16 and 2048x2048, with the fixture weights.
 //!
-//!     cargo run --release -p life --features wgpu,threads --example bench [bert|mlp2|stencil|-] [gpu]
+//!     cargo run --release -p life-models --features wgpu,threads --example bench [bert|mlp2|stencil|-] [gpu]
 //!
 //! CPU: the whole `Model::step` (logits then threshold). WebGPU "step" is
 //! upload + one generation + readback of the packed board; WebGPU "compute"
@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use life::{Kind, Model};
+use life_models::{Kind, Model};
 
 fn model(kind: Kind) -> Model {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(kind.id());
@@ -99,6 +99,6 @@ fn main() {
     }
 }
 
-fn g_label() -> Result<String, life::Error> {
+fn g_label() -> Result<String, life_models::Error> {
     pollster::block_on(model(Kind::Mlp2).to_gpu()).map(|g| g.adapter().to_string())
 }
