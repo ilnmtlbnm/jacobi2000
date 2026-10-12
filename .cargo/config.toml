@@ -1,0 +1,6 @@
+# Every wasm build in this repo uses 128-bit SIMD (all browsers with wasm
+# have it). Extra flags go in with `cargo --config` or wasm-pack's forwarded
+# --config, which merge with this file; RUSTFLAGS would replace it and drop
+# +simd128 silently.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

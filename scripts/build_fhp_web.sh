@@ -25,8 +25,10 @@ if ! grep -qF "const ENGINE_BUILD = '$ENGINE_BUILD';" $CRATE/www/index.html; the
     exit 1
 fi
 
-# Compiled-in source paths would carry the home directory; map it away.
-REMAP="--remap-path-prefix=$HOME=/home"
+# Compiled-in source paths would carry the home directory; map it away. Flags
+# go in with --config, which merges with .cargo/config.toml (+simd128);
+# RUSTFLAGS would replace that file's flags.
+REMAP="target.'cfg(all())'.rustflags=[\"--remap-path-prefix=$HOME=/home\"]"
 
 leak_check() {
     local wasm=$1
@@ -40,19 +42,17 @@ leak_check() {
 }
 
 echo "==> pkg: WebGPU + single-thread CPU"
-RUSTFLAGS="-C target-feature=+simd128 $REMAP" \
-    wasm-pack build $CRATE --target web --release --out-dir "$REPO_ROOT/$CRATE/pkg" --no-default-features --features web
+wasm-pack build $CRATE --target web --release --out-dir "$REPO_ROOT/$CRATE/pkg" --no-default-features --features web --config "$REMAP"
 leak_check $CRATE/pkg/fhp_bg.wasm
 
 echo "==> pkg-mt: threaded CPU (nightly build-std)"
 # 2.5 GiB: the 2 GiB CPU lattice bound (WASM_CPU_MAX_BYTES) plus headroom.
 MAX_MEMORY="${MAX_MEMORY:-2684354560}"
-RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128 \
--C link-arg=--shared-memory -C link-arg=--max-memory=$MAX_MEMORY \
--C link-arg=--import-memory \
--C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size \
--C link-arg=--export=__tls_align -C link-arg=--export=__tls_base $REMAP" \
-  cargo +nightly build -p fhp --lib \
+MT_FLAGS="target.wasm32-unknown-unknown.rustflags=[\"-C\", \"target-feature=+atomics,+bulk-memory,+mutable-globals\", \
+\"-C\", \"link-arg=--shared-memory\", \"-C\", \"link-arg=--max-memory=$MAX_MEMORY\", \"-C\", \"link-arg=--import-memory\", \
+\"-C\", \"link-arg=--export=__wasm_init_tls\", \"-C\", \"link-arg=--export=__tls_size\", \
+\"-C\", \"link-arg=--export=__tls_align\", \"-C\", \"link-arg=--export=__tls_base\"]"
+cargo +nightly build -p fhp --lib --config "$MT_FLAGS" --config "$REMAP" \
     --target wasm32-unknown-unknown \
     --release \
     --no-default-features --features wasm-mt \

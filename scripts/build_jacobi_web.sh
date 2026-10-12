@@ -20,11 +20,12 @@ if ! grep -qF "const ENGINE_BUILD = '$ENGINE_BUILD';" $CRATE/www/index.html; the
     exit 1
 fi
 
-# Compiled-in source paths would carry the home directory; map it away.
-REMAP="--remap-path-prefix=$HOME=/home"
+# Compiled-in source paths would carry the home directory; map it away. Flags
+# go in with --config, which merges with .cargo/config.toml (+simd128);
+# RUSTFLAGS would replace that file's flags.
+REMAP="target.'cfg(all())'.rustflags=[\"--remap-path-prefix=$HOME=/home\"]"
 
-RUSTFLAGS="-C target-feature=+simd128 $REMAP" \
-    wasm-pack build $CRATE --target web --release --out-dir "$REPO_ROOT/$CRATE/pkg" --no-default-features --features web
+wasm-pack build $CRATE --target web --release --out-dir "$REPO_ROOT/$CRATE/pkg" --no-default-features --features web --config "$REMAP"
 
 WASM=$CRATE/pkg/jacobi_bg.wasm
 LEAKS=$(strings "$WASM" | grep -F -e "$HOME" -e "Code/" -e ".claude/" -e "/Users/" || true)
