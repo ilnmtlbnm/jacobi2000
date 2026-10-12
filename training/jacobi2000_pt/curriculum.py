@@ -32,7 +32,7 @@ say what differs" when the lineage can't be replayed exactly):
   - Step counts per stage are not copied from the Burn log (those were
     tuned interactively against a GPU that was also running other jobs);
     they're chosen fresh for a from-scratch run on one dataset, generous
-    enough on the 3080's much faster wall clock to substitute for the
+    enough on a fast GPU to substitute for the
     warm-start budget the original lineage got from its rung-3/4 stages
     this curriculum skips.
 """

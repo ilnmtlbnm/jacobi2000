@@ -7,7 +7,7 @@ horizon for direct k-step prediction against k one-step applications; wall
 clock per physical time. If direct-8 ~= 8x single-step, we do 8x less work
 per unit of physical time -- a claim a solver cannot make."
 
-Minimal form for tonight: fixed k=8 (not random k as input -- that is the
+Minimal form: fixed k=8 (not random k as input -- that is the
 natural next rung, flagged in the run doc), same `Jacobi2000` architecture
 and mask as the existing model, trained so one `model.step()` call jumps 8
 solver ticks instead of 1. Compared against the existing curriculum

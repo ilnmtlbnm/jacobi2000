@@ -129,9 +129,9 @@ struct App {
     /// Ticks until the wave from the nearest drop reaches the nearest wall
     /// (min over drops since the last reset). `INFINITY` with no drop yet.
     horizon: f32,
-    /// Task C7: the reverse (backward-stepping) checkpoint, loaded
+    /// The reverse (backward-stepping) checkpoint, loaded
     /// separately via `init_reverse`. `None` until then, so `rewind` is a
-    /// no-op (logged to STATUS by the caller) on a page that never loaded one.
+    /// no-op (logged by the caller) on a page that never loaded one.
     reverse_model: Option<Rc<Backend>>,
     /// Decided once in `init`, reused for every later checkpoint (model
     /// switch, compare mode, the reverse model) so the page never runs one
@@ -360,7 +360,7 @@ pub fn set_energy_projection(on: bool) {
     APP.with(|a| a.borrow_mut().as_mut().unwrap().energy_projection = on);
 }
 
-/// Task C7: load the reverse checkpoint next to the forward one. Same
+/// Load the reverse checkpoint next to the forward one. Same
 /// architecture config as the forward model (its own `config.json`); only
 /// the weights differ. Safe to call any time after `init`; `rewind` no-ops
 /// until this has run.
@@ -373,7 +373,7 @@ pub async fn init_reverse(weights: Vec<u8>, config_json: String) -> Result<(), J
     Ok(())
 }
 
-/// Task C7: step the reverse model back `n` ticks from the current model
+/// Step the reverse model back `n` ticks from the current model
 /// state, mass-projected same as the forward `step`. No-op (returns
 /// immediately) if `init_reverse` was never called. Does not touch the
 /// solver/truth panel or the tick counter's forward meaning; `ticks()`

@@ -9,7 +9,7 @@ Meta_dim is extended from 5 to 6 (`log(k)` appended to the existing
 disclosed deviation from `Jacobi2000Config`'s fixed meta_dim=5, so this
 checkpoint (like `bigstep.py`'s) cannot be loaded by `crates/engine` without a
 config-schema change; scored in Python only, same as the
-other new-architecture-shaped experiments tonight.
+other new-architecture-shaped experiments.
 
 Warm start: the body (embed/blocks/norm/head) is loaded from the baseline
 export unchanged; only `meta.weight` is padded with one freshly-initialized
