@@ -69,9 +69,8 @@ fn fifty_step_rollout_stays_close_to_pytorch() {
     }
 }
 
-/// GPU-vs-PyTorch parity on the same fixture. Skips cleanly (prints and
-/// returns) if no adapter is granted, so it is safe in the default test
-/// binary.
+/// GPU-vs-PyTorch parity on the same fixture. Skips (prints and returns)
+/// only when there is no adapter at all; any other failure fails the test.
 #[cfg(feature = "wgpu")]
 #[test]
 fn gpu_matches_pytorch() {
@@ -79,10 +78,11 @@ fn gpu_matches_pytorch() {
     let cpu_model = load_model("config.json");
     let gpu_model = match pollster::block_on(cpu_model.to_gpu()) {
         Ok(m) => m,
-        Err(e) => {
-            println!("gpu_matches_pytorch: skipped, no adapter ({e:?})");
+        Err(lean_runtime::Error::NoAdapter(e)) => {
+            println!("gpu_matches_pytorch: skipped, no adapter ({e})");
             return;
         }
+        Err(e) => panic!("an adapter exists but the GPU model failed to build: {e}"),
     };
     let meta = &get(&r, "meta").data;
     let state = get(&r, "state").data.clone();
@@ -114,9 +114,13 @@ fn gpu_matches_on_other_masks() {
     let bytes = std::fs::read(dir.join("model.safetensors")).unwrap();
 
     let full = load_model("config-full.json");
-    let Ok(gpu_full) = pollster::block_on(full.to_gpu()) else {
-        println!("gpu_matches_on_other_masks: skipped, no adapter");
-        return;
+    let gpu_full = match pollster::block_on(full.to_gpu()) {
+        Ok(g) => g,
+        Err(lean_runtime::Error::NoAdapter(e)) => {
+            println!("gpu_matches_on_other_masks: skipped, no adapter ({e})");
+            return;
+        }
+        Err(e) => panic!("an adapter exists but the GPU model failed to build: {e}"),
     };
     let out = pollster::block_on(gpu_full.forward(state, meta));
     let d = max_abs(&out, &get(&r, "forward_full").data);

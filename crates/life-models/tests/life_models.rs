@@ -5,7 +5,8 @@
 //! shapes. `tools/make_fixtures.py` builds `tests/fixtures/`.
 //!
 //! The GPU tests need a WebGPU adapter and are skipped, with a line saying
-//! so, when there is none.
+//! so, only when there is no adapter at all. Any other failure once an
+//! adapter exists (a refused or lost device, a wgpu error) fails the test.
 
 use life_models::{is_alive, Kind, Model};
 use serde_json::Value;
@@ -214,10 +215,11 @@ mod gpu {
         let m = fixture(kind);
         match pollster::block_on(m.to_gpu()) {
             Ok(g) => Some((m, g)),
-            Err(e) => {
-                println!("skipped: no WebGPU device ({e})");
+            Err(life_models::Error::Runtime(lean_runtime::Error::NoAdapter(e))) => {
+                println!("skipped: no WebGPU adapter ({e})");
                 None
             }
+            Err(e) => panic!("an adapter exists but the GPU model failed to build: {e}"),
         }
     }
 
