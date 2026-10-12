@@ -24,3 +24,7 @@ bytemuck = { version = "1.25", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 pollster = "0.4"
+
+[[example]]
+name = "bench"
+required-features = ["wgpu", "threads"]

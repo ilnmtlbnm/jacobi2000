@@ -123,52 +123,74 @@ fn mlp2(cfg: &Config, p: &Params, cells: &[u8], w: usize, h: usize, out: &mut [f
     });
 }
 
+/// BERT of Life's first-layer projections for every token the encoder can
+/// see. A token is an id 0 or 1 at one of 9 positions, so its key and value
+/// (`[position * 2 + id][k (d), v (d)]`, 18 rows) and the centre token's
+/// query (`[id][d]`, 2 rows) are computed here once per model, with the
+/// same arithmetic a per-cell pass would use.
+pub fn bert_tables(cfg: &Config, p: &Params) -> (Vec<f32>, Vec<f32>) {
+    let d = cfg.d_model;
+    let (tok, pos) = (p.get("tok_emb.weight"), p.get("pos_emb.weight"));
+    let (wq, bq, wk, bk, wv, bv) = (p.get("mha.query.weight"), p.get("mha.query.bias"), p.get("mha.key.weight"), p.get("mha.key.bias"), p.get("mha.value.weight"), p.get("mha.value.bias"));
+    let mut kv = vec![0.0f32; 18 * 2 * d];
+    let mut q = vec![0.0f32; 2 * d];
+    let mut xi = vec![0.0f32; d];
+    for t in 0..9 {
+        for id in 0..2 {
+            for e in 0..d {
+                xi[e] = tok[id * d + e] + pos[t * d + e];
+            }
+            let row = &mut kv[(t * 2 + id) * 2 * d..(t * 2 + id + 1) * 2 * d];
+            linear(wk, bk, &xi, &mut row[..d]);
+            linear(wv, bv, &xi, &mut row[d..]);
+            if t == 8 {
+                linear(wq, bq, &xi, &mut q[id * d..(id + 1) * d]);
+            }
+        }
+    }
+    (kv, q)
+}
+
 fn bert(cfg: &Config, p: &Params, cells: &[u8], w: usize, h: usize, out: &mut [f32]) {
     let (d, heads, dff, eps) = (cfg.d_model, cfg.n_heads, cfg.d_ff, cfg.eps);
     let dk = d / heads;
     let (tok, pos) = (p.get("tok_emb.weight"), p.get("pos_emb.weight"));
-    let (wq, bq, wk, bk, wv, bv, wo, bo) =
-        (p.get("mha.query.weight"), p.get("mha.query.bias"), p.get("mha.key.weight"), p.get("mha.key.bias"), p.get("mha.value.weight"), p.get("mha.value.bias"), p.get("mha.output.weight"), p.get("mha.output.bias"));
+    let (wo, bo) = (p.get("mha.output.weight"), p.get("mha.output.bias"));
     let (g1, be1, g2, be2) = (p.get("norm_1.weight"), p.get("norm_1.bias"), p.get("norm_2.weight"), p.get("norm_2.bias"));
     let (wi, bi, wf, bf, wh, bh) =
         (p.get("pwff.linear_inner.weight"), p.get("pwff.linear_inner.bias"), p.get("pwff.linear_outer.weight"), p.get("pwff.linear_outer.bias"), p.get("head.weight"), p.get("head.bias"));
     let scale = (dk as f32).sqrt();
+    let (kv, qt) = bert_tables(cfg, p);
     for_chunks(out, 2, 64, |first, o| {
-        let mut k = vec![0.0f32; 9 * d];
-        let mut v = vec![0.0f32; 9 * d];
-        let (mut xi, mut x8, mut q, mut att, mut y) = (vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d]);
+        let (mut x8, mut att, mut y) = (vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d]);
         let (mut ff, mut z) = (vec![0.0f32; dff], vec![0.0f32; d]);
         let mut sc = [0.0f32; 9];
         for (c, o2) in o.chunks_mut(2).enumerate() {
             let i = first + c;
             let nb = taps(i % w, i / w, w, h);
-            for t in 0..9 {
-                let j = if t < 8 { nb[t] } else { i };
-                let tv = (cells[j] != 0) as usize;
-                for e in 0..d {
-                    xi[e] = tok[tv * d + e] + pos[t * d + e];
-                }
-                linear(wk, bk, &xi, &mut k[t * d..(t + 1) * d]);
-                linear(wv, bv, &xi, &mut v[t * d..(t + 1) * d]);
-                if t == 8 {
-                    x8.copy_from_slice(&xi);
-                }
+            let mut row = [0usize; 9];
+            for (t, r) in row.iter_mut().enumerate() {
+                *r = (t * 2 + (cells[if t < 8 { nb[t] } else { i }] != 0) as usize) * 2 * d;
             }
-            linear(wq, bq, &x8, &mut q);
+            let id8 = (cells[i] != 0) as usize;
+            for e in 0..d {
+                x8[e] = tok[id8 * d + e] + pos[8 * d + e];
+            }
+            let q = &qt[id8 * d..(id8 + 1) * d];
             for hd in 0..heads {
                 let o0 = hd * dk;
-                for t in 0..9 {
+                for (t, st) in sc.iter_mut().enumerate() {
                     let mut s = 0.0;
                     for e in 0..dk {
-                        s += q[o0 + e] * k[t * d + o0 + e];
+                        s += q[o0 + e] * kv[row[t] + o0 + e];
                     }
-                    sc[t] = s / scale;
+                    *st = s / scale;
                 }
                 softmax(&mut sc);
                 for e in 0..dk {
                     let mut a = 0.0;
                     for t in 0..9 {
-                        a += sc[t] * v[t * d + o0 + e];
+                        a += sc[t] * kv[row[t] + d + o0 + e];
                     }
                     att[o0 + e] = a;
                 }
@@ -190,101 +212,91 @@ fn bert(cfg: &Config, p: &Params, cells: &[u8], w: usize, h: usize, out: &mut [f
     });
 }
 
+/// Keys and values of the stencil block for a cell in state 0 and in state
+/// 1, `[state][k (d), v (d)]`. A tap's key and value depend only on that
+/// cell's state, so they are computed here once per model, with the same
+/// arithmetic a per-cell pass would use, and every cell reads its 9 taps
+/// from this table.
+pub fn stencil_kv(cfg: &Config, p: &Params) -> Vec<f32> {
+    let d = cfg.d_model;
+    let (we, be) = (p.get("embed.weight"), p.get("embed.bias"));
+    let (g1, be1) = (p.get("blocks.0.norm1.weight"), p.get("blocks.0.norm1.bias"));
+    let (wk, bk, wv, bv) = (p.get("blocks.0.k.weight"), p.get("blocks.0.k.bias"), p.get("blocks.0.v.weight"), p.get("blocks.0.v.bias"));
+    let mut out = vec![0.0f32; 2 * 2 * d];
+    let mut hh = vec![0.0f32; d];
+    for state in 0..2 {
+        for e in 0..d {
+            hh[e] = we[e] * state as f32 + be[e];
+        }
+        layer_norm(&mut hh, g1, be1, cfg.eps);
+        let row = &mut out[state * 2 * d..(state + 1) * 2 * d];
+        linear(wk, bk, &hh, &mut row[..d]);
+        linear(wv, bv, &hh, &mut row[d..]);
+    }
+    out
+}
+
 fn stencil(cfg: &Config, p: &Params, cells: &[u8], w: usize, h: usize, out: &mut [f32]) {
-    const BAND: usize = 8;
     let (d, heads, dff, eps) = (cfg.d_model, cfg.n_heads, cfg.d_ff, cfg.eps);
     let dk = d / heads;
     let (we, be) = (p.get("embed.weight"), p.get("embed.bias"));
     let (g1, be1, g2, be2) = (p.get("blocks.0.norm1.weight"), p.get("blocks.0.norm1.bias"), p.get("blocks.0.norm2.weight"), p.get("blocks.0.norm2.bias"));
-    let (wq, bq, wk, bk, wv, bv, wp, bp) = (
-        p.get("blocks.0.q.weight"),
-        p.get("blocks.0.q.bias"),
-        p.get("blocks.0.k.weight"),
-        p.get("blocks.0.k.bias"),
-        p.get("blocks.0.v.weight"),
-        p.get("blocks.0.v.bias"),
-        p.get("blocks.0.proj.weight"),
-        p.get("blocks.0.proj.bias"),
-    );
+    let (wq, bq, wp, bp) = (p.get("blocks.0.q.weight"), p.get("blocks.0.q.bias"), p.get("blocks.0.proj.weight"), p.get("blocks.0.proj.bias"));
     let (w1, b1, w2, b2, wh, bh) = (p.get("blocks.0.ff1.weight"), p.get("blocks.0.ff1.bias"), p.get("blocks.0.ff2.weight"), p.get("blocks.0.ff2.bias"), p.get("head.weight"), p.get("head.bias"));
     let scale = (dk as f32).sqrt();
-    let embed = move |c: u8, x: &mut [f32]| {
-        let cv = (c != 0) as u8 as f32;
-        for e in 0..d {
-            x[e] = we[e] * cv + be[e];
-        }
-    };
-    // Row bands of BAND rows: k/v are computed once per cell of the band and
-    // of the row above and below it, then every cell reads its 9 taps out of
-    // that buffer. The buffer's row r is board row (y0 + r - 1) mod h.
-    for_chunks(out, 1, BAND * w, |first, o| {
-        let y0 = first / w;
-        let rows = o.len() / w;
-        let mut kv = vec![0.0f32; (rows + 2) * w * 2 * d];
-        let (mut x, mut hh) = (vec![0.0f32; d], vec![0.0f32; d]);
-        for r in 0..rows + 2 {
-            let gy = (y0 + r + h - 1) % h;
-            for gx in 0..w {
-                embed(cells[gy * w + gx], &mut x);
-                hh.copy_from_slice(&x);
-                layer_norm(&mut hh, g1, be1, eps);
-                let base = (r * w + gx) * 2 * d;
-                linear(wk, bk, &hh, &mut kv[base..base + d]);
-                linear(wv, bv, &hh, &mut kv[base + d..base + 2 * d]);
-            }
-        }
-        let (mut q, mut att, mut pr, mut ff, mut f2) = (vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; dff], vec![0.0f32; d]);
+    let kv = stencil_kv(cfg, p);
+    for_chunks(out, 1, 64, |first, o| {
+        let (mut x, mut hh, mut q, mut att, mut pr) = (vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d], vec![0.0f32; d]);
+        let (mut ff, mut f2) = (vec![0.0f32; dff], vec![0.0f32; d]);
         let mut sc = [0.0f32; 9];
-        for ly in 0..rows {
-            let y = y0 + ly;
-            for gx in 0..w {
-                embed(cells[y * w + gx], &mut x);
-                hh.copy_from_slice(&x);
-                layer_norm(&mut hh, g1, be1, eps);
-                linear(wq, bq, &hh, &mut q);
-                // taps NW, N, NE, W, E, SW, S, SE, self as (row offset, col offset)
-                const OFF: [(isize, isize); 9] = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1), (0, 0)];
-                let tap = |t: usize| -> usize {
-                    let (dy, dx) = OFF[t];
-                    let r = (ly as isize + 1 + dy) as usize;
-                    let c = (gx as isize + dx + w as isize) as usize % w;
-                    (r * w + c) * 2 * d
-                };
-                for hd in 0..heads {
-                    let o0 = hd * dk;
-                    for (t, st) in sc.iter_mut().enumerate() {
-                        let b = tap(t);
-                        let mut s = 0.0;
-                        for e in 0..dk {
-                            s += q[o0 + e] * kv[b + o0 + e];
-                        }
-                        *st = s / scale;
-                    }
-                    softmax(&mut sc);
-                    for e in 0..dk {
-                        let mut a = 0.0;
-                        for t in 0..9 {
-                            a += sc[t] * kv[tap(t) + d + o0 + e];
-                        }
-                        att[o0 + e] = a;
-                    }
-                }
-                linear(wp, bp, &att, &mut pr);
-                for e in 0..d {
-                    x[e] += pr[e];
-                }
-                hh.copy_from_slice(&x);
-                layer_norm(&mut hh, g2, be2, eps);
-                linear(w1, b1, &hh, &mut ff);
-                ff.iter_mut().for_each(|t| *t = gelu(*t));
-                linear(w2, b2, &ff, &mut f2);
-                for e in 0..d {
-                    x[e] += f2[e];
-                }
-                let mut lg = [0.0f32; 1];
-                linear(wh, bh, &x, &mut lg);
-                o[ly * w + gx] = lg[0];
+        for (c, o1) in o.iter_mut().enumerate() {
+            let i = first + c;
+            let nb = taps(i % w, i / w, w, h);
+            let mut state = [0usize; 9];
+            for t in 0..9 {
+                state[t] = (cells[if t < 8 { nb[t] } else { i }] != 0) as usize;
             }
+            let cv = state[8] as f32;
+            for e in 0..d {
+                x[e] = we[e] * cv + be[e];
+            }
+            hh.copy_from_slice(&x);
+            layer_norm(&mut hh, g1, be1, eps);
+            linear(wq, bq, &hh, &mut q);
+            for hd in 0..heads {
+                let o0 = hd * dk;
+                for (t, st) in sc.iter_mut().enumerate() {
+                    let b = state[t] * 2 * d;
+                    let mut s = 0.0;
+                    for e in 0..dk {
+                        s += q[o0 + e] * kv[b + o0 + e];
+                    }
+                    *st = s / scale;
+                }
+                softmax(&mut sc);
+                for e in 0..dk {
+                    let mut a = 0.0;
+                    for t in 0..9 {
+                        a += sc[t] * kv[state[t] * 2 * d + d + o0 + e];
+                    }
+                    att[o0 + e] = a;
+                }
+            }
+            linear(wp, bp, &att, &mut pr);
+            for e in 0..d {
+                x[e] += pr[e];
+            }
+            hh.copy_from_slice(&x);
+            layer_norm(&mut hh, g2, be2, eps);
+            linear(w1, b1, &hh, &mut ff);
+            ff.iter_mut().for_each(|t| *t = gelu(*t));
+            linear(w2, b2, &ff, &mut f2);
+            for e in 0..d {
+                x[e] += f2[e];
+            }
+            let mut lg = [0.0f32; 1];
+            linear(wh, bh, &x, &mut lg);
+            *o1 = lg[0];
         }
     });
 }

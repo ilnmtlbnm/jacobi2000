@@ -1,9 +1,13 @@
-// Shared by the three model kernels. gpu.rs prepends the constants (D, H,
-// DK, DFF, HID, EPS, SCALE and one `O_<TENSOR>` offset per weight tensor
-// into `wt`, the packed weight vector).
+// Shared by the three model kernels. gpu.rs prepends the constants (D, D4 =
+// D / 4, H, DK, DK4, DFF4, HID4, EPS, SCALE, one `O_<TENSOR>` offset per
+// weight tensor into `wt`) and the `lin_<K4>_<N4>` matrix-vector functions.
+//
+// `wt` is the packed weight vector as vec4s. A matrix is stored transposed,
+// [input][ceil(output / 4)] vec4s, so an output group of four costs one vec4
+// load per input; activations are arrays of vec4.
 struct Dims { w: u32, h: u32, n: u32, flags: u32 }
 
-@group(0) @binding(0) var<storage, read> wt: array<f32>;
+@group(0) @binding(0) var<storage, read> wt: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> cells: array<u32>;
 @group(0) @binding(2) var<storage, read_write> logits: array<f32>;
 @group(0) @binding(3) var<storage, read_write> next: array<u32>;
@@ -13,7 +17,7 @@ const WRITE_LOGITS: u32 = 1u;
 
 // Exact erf-based GELU; `erf` has no WGSL builtin, so this is the
 // Abramowitz-Stegun 7.1.26 rational approximation (absolute error 1.5e-7).
-fn erf_approx(v: f32) -> f32 {
+fn erf_approx(v: vec4<f32>) -> vec4<f32> {
     let s = sign(v);
     let a = abs(v);
     let t = 1.0 / (1.0 + 0.3275911 * a);
@@ -21,7 +25,7 @@ fn erf_approx(v: f32) -> f32 {
     return s * y;
 }
 
-fn gelu(v: f32) -> f32 {
+fn gelu(v: vec4<f32>) -> vec4<f32> {
     return 0.5 * v * (1.0 + erf_approx(v * 0.7071067811865476));
 }
 
@@ -39,18 +43,18 @@ fn neighbors(i: u32) -> array<u32, 9> {
     return array<u32, 9>(ym * w + xm, ym * w + x, ym * w + xp, y * w + xm, y * w + xp, yp * w + xm, yp * w + x, yp * w + xp, i);
 }
 
-fn layer_norm(v: ptr<function, array<f32, D>>, g: u32, b: u32) {
-    var mean = 0.0;
-    for (var j = 0u; j < D; j++) { mean += (*v)[j]; }
-    mean = mean / f32(D);
-    var acc = 0.0;
-    for (var j = 0u; j < D; j++) {
-        let d = (*v)[j] - mean;
-        acc += d * d;
+fn layer_norm(v: ptr<function, array<vec4<f32>, D4>>, g: u32, b: u32) {
+    var s = vec4<f32>(0.0);
+    for (var j = 0u; j < D4; j++) { s += (*v)[j]; }
+    let mean = (s.x + s.y + s.z + s.w) / f32(D);
+    var q = vec4<f32>(0.0);
+    for (var j = 0u; j < D4; j++) {
+        let d = (*v)[j] - vec4<f32>(mean);
+        q += d * d;
     }
-    let inv = 1.0 / sqrt(acc / f32(D) + EPS);
-    for (var j = 0u; j < D; j++) {
-        (*v)[j] = ((*v)[j] - mean) * inv * wt[g + j] + wt[b + j];
+    let inv = 1.0 / sqrt((q.x + q.y + q.z + q.w) / f32(D) + EPS);
+    for (var j = 0u; j < D4; j++) {
+        (*v)[j] = ((*v)[j] - vec4<f32>(mean)) * inv * wt[g + j] + wt[b + j];
     }
 }
 

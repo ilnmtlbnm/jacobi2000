@@ -1,5 +1,5 @@
 //! WebGPU forward pass. One kernel per model (`src/shaders/`), one thread
-//! per cell (one 8x8 tile per workgroup for `stencil`), so a generation is a
+//! per cell, so a generation is a
 //! single dispatch over all cells; `run` chains generations inside one
 //! command encoder, ping-ponging two cell buffers, and reads back once, at
 //! the end, packed four cells to a word. Uploads use `queue.write_buffer`,
@@ -58,21 +58,95 @@ pub struct GpuModel {
     session: RefCell<Option<Session>>,
 }
 
+
+/// The weights as the kernels read them: a vec4 array in which every
+/// matrix is stored transposed (`[in][ceil(out / 4)]` vec4s, rows padded
+/// with zeros), so one thread computes four outputs per weight load and a
+/// product is `acc += W[j] * x[j]` over whole vec4s. Vectors (biases,
+/// LayerNorm, embedding rows) are plain vec4 runs. Offsets are in vec4s.
+fn pack_vec4(model: &Model) -> (Vec<f32>, Vec<(String, usize)>) {
+    let mut data: Vec<f32> = Vec::new();
+    let mut offs = Vec::new();
+    for (name, shape) in model.cfg.tensors() {
+        let src = model.params.get(&name);
+        offs.push((name.clone(), data.len() / 4));
+        if shape.len() == 2 && !name.ends_with("emb.weight") {
+            let (o, i) = (shape[0], shape[1]);
+            let o4 = o.div_ceil(4) * 4;
+            for j in 0..i {
+                for k in 0..o4 {
+                    data.push(if k < o { src[k * i + j] } else { 0.0 });
+                }
+            }
+        } else {
+            data.extend_from_slice(src);
+            while !data.len().is_multiple_of(4) {
+                data.push(0.0);
+            }
+        }
+    }
+    // Per-model tables of what depends only on a cell's state (see
+    // `cpu::stencil_kv`, `cpu::bert_tables`).
+    match model.cfg.kind {
+        Kind::Stencil => {
+            offs.push(("kv".to_string(), data.len() / 4));
+            data.extend(crate::cpu::stencil_kv(&model.cfg, &model.params));
+        }
+        Kind::Bert => {
+            let (kv, q) = crate::cpu::bert_tables(&model.cfg, &model.params);
+            offs.push(("kv".to_string(), data.len() / 4));
+            data.extend(kv);
+            offs.push(("q".to_string(), data.len() / 4));
+            data.extend(q);
+        }
+        Kind::Mlp2 => {}
+    }
+    (data, offs)
+}
+
 fn entry(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry { binding, resource: b.as_entire_binding() }
 }
 
-fn wgsl_header(model: &Model) -> String {
+/// `lin_<k>_<n>(x, w, b)`: `b + W x` for the transposed vec4 matrix at `w`,
+/// `x` of `k` vec4s in, `n` vec4s out (sizes are WGSL constant names).
+fn lin_fn(k: &str, n: &str) -> String {
+    format!(
+        "fn lin_{k}_{n}(x: ptr<function, array<vec4<f32>, {k}>>, w: u32, b: u32) -> array<vec4<f32>, {n}> {{
+    var o: array<vec4<f32>, {n}>;
+    for (var n = 0u; n < {n}; n++) {{ o[n] = wt[b + n]; }}
+    for (var j = 0u; j < {k}; j++) {{
+        let xv = (*x)[j];
+        for (var n = 0u; n < {n}; n++) {{
+            let r = w + j * 4u * {n} + n;
+            o[n] += wt[r] * xv.x + wt[r + {n}] * xv.y + wt[r + 2u * {n}] * xv.z + wt[r + 3u * {n}] * xv.w;
+        }}
+    }}
+    return o;
+}}
+"
+    )
+}
+
+fn wgsl_header(model: &Model, offs: &[(String, usize)]) -> String {
     let c = &model.cfg;
     let mut s = String::new();
     // The constants a kernel does not use are 1, not 0: WGSL rejects zero-sized arrays.
-    let (d, heads, dff, hid) = (c.d_model.max(1), c.n_heads.max(1), c.d_ff.max(1), c.hidden.max(1));
+    let (d, heads, dff, hid) = (c.d_model.max(4), c.n_heads.max(1), c.d_ff.max(4), c.hidden.max(4));
     let dk = d / heads;
     let _ = writeln!(s, "const D: u32 = {d}u;\nconst H: u32 = {heads}u;\nconst DK: u32 = {dk}u;\nconst DFF: u32 = {dff}u;\nconst HID: u32 = {hid}u;");
-    let _ = writeln!(s, "const KV: u32 = {}u;\nconst EPS: f32 = {:e};\nconst SCALE: f32 = {:e};", 9 * d, c.eps, (dk as f32).sqrt());
-    for (name, _) in c.tensors() {
+    let _ = writeln!(s, "const DK4: u32 = {}u;\nconst EPS: f32 = {:e};\nconst SCALE: f32 = {:e};", dk / 4, c.eps, (dk as f32).sqrt());
+    let _ = writeln!(s, "const D4: u32 = {}u;\nconst DFF4: u32 = {}u;\nconst HID4: u32 = {}u;", d / 4, dff / 4, hid / 4);
+    let pairs: &[(&str, &str)] = match c.kind {
+        Kind::Mlp2 => &[("HID4", "HID4"), ("HID4", "1")],
+        Kind::Bert | Kind::Stencil => &[("D4", "D4"), ("D4", "DFF4"), ("DFF4", "D4"), ("D4", "1")],
+    };
+    for (k, n) in pairs {
+        s.push_str(&lin_fn(k, n));
+    }
+    for (name, off) in offs {
         let id: String = name.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' }).collect();
-        let _ = writeln!(s, "const O_{id}: u32 = {}u;", model.params.offset(&name));
+        let _ = writeln!(s, "const O_{id}: u32 = {off}u;");
     }
     s
 }
@@ -95,17 +169,26 @@ impl GpuModel {
         let (device, queue) = rtgpu::request_device(&adapter, "life", wgpu::Features::empty()).await?;
         let c = &model.cfg;
         let lim = device.limits();
-        limits::require_compute(&lim, 64, if c.kind == Kind::Stencil { (200 * c.d_model * 4) as u32 } else { 0 })?;
-        limits::check_binding(&lim, "weights", (model.params.data.len() * 4) as u64)?;
+        limits::require_compute(&lim, 64, 0)?;
+        for (what, v) in [("d_model", c.d_model), ("d_ff", c.d_ff), ("hidden", c.hidden)] {
+            if !v.is_multiple_of(4) {
+                return Err(Error::Config(format!("the WebGPU kernels read vec4s: {what} {v} is not a multiple of 4")));
+            }
+        }
+        if c.n_heads > 0 && !(c.d_model / c.n_heads).is_multiple_of(4) {
+            return Err(Error::Config(format!("the WebGPU kernels read vec4s: the head size {} is not a multiple of 4", c.d_model / c.n_heads)));
+        }
+        let (packed, offs) = pack_vec4(model);
+        limits::check_binding(&lim, "weights", (packed.len() * 4) as u64)?;
         let body = match c.kind {
             Kind::Mlp2 => MLP2,
             Kind::Bert => BERT,
             Kind::Stencil => STENCIL,
         };
-        let src = format!("{}\n{}\n{}", wgsl_header(model), COMMON, body);
+        let src = format!("{}\n{}\n{}", wgsl_header(model, &offs), COMMON, body);
         let pl_step = pipeline::compute_pipeline(&device, "life_step", &src, "main", &[]);
         let pl_pack = pipeline::compute_pipeline(&device, "life_pack", PACK, "main", &[]);
-        let weights = buffers::upload(&device, &queue, "life_weights", bytemuck::cast_slice(&model.params.data), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let weights = buffers::upload(&device, &queue, "life_weights", bytemuck::cast_slice(&packed), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         Ok(GpuModel { device, queue, kind: c.kind, label, weights, pl_step, pl_pack, session: RefCell::new(None) })
     }
 
@@ -155,12 +238,8 @@ impl GpuModel {
     fn dispatch_step(&self, pass: &mut wgpu::ComputePass, s: &Session, i: usize) {
         pass.set_pipeline(&self.pl_step);
         pass.set_bind_group(0, &s.step[i], &[]);
-        if self.kind == Kind::Stencil {
-            pass.dispatch_workgroups(s.w.div_ceil(8) as u32, s.h.div_ceil(8) as u32, 1);
-        } else {
-            let (gx, gy) = groups_1d(s.w * s.h);
-            pass.dispatch_workgroups(gx, gy, 1);
-        }
+        let (gx, gy) = groups_1d(s.w * s.h);
+        pass.dispatch_workgroups(gx, gy, 1);
     }
 
     /// Logits of the current board, as the CPU path's `Model::logits`.
