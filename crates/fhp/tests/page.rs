@@ -126,3 +126,27 @@ fn signed_reference_block_follows_the_height() {
     assert!(Page::cpu_ref(Model::Signed, 1024, 512, 0.2, "randomize", 16, 12).is_err());
     assert_eq!(Page::cpu_ref(Model::Ternary, 1024, 512, 0.2, "randomize", 16, 16).unwrap().reference_block(), 0);
 }
+
+#[test]
+fn signed_street_options_place_the_plate_and_kick_the_wake() {
+    use fhp::page::Street;
+    let mut p = Page::flow_cpu().unwrap();
+    assert_eq!(p.reference_block(), 8);
+    assert_eq!(p.setup.obstacle, fhp::Obstacle::Plate { x: 256, y: 256, rows: 65, cols: 2 });
+    let mut plain = Page::cpu_ref(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8).unwrap();
+    p.advance(12);
+    plain.advance(12);
+    pollster::block_on(p.sample());
+    pollster::block_on(plain.sample());
+    assert_ne!(p.frame(), plain.frame());
+    // The default street is unchanged by the options' defaults.
+    let mut same = Page::cpu_street(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8, &Street::default()).unwrap();
+    let mut plain2 = Page::cpu_ref(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8).unwrap();
+    same.advance(12);
+    plain2.advance(12);
+    pollster::block_on(same.sample());
+    pollster::block_on(plain2.sample());
+    assert_eq!(same.frame(), plain2.frame());
+    let bad = Street { plate: Some((10, 256, 65)), ..Default::default() };
+    assert!(Page::cpu_street(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8, &bad).is_err());
+}

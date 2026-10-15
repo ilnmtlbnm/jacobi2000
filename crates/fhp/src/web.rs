@@ -34,6 +34,21 @@ impl Sim {
         Ok(Sim { inner: Rc::new(RefCell::new(p)) })
     }
 
+    /// The flow page's street on the CPU engine (see `Page::flow_cpu`).
+    #[wasm_bindgen(js_name = createCpuFlowStreet)]
+    pub fn create_cpu_flow_street() -> Result<Sim, JsValue> {
+        let p = Page::flow_cpu().map_err(|e| JsValue::from_str(&e))?;
+        Ok(Sim { inner: Rc::new(RefCell::new(p)) })
+    }
+
+    /// The flow page's street on the WebGPU engine (see `Page::flow_cpu`).
+    #[cfg(feature = "gpu")]
+    #[wasm_bindgen(js_name = createGpuFlowStreet)]
+    pub async fn create_gpu_flow_street() -> Result<Sim, JsValue> {
+        let p = Page::flow_gpu().await.map_err(|e| JsValue::from_str(&e))?;
+        Ok(Sim { inner: Rc::new(RefCell::new(p)) })
+    }
+
     /// WebGPU engine, arguments as for `createCpu`.
     #[cfg(feature = "gpu")]
     #[wasm_bindgen(js_name = createGpu)]
