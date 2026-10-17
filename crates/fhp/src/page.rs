@@ -11,7 +11,7 @@ use crate::signed::{self, Signed};
 use crate::coarse::{BlockSums, Field};
 use crate::ternary::engine::{self, Ternary};
 use crate::ternary::{self as tern, Rule};
-use crate::{Setup, SizeLimits};
+use crate::{Obstacle, Setup, SizeLimits};
 
 /// Steps between samples of the block sums inside a frame's window.
 const SAMPLE_EVERY: u32 = 5;
@@ -76,6 +76,22 @@ pub fn signed_g_nu(b: usize) -> (f64, f64) {
 /// Bytes per site the CPU signed engine holds (two u16 copies, six u32
 /// source indices, the reference as 7 i32).
 const SIGNED_CPU_BYTES: f64 = 56.0;
+
+/// Signed street options beyond the size and the reference block. `Default`
+/// is the stock street: plate H/8 rows at W/6, one row off the centre line,
+/// outlet of 64 columns, uniform start.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Street {
+    /// Plate (x, y, rows); None keeps the stock plate.
+    pub plate: Option<(usize, usize, usize)>,
+    /// Width of the outlet refresh zone in columns; 0 keeps 64.
+    pub outlet: usize,
+    /// Amplitude, in units of the inflow speed, of a uniform y push in a
+    /// Gaussian patch in the plate's wake at the start (0: none). It breaks
+    /// the mirror symmetry of a plate centred on the lattice's axis, so the
+    /// street starts without waiting for noise to do it.
+    pub kick: f64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
@@ -157,6 +173,11 @@ fn setup_for(model: Model, w: usize, h: usize, u: f64, mode: &str, block: usize,
 /// reference block `block` (0: `signed_block`) with its `signed_every`,
 /// n0 = 4, the open boundary at the reference density and the inflow speed.
 pub fn signed_params(s: &Setup, block: usize) -> signed::Params {
+    signed_params_with(s, block, &Street::default())
+}
+
+/// `signed_params` with the street options (outlet width).
+pub fn signed_params_with(s: &Setup, block: usize, street: &Street) -> signed::Params {
     let rho = 7.0 * SIGNED_N0;
     let block = if block == 0 { signed_block(s.w, s.h) } else { block };
     signed::Params {
@@ -165,16 +186,46 @@ pub fn signed_params(s: &Setup, block: usize) -> signed::Params {
         block,
         every: signed_every(block),
         n0: SIGNED_N0,
-        boundary: Some(signed::Boundary { rho, u: s.ux, inlet: 32, outlet: 64 }),
+        boundary: Some(signed::Boundary { rho, u: s.ux, inlet: 32, outlet: if street.outlet == 0 { 64 } else { street.outlet } }),
     }
 }
 
 /// The signed initial cells and block values: the uniform inflow sampled
 /// around the block references, obstacle sites marked.
 pub fn signed_state(s: &Setup, p: &signed::Params) -> (Vec<u16>, Vec<[i32; 3]>) {
+    signed_state_with(s, p, &Street::default())
+}
+
+/// `signed_state` with the street options (start kick).
+pub fn signed_state_with(s: &Setup, p: &signed::Params, street: &Street) -> (Vec<u16>, Vec<[i32; 3]>) {
     let rho = 7.0 * SIGNED_N0;
     let ux = s.ux;
-    signed::initial(s.w, s.h, p, |x, y| s.obstacle.contains(x, y), |_, _| (rho, ux, 0.0), s.params.seed)
+    let kick = street.kick * ux;
+    let (axis, len, rows) = match s.obstacle {
+        Obstacle::Plate { y, rows, .. } => (y as f64 - 0.5, rows as f64 * 3f64.sqrt() / 2.0, rows as f64),
+        _ => (s.h as f64 / 2.0, 1.0, 1.0),
+    };
+    let kx = match s.obstacle {
+        Obstacle::Plate { x, .. } => x as f64 + 2.0 * len,
+        _ => 0.0,
+    };
+    signed::initial(
+        s.w,
+        s.h,
+        p,
+        |x, y| s.obstacle.contains(x, y),
+        |x, y| {
+            let uy = if kick == 0.0 {
+                0.0
+            } else {
+                let dx = (x - kx) / len;
+                let dy = (y - axis) / (0.6 * rows);
+                kick * (-(dx * dx) - dy * dy).exp()
+            };
+            (rho, ux, uy)
+        },
+        s.params.seed,
+    )
 }
 
 /// The ternary engine's parameters for a street setup: rule `chiral`, the
@@ -192,7 +243,41 @@ pub fn ternary_cells(s: &Setup) -> Vec<u16> {
         .collect()
 }
 
+/// Apply the street's plate to the setup, checked to lie inside the lattice
+/// and clear of the inlet and outlet zones.
+fn place_plate(setup: &mut Setup, street: &Street) -> Result<(), String> {
+    let Some((x, y, rows)) = street.plate else { return Ok(()) };
+    if rows == 0 || y < rows / 2 + 1 || y + rows / 2 + 1 > setup.h || x < 64 || x + 64 > setup.w {
+        return Err(format!("plate of {rows} rows at ({x}, {y}) does not fit a {}x{} lattice", setup.w, setup.h));
+    }
+    setup.obstacle = Obstacle::Plate { x, y, rows, cols: 2 };
+    Ok(())
+}
+
+/// The flow page's street: a 1536x512 signed lattice with inflow 0.25, the
+/// randomize outlet, reference block 8 and display block 16, a 65-row plate at
+/// (256, 256), a 128-column outlet zone and a 0.3 start kick.
+pub const FLOW: (usize, usize, f64, &str, usize, usize) = (1536, 512, 0.25, "randomize", 16, 8);
+
+/// The street options of the flow page.
+pub fn flow_street() -> Street {
+    Street { plate: Some((256, 256, 65)), outlet: 128, kick: 0.3 }
+}
+
 impl Page {
+    /// The flow page's street on the CPU engine.
+    pub fn flow_cpu() -> Result<Self, String> {
+        let (w, h, u, mode, block, refblock) = FLOW;
+        Self::cpu_street(Model::Signed, w, h, u, mode, block, refblock, &flow_street())
+    }
+
+    /// The flow page's street on the WebGPU engine.
+    #[cfg(feature = "gpu")]
+    pub async fn flow_gpu() -> Result<Self, String> {
+        let (w, h, u, mode, block, refblock) = FLOW;
+        Self::gpu_street(Model::Signed, w, h, u, mode, block, refblock, &flow_street()).await
+    }
+
     fn new(model: Model, setup: Setup, block: usize, refblock: usize, eng: Eng, adapter: String) -> Self {
         let field = Field::new(setup.w / block, setup.h / block, block, block);
         Page { eng, model, setup, block, field, refblock, acc: None, adapter }
@@ -200,8 +285,8 @@ impl Page {
 
     /// The signed model's parameters with reference block `refblock` (0:
     /// the default), checked against the lattice.
-    fn signed_for(setup: &Setup, refblock: usize) -> Result<signed::Params, String> {
-        let p = signed_params(setup, refblock);
+    fn signed_for(setup: &Setup, refblock: usize, street: &Street) -> Result<signed::Params, String> {
+        let p = signed_params_with(setup, refblock, street);
         let b = p.block;
         if !(2..=64).contains(&b) || !b.is_power_of_two() || !setup.w.is_multiple_of(b) || !setup.h.is_multiple_of(b) {
             return Err(format!("reference block {b}: a power of two from 2 to 64 dividing {}x{}", setup.w, setup.h));
@@ -218,7 +303,14 @@ impl Page {
     /// `cpu` with the signed model's reference block `refblock` (0: the
     /// default, `signed_block`).
     pub fn cpu_ref(model: Model, w: usize, h: usize, u: f64, mode: &str, block: usize, refblock: usize) -> Result<Self, String> {
-        let setup = setup_for(model, w, h, u, mode, block, Some(&SizeLimits::cpu(crate::WASM_CPU_MAX_BYTES)))?;
+        Self::cpu_street(model, w, h, u, mode, block, refblock, &Street::default())
+    }
+
+    /// `cpu_ref` with the signed street options.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cpu_street(model: Model, w: usize, h: usize, u: f64, mode: &str, block: usize, refblock: usize, street: &Street) -> Result<Self, String> {
+        let mut setup = setup_for(model, w, h, u, mode, block, Some(&SizeLimits::cpu(crate::WASM_CPU_MAX_BYTES)))?;
+        place_plate(&mut setup, street)?;
         let mut rb = 0;
         let eng = match model {
             Model::Fhp3 => Eng::Fhp3Cpu(Box::new(Bitsliced::from_setup(&setup))),
@@ -226,9 +318,9 @@ impl Page {
                 Eng::TernaryCpu(Box::new(Ternary::new(setup.w, setup.h, ternary_cells(&setup), ternary_params(&setup))))
             }
             Model::Signed => {
-                let p = Self::signed_for(&setup, refblock)?;
+                let p = Self::signed_for(&setup, refblock, street)?;
                 rb = p.block;
-                let (cells, nodes) = signed_state(&setup, &p);
+                let (cells, nodes) = signed_state_with(&setup, &p, street);
                 Eng::SignedCpu(Box::new(Signed::from_state(setup.w, setup.h, cells, nodes, p)))
             }
         };
@@ -246,8 +338,16 @@ impl Page {
     /// default).
     #[cfg(feature = "gpu")]
     pub async fn gpu_ref(model: Model, w: usize, h: usize, u: f64, mode: &str, block: usize, refblock: usize) -> Result<Self, String> {
+        Self::gpu_street(model, w, h, u, mode, block, refblock, &Street::default()).await
+    }
+
+    /// `gpu_ref` with the signed street options.
+    #[cfg(feature = "gpu")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn gpu_street(model: Model, w: usize, h: usize, u: f64, mode: &str, block: usize, refblock: usize, street: &Street) -> Result<Self, String> {
         // Rounded here, checked against the adapter's limits by the engine.
-        let setup = setup_for(model, w, h, u, mode, block, None)?;
+        let mut setup = setup_for(model, w, h, u, mode, block, None)?;
+        place_plate(&mut setup, street)?;
         let mut rb = 0;
         let (eng, adapter) = match model {
             Model::Fhp3 => {
@@ -262,10 +362,10 @@ impl Page {
                 (Eng::TernaryGpu(Box::new(g)), a)
             }
             Model::Signed => {
-                let p = Self::signed_for(&setup, refblock)?;
+                let p = Self::signed_for(&setup, refblock, street)?;
                 rb = p.block;
                 let g = signed::gpu::Gpu::new(setup.w, setup.h, p, || {
-                    let (cells, nodes) = signed_state(&setup, &p);
+                    let (cells, nodes) = signed_state_with(&setup, &p, street);
                     let blocks = nodes.len();
                     (cells, nodes, vec![[0; tern::NCH]; blocks])
                 })
