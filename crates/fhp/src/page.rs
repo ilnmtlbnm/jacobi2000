@@ -469,7 +469,22 @@ impl Page {
     /// RGBA vorticity image, one pixel per block, top row first; the scale
     /// saturates at 4U/D for both models.
     pub fn frame(&self) -> Vec<u8> {
-        self.field.vorticity_rgba(4.0 * self.setup.ux as f32 / self.plate_len() as f32)
+        self.field.vorticity_rgba(self.vorticity_scale())
+    }
+
+    /// The vorticity per block that `frame` colours, divided by its scale
+    /// (1 = full saturation, sign = rotation, not clamped), top row first.
+    pub fn field(&self) -> Vec<f32> {
+        self.field.vorticity_values(self.vorticity_scale())
+    }
+
+    /// 1 per block that `frame` paints as an obstacle, top row first.
+    pub fn obstacle(&self) -> Vec<u8> {
+        self.field.obstacle_mask()
+    }
+
+    fn vorticity_scale(&self) -> f32 {
+        4.0 * self.setup.ux as f32 / self.plate_len() as f32
     }
 
     fn plate_len(&self) -> f64 {

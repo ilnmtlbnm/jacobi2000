@@ -123,9 +123,32 @@ impl Field {
     /// blue-white-red scale saturating at `vmax` (0 = 99th percentile of
     /// |vorticity|), obstacles black.
     pub fn vorticity_rgba(&self, vmax: f32) -> Vec<u8> {
+        let (o, vmax) = self.scaled_vorticity(vmax);
+        self.rgba(&o, vmax, diverging)
+    }
+
+    /// The values `vorticity_rgba` colours: vorticity divided by the
+    /// saturation scale, unclamped, one per block in the image's order (top
+    /// row = highest y).
+    pub fn vorticity_values(&self, vmax: f32) -> Vec<f32> {
+        let (o, vmax) = self.scaled_vorticity(vmax);
+        self.image_order(|b| o[b] / vmax)
+    }
+
+    /// One byte per block in the image's order: 1 where `vorticity_rgba`
+    /// paints an obstacle.
+    pub fn obstacle_mask(&self) -> Vec<u8> {
+        self.image_order(|b| self.solid[b] as u8)
+    }
+
+    fn scaled_vorticity(&self, vmax: f32) -> (Vec<f32>, f32) {
         let o = self.vorticity();
         let vmax = if vmax > 0.0 { vmax } else { percentile_abs(&o, 0.99).max(1e-6) };
-        self.rgba(&o, vmax, diverging)
+        (o, vmax)
+    }
+
+    fn image_order<T>(&self, f: impl Fn(usize) -> T) -> Vec<T> {
+        (0..self.ny).rev().flat_map(|j| (0..self.nx).map(move |i| j * self.nx + i)).map(f).collect()
     }
 
     /// RGBA image of speed |u| on a dark-to-light scale saturating at `vmax`.

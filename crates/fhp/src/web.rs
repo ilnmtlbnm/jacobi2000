@@ -89,6 +89,18 @@ impl Sim {
         self.inner.borrow().frame()
     }
 
+    /// Time-averaged vorticity per block over the frame's 4U/D scale, as
+    /// `Float32Array`, `imageWidth` x `imageHeight`, top row first. 1 is the
+    /// colour scale's saturation, the sign is the rotation; not clamped.
+    pub fn field(&self) -> Vec<f32> {
+        self.inner.borrow().field()
+    }
+
+    /// 1 where a block holds the obstacle, as `Uint8Array`, same grid as `field`.
+    pub fn obstacle(&self) -> Vec<u8> {
+        self.inner.borrow().obstacle()
+    }
+
     #[wasm_bindgen(getter, js_name = imageWidth)]
     pub fn image_width(&self) -> usize {
         self.inner.borrow().field.nx

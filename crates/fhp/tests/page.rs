@@ -150,3 +150,49 @@ fn signed_street_options_place_the_plate_and_kick_the_wake() {
     let bad = Street { plate: Some((10, 256, 65)), ..Default::default() };
     assert!(Page::cpu_street(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8, &bad).is_err());
 }
+
+/// `field` and `obstacle` are what `frame` colours: obstacle blocks are the
+/// black pixels, the sign of the value is the red/blue side, and a value
+/// beyond 1 saturates to the scale's end colours.
+#[test]
+fn field_and_obstacle_match_the_frame() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let mut p = Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
+        // One sample in the frame: the obstacle test reads a single sample's fluid count.
+        for _ in 0..60 {
+            p.advance(5);
+            p.fold(None);
+        }
+        check_field(&p, model);
+    }
+}
+
+fn check_field(p: &Page, model: Model) {
+    let (f, o, rgba) = (p.field(), p.obstacle(), p.frame());
+    let n = p.field.nx * p.field.ny;
+    assert_eq!((f.len(), o.len(), rgba.len()), (n, n, n * 4));
+    assert!(o.contains(&1) && o.contains(&0), "{model:?}");
+    let (mut sat, mut signs) = (0, 0);
+    for b in 0..n {
+        let px = &rgba[b * 4..b * 4 + 3];
+        assert_eq!(o[b] == 1, px == [0, 0, 0], "block {b}");
+        if o[b] == 1 {
+            continue;
+        }
+        if f[b] >= 1.0 {
+            assert_eq!(px, [178, 24, 43], "block {b}");
+            sat += 1;
+        } else if f[b] <= -1.0 {
+            assert_eq!(px, [33, 102, 172], "block {b}");
+            sat += 1;
+        } else if f[b] > 0.05 {
+            assert!(px[0] > px[2], "red side, block {b}");
+            signs += 1;
+        } else if f[b] < -0.05 {
+            assert!(px[2] > px[0], "blue side, block {b}");
+            signs += 1;
+        }
+    }
+    assert!(sat + signs > 0, "the flow has some vorticity");
+}
