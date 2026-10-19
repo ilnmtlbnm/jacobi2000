@@ -159,16 +159,47 @@ fn field_and_obstacle_match_the_frame() {
     for model in MODELS {
         let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
         let mut p = Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
-        // One sample in the frame: the obstacle test reads a single sample's fluid count.
-        for _ in 0..60 {
-            p.advance(5);
+        for _ in 0..4 {
+            p.advance(200);
             p.fold(None);
         }
         check_field(&p, model);
     }
 }
 
+/// The page's 33-row plate at (128, 64), as the display blocks it touches.
+fn check_plate_blocks(p: &Page, model: Model) {
+    let o = p.obstacle();
+    let nx = p.field.nx;
+    let cells: Vec<(usize, usize)> = (0..o.len()).filter(|&b| o[b] == 1).map(|b| (b % nx, b / nx)).collect();
+    assert!(!cells.is_empty() && cells.len() <= 4, "{model:?}: {cells:?}");
+    let (bx, rows) = (128 / 16, p.field.ny);
+    for (x, y) in cells {
+        assert!(x.abs_diff(bx) <= 1 && (rows - 1 - y).abs_diff(64 / 16) <= 2, "{model:?}: block ({x}, {y})");
+    }
+}
+
+/// The same on the GPU engine, where the sums accumulate on the device.
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_obstacle_matches_the_plate_over_many_samples() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let Ok(mut g) = pollster::block_on(Page::gpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street)) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        for _ in 0..4 {
+            g.advance(200);
+            pollster::block_on(g.sample());
+        }
+        check_plate_blocks(&g, model);
+        check_field(&g, model);
+    }
+}
+
 fn check_field(p: &Page, model: Model) {
+    check_plate_blocks(p, model);
     let (f, o, rgba) = (p.field(), p.obstacle(), p.frame());
     let n = p.field.nx * p.field.ny;
     assert_eq!((f.len(), o.len(), rgba.len()), (n, n, n * 4));

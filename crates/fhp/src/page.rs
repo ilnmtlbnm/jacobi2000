@@ -141,6 +141,8 @@ pub struct Page {
     pub refblock: usize,
     /// CPU-side accumulated block sums of the current frame.
     acc: Option<BlockSums>,
+    /// Samples summed into the frame's block sums since the last fold.
+    samples: i32,
     pub adapter: String,
 }
 
@@ -280,7 +282,7 @@ impl Page {
 
     fn new(model: Model, setup: Setup, block: usize, refblock: usize, eng: Eng, adapter: String) -> Self {
         let field = Field::new(setup.w / block, setup.h / block, block, block);
-        Page { eng, model, setup, block, field, refblock, acc: None, adapter }
+        Page { eng, model, setup, block, field, refblock, acc: None, samples: 0, adapter }
     }
 
     /// The signed model's parameters with reference block `refblock` (0:
@@ -435,6 +437,7 @@ impl Page {
             self.run(gap);
             self.accumulate();
         }
+        self.samples += samples as i32;
     }
 
     /// The GPU engine's accumulated block sums of the frame (None on the CPU).
@@ -456,6 +459,12 @@ impl Page {
         let sums = gpu.or_else(|| self.acc.take());
         if let Some(s) = &sums {
             self.field.add(s, ALPHA);
+            // The sums hold every sample's fluid count: a block with an obstacle site has fewer.
+            let full = (s.bw * s.bh) as i32 * self.samples.max(1);
+            for (solid, &f) in self.field.solid.iter_mut().zip(&s.fluid) {
+                *solid = f < full;
+            }
+            self.samples = 0;
         }
         sums
     }
