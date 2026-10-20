@@ -1,5 +1,5 @@
 //! Signed ternary FHP on the GPU (`shaders/signed.wgsl`), bit-identical to
-//! `Signed`: one u32 per site, the reference phi as 7 i32 per site, and 32
+//! `Signed`: one u32 per site (two bits per channel, see `two_bit`), the reference phi as 7 i32 per site, and 32
 //! words per reference block (reservoir, fluid sites, the old reservoir's
 //! share during a re-estimate, the sum of phi, two slots of block values).
 //! A step is one dispatch; a re-estimate adds one (`requant`). Block sums
@@ -68,6 +68,23 @@ struct Coarse {
     ny: usize,
     out: wgpu::Buffer,
     groups: [wgpu::BindGroup; 2],
+}
+
+/// A cell from the CPU's form (base-3 code of delta + 1, flags in bits 14
+/// and 15) to the GPU's (delta + 1 in two bits per channel, same flags).
+fn two_bit(c: u32) -> u32 {
+    let mut code = c & 0x3fff;
+    let mut out = c & 0xc000;
+    for ch in 0..NCH {
+        out |= (code % 3) << (2 * ch);
+        code /= 3;
+    }
+    out
+}
+
+/// The inverse of `two_bit`.
+fn base3(c: u32) -> u32 {
+    (0..NCH).rev().fold(0, |code, ch| code * 3 + ((c >> (2 * ch)) & 3)) | (c & 0xc000)
 }
 
 fn bytes<T: Copy + Into<i64>>(v: &[T]) -> Vec<u8> {
@@ -143,9 +160,9 @@ impl Gpu {
         let coarse_pipe = pipe("coarse", Some(&out_layout));
 
         let t = Table::new();
-        let mut tab: Vec<u32> = t.chiral.iter().map(|c| c[0] as u32 | (c[1] as u32) << 16).collect();
-        tab.extend((0..NSTATE as u16).map(|s| crate::ternary::bounce(s) as u32));
-        tab.extend(t.opt.iter().flat_map(|o| o.chunks(2).map(|p| p[0] as u32 | (p[1] as u32) << 16)));
+        let mut tab: Vec<u32> = t.chiral.iter().map(|c| two_bit(c[0] as u32) | two_bit(c[1] as u32) << 16).collect();
+        tab.extend((0..NSTATE as u16).map(|s| two_bit(crate::ternary::bounce(s) as u32)));
+        tab.extend(t.opt.iter().flat_map(|o| o.chunks(2).map(|p| two_bit(p[0] as u32) | two_bit(p[1] as u32) << 16)));
 
         let (nbx, nby) = (w / b, h / b);
         let mut blk = vec![0i32; nbx * nby * BW];
@@ -168,7 +185,8 @@ impl Gpu {
         let blkb = mk("blocks", blk.len() * 4);
         let phib = mk("phi", n * NCH * 4);
         for (k, part) in cells.chunks(1 << 20).enumerate() {
-            queue.write_buffer(&state[0], (k << 22) as u64, &bytes(part));
+            let part: Vec<u32> = part.iter().map(|&c| two_bit(c as u32)).collect();
+            queue.write_buffer(&state[0], (k << 22) as u64, &bytes(&part));
         }
         queue.write_buffer(&tabb, 0, &bytes(&tab));
         queue.write_buffer(&blkb, 0, &bytes(&blk));
@@ -404,7 +422,7 @@ impl Gpu {
             pass.dispatch_workgroups((self.w / 64) as u32, self.h as u32, 1);
         }
         self.queue.submit(Some(enc.finish()));
-        let cells = self.read_buffer(&self.state[self.cur], (n * 4) as u64).await.into_iter().map(|v| v as u16).collect();
+        let cells = self.read_buffer(&self.state[self.cur], (n * 4) as u64).await.into_iter().map(|v| base3(v as u32) as u16).collect();
         let p = self.read_buffer(&phib, (n * NCH * 4) as u64).await;
         let phi = (0..n).map(|i| std::array::from_fn(|c| p[c * n + i])).collect();
         let b = self.read_buffer(&self.blk, (nb * BW * 4) as u64).await;

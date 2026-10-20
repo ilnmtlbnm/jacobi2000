@@ -1,6 +1,7 @@
 // Signed ternary FHP (`signed::Signed`) on the GPU, bit-identical to the CPU
-// engine. State: one u32 per site (the base-3 code of delta + 1, bit 15 the
-// obstacle, bit 14 the diagnostic wall), the reference phi as 7 i32 per site
+// engine. State: one u32 per site (delta + 1 per channel in two bits, channel
+// c at bits 2c, 2c + 1; bit 15 the obstacle, bit 14 the diagnostic wall; the
+// CPU's cells hold the base-3 code instead), the reference phi as 7 i32 per site
 // (channel-major, units of 2^-12 particles), and 32 words per reference
 // block. Every integer operation is the CPU's (`feq_fixed`, `div16`,
 // `mul_shr`, `interp`, `sround`), so the two agree bit for bit.
@@ -82,6 +83,7 @@ const NODE: u32 = 24u;   // block values (r, jx, jy, -) in slot 0, then slot 1
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> src: array<u32>;
 @group(0) @binding(2) var<storage, read_write> dst: array<u32>;
+// Indexed by the base-3 code of a state, holding images in the two-bit form:
 // [0, 2187): rule chiral, chirality 0 | chirality 1 << 16; [2187, 4374):
 // bounce-back; [4374, 4374 + 6 * 2187): rule optimal, the 12 images of each
 // state, two per word.
@@ -179,20 +181,9 @@ fn feq(r0: i32, jx: i32, jy: i32) -> Ch {
 
 // The deviations of a cell, -1, 0 or 1 per channel.
 fn deltas(cell: u32) -> Ch {
-    var c = cell & 0x3fffu;
-    let n0 = c % 3u;
-    c /= 3u;
-    let n1 = c % 3u;
-    c /= 3u;
-    let n2 = c % 3u;
-    c /= 3u;
-    let n3 = c % 3u;
-    c /= 3u;
-    let n4 = c % 3u;
-    c /= 3u;
-    let n5 = c % 3u;
-    let n6 = c / 3u;
-    return Ch(vec4<i32>(vec4<u32>(n0, n1, n2, n3)) - 1, vec4<i32>(vec4<u32>(n4, n5, n6, 1u)) - 1);
+    let a = (vec4<u32>(cell) >> vec4<u32>(0u, 2u, 4u, 6u)) & vec4<u32>(3u);
+    let b = (vec4<u32>(cell, cell, cell, 4u) >> vec4<u32>(8u, 10u, 12u, 2u)) & vec4<u32>(3u);
+    return Ch(vec4<i32>(a) - 1, vec4<i32>(b) - 1);
 }
 
 fn node(k: u32, slot: u32) -> vec3<i32> {
@@ -255,12 +246,12 @@ fn site_phi(cell: u32, x: u32, y: u32, slot: u32) -> Ch {
 }
 
 // Specular reflection at a horizontal wall: channels 1 <-> 5, 2 <-> 4.
-fn mirror(s: u32) -> u32 {
-    let d1 = (s / 3u) % 3u;
-    let d2 = (s / 9u) % 3u;
-    let d4 = (s / 81u) % 3u;
-    let d5 = (s / 243u) % 3u;
-    return s - d1 * 3u - d2 * 9u - d4 * 81u - d5 * 243u + d5 * 3u + d4 * 9u + d2 * 81u + d1 * 243u;
+fn mirror(p: u32) -> u32 {
+    let d1 = (p >> 2u) & 3u;
+    let d2 = (p >> 4u) & 3u;
+    let d4 = (p >> 8u) & 3u;
+    let d5 = (p >> 10u) & 3u;
+    return (p & ~0xf3cu) | (d5 << 2u) | (d4 << 4u) | (d2 << 8u) | (d1 << 10u);
 }
 
 fn sround(x: i32, r: u32) -> i32 {
@@ -378,18 +369,22 @@ fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
         let j4 = yp * P.w + select(xp, x, op);
         let j5 = yp * P.w + select(x, xm, op);
         let own = src[i];
-        let q0 = chan(0u, i32((src[j0] & 0x3fffu) % 3u) - 1, phi[j0] - phi[i], i);
-        let q1 = chan(1u, i32(((src[j1] & 0x3fffu) / 3u) % 3u) - 1, phi[n + j1] - phi[n + i], i);
-        let q2 = chan(2u, i32(((src[j2] & 0x3fffu) / 9u) % 3u) - 1, phi[2u * n + j2] - phi[2u * n + i], i);
-        let q3 = chan(3u, i32(((src[j3] & 0x3fffu) / 27u) % 3u) - 1, phi[3u * n + j3] - phi[3u * n + i], i);
-        let q4 = chan(4u, i32(((src[j4] & 0x3fffu) / 81u) % 3u) - 1, phi[4u * n + j4] - phi[4u * n + i], i);
-        let q5 = chan(5u, i32(((src[j5] & 0x3fffu) / 243u) % 3u) - 1, phi[5u * n + j5] - phi[5u * n + i], i);
+        let q0 = chan(0u, i32(src[j0] & 3u) - 1, phi[j0] - phi[i], i);
+        let q1 = chan(1u, i32((src[j1] >> 2u) & 3u) - 1, phi[n + j1] - phi[n + i], i);
+        let q2 = chan(2u, i32((src[j2] >> 4u) & 3u) - 1, phi[2u * n + j2] - phi[2u * n + i], i);
+        let q3 = chan(3u, i32((src[j3] >> 6u) & 3u) - 1, phi[3u * n + j3] - phi[3u * n + i], i);
+        let q4 = chan(4u, i32((src[j4] >> 8u) & 3u) - 1, phi[4u * n + j4] - phi[4u * n + i], i);
+        let q5 = chan(5u, i32((src[j5] >> 10u) & 3u) - 1, phi[5u * n + j5] - phi[5u * n + i], i);
         res.a += vec4<i32>(q0.y, q1.y, q2.y, q3.y);
         res.b += vec4<i32>(q4.y, q5.y, 0, 0);
-        let s = (((own & 0x3fffu) / 729u) % 3u) * 729u + u32(q0.x) + u32(q1.x) * 3u + u32(q2.x) * 9u + u32(q3.x) * 27u + u32(q4.x) * 81u + u32(q5.x) * 243u;
+        // The post-streaming state as the tables' base-3 index; the tables
+        // hold their images in the two-bit form.
+        let rest = (own >> 12u) & 3u;
+        let s = rest * 729u + u32(q0.x) + u32(q1.x) * 3u + u32(q2.x) * 9u + u32(q3.x) * 27u + u32(q4.x) * 81u + u32(q5.x) * 243u;
         var nc: u32;
         if ((own & WALL) != 0u) {
-            nc = mirror(s) | OBST | WALL;
+            let ps = (rest << 12u) | u32(q0.x) | (u32(q1.x) << 2u) | (u32(q2.x) << 4u) | (u32(q3.x) << 6u) | (u32(q4.x) << 8u) | (u32(q5.x) << 10u);
+            nc = mirror(ps) | OBST | WALL;
         } else if ((own & OBST) != 0u) {
             nc = T[2187u + s] | OBST;
         } else if (P.rule == 1u) {
@@ -528,14 +523,14 @@ fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) 
         sphi.b += f.b;
         var code = 0u;
         if ((P.flags & REFRESH) != 0u && in_zone(x)) {
-            code = fresh(0u, i) + fresh(1u, i) * 3u + fresh(2u, i) * 9u + fresh(3u, i) * 27u + fresh(4u, i) * 81u + fresh(5u, i) * 243u + fresh(6u, i) * 729u;
+            code = fresh(0u, i) | (fresh(1u, i) << 2u) | (fresh(2u, i) << 4u) | (fresh(3u, i) << 6u) | (fresh(4u, i) << 8u) | (fresh(5u, i) << 10u) | (fresh(6u, i) << 12u);
         } else {
             let old = load_phi(i);
             let da = old.a + rel.a - f.a;
             let db = old.b + rel.b - f.b;
             let d = deltas(cell);
-            code = kick(0u, d.a.x, da.x, i) + kick(1u, d.a.y, da.y, i) * 3u + kick(2u, d.a.z, da.z, i) * 9u + kick(3u, d.a.w, da.w, i) * 27u
-                + kick(4u, d.b.x, db.x, i) * 81u + kick(5u, d.b.y, db.y, i) * 243u + kick(6u, d.b.z, db.z, i) * 729u;
+            code = kick(0u, d.a.x, da.x, i) | (kick(1u, d.a.y, da.y, i) << 2u) | (kick(2u, d.a.z, da.z, i) << 4u) | (kick(3u, d.a.w, da.w, i) << 6u)
+                | (kick(4u, d.b.x, db.x, i) << 8u) | (kick(5u, d.b.y, db.y, i) << 10u) | (kick(6u, d.b.z, db.z, i) << 12u);
         }
         dst[i] = code;
         store_phi(i, f);
