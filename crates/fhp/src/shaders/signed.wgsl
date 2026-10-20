@@ -198,6 +198,13 @@ fn node(k: u32, slot: u32) -> vec3<i32> {
     return vec3<i32>(blk[o], blk[o + 1u], blk[o + 2u]);
 }
 
+// v mod n for v in [-n, 2n). The block indices in `interp` are in
+// [-1, n]: fx >= 1 - 2B >= -(2^lx) and fx < 4W - 2B (2W - B in columns), so
+// fx >> lx < W / B; likewise for y.
+fn wrap(v: i32, n: i32) -> u32 {
+    return u32(select(select(v, v - n, v >= n), v + n, v < 0));
+}
+
 // Bilinear block values at (x, y), as `signed::interp`: x in quarter sites
 // at the true positions (odd rows half a site right) from the blocks'
 // centroids, weights out of 4B; y in half rows, out of 2B.
@@ -215,10 +222,10 @@ fn interp(x: u32, y: u32, slot: u32) -> vec3<i32> {
     let ty = fy - (by0 << P.lb);
     let nx = i32(P.nbx);
     let ny = i32(P.nby);
-    let x0 = u32((bx0 + nx) % nx);
-    let x1 = u32((bx0 + 1 + nx) % nx);
-    var y0 = u32((by0 + ny) % ny);
-    var y1 = u32((by0 + 1 + ny) % ny);
+    let x0 = wrap(bx0, nx);
+    let x1 = wrap(bx0 + 1, nx);
+    var y0 = wrap(by0, ny);
+    var y1 = wrap(by0 + 1, ny);
     if ((P.flags & WALLS) != 0u) {
         y0 = u32(clamp(by0, 0, ny - 1));
         y1 = u32(clamp(by0 + 1, 0, ny - 1));
@@ -511,7 +518,7 @@ fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) 
             code = fresh(0u, i) + fresh(1u, i) * 3u + fresh(2u, i) * 9u + fresh(3u, i) * 27u + fresh(4u, i) * 81u + fresh(5u, i) * 243u + fresh(6u, i) * 729u;
         } else {
             let old = load_phi(i);
-            let o = ((y / P.b) * P.nbx + x / P.b) * 32u + REL;
+            let o = ((y >> (P.lb - 1u)) * P.nbx + (x >> (P.lb - 1u))) * 32u + REL;
             let rel = Ch(vec4<i32>(blk[o], blk[o + 1u], blk[o + 2u], blk[o + 3u]), vec4<i32>(blk[o + 4u], blk[o + 5u], blk[o + 6u], 0));
             let da = old.a + rel.a - f.a;
             let db = old.b + rel.b - f.b;
