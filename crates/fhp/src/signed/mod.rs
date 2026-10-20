@@ -63,6 +63,7 @@ pub const SUM_SHIFT: u32 = 4;
 /// Lanes of the per-channel arithmetic: the seven channels padded to eight.
 const LANES: usize = 8;
 const POW3_LANES: [u32; LANES] = [1, 3, 9, 27, 81, 243, 729, 0];
+const POW3_DIRS: [u32; LANES] = [1, 3, 9, 27, 81, 243, 0, 0];
 
 pub fn velocity(i: usize) -> (f64, f64) {
     crate::ternary::velocity(i)
@@ -338,7 +339,7 @@ pub struct Signed {
 /// One task's share of a step: reservoir additions and (on re-estimate
 /// steps) fluid sums per block column, saturations and kicks.
 struct Band {
-    add: Vec<[i32; NCH]>,
+    add: Vec<[i32; LANES]>,
     sum: Vec<[i32; NCH]>,
     sat: u64,
     kicks: u64,
@@ -474,7 +475,7 @@ impl Signed {
     /// and, with `sums`, the new fluid sums per block column.
     fn band(&self, y0: usize, out: &mut [u16], sums: bool) -> Band {
         let lb = self.params.block.trailing_zeros();
-        let mut acc = Band { add: vec![[0i32; NCH]; self.nbx], sum: vec![[0i32; NCH]; if sums { self.nbx } else { 0 }], sat: 0, kicks: 0 };
+        let mut acc = Band { add: vec![[0i32; LANES]; self.nbx], sum: vec![[0i32; NCH]; if sums { self.nbx } else { 0 }], sat: 0, kicks: 0 };
         let kc = step_key(self.params.seed, self.step, STREAM_COLLIDE);
         let ks = step_key(self.params.seed, self.step, STREAM_ROUND);
         let rule = self.params.rule;
@@ -488,19 +489,30 @@ impl Signed {
                 let mut s = (self.delta[(own & STATE) as usize][6] + 1) as u16 * POW3[6];
                 let src = &self.src[i];
                 let a = &mut acc.add[x >> lb];
+                // Eight lanes, the six directions and two idle ones (zero
+                // difference, zero deviation, weight 0).
+                let (mut dl, mut r) = ([0i32; LANES], [0i32; LANES]);
+                let pi = &self.phi[i];
                 for d in 0..NDIR {
                     let j = src[d] as usize;
-                    let dl = self.delta[(self.cells[j] & STATE) as usize][d] as i32;
-                    let r = self.phi[j][d].wrapping_sub(self.phi[i][d]);
-                    // sround(0, _) is 0, so r = 0 needs no case of its own.
-                    let k = sround(r, lowbias32(ks ^ (i as u32).wrapping_mul(8).wrapping_add(d as u32).wrapping_mul(0x9e37_79b9)));
-                    acc.kicks += (k != 0) as u64;
-                    let v = dl + k;
-                    let c = v.clamp(-1, 1);
-                    a[d] = a[d].wrapping_add(r.wrapping_sub(c.wrapping_sub(dl).wrapping_mul(ONE)));
-                    acc.sat += (v - c).unsigned_abs() as u64;
-                    s += (c + 1) as u16 * POW3[d];
+                    dl[d] = self.delta[(self.cells[j] & STATE) as usize][d] as i32;
+                    r[d] = self.phi[j][d].wrapping_sub(pi[d]);
                 }
+                let base = (i as u32).wrapping_mul(8);
+                let (mut nk, mut ns, mut cs) = (0u32, 0u32, 0u32);
+                for l in 0..LANES {
+                    // sround(0, _) is 0, so r = 0 needs no case of its own.
+                    let k = sround(r[l], lowbias32(ks ^ base.wrapping_add(l as u32).wrapping_mul(0x9e37_79b9)));
+                    nk += (k != 0) as u32;
+                    let v = dl[l] + k;
+                    let c = v.clamp(-1, 1);
+                    a[l] = a[l].wrapping_add(r[l].wrapping_sub(c.wrapping_sub(dl[l]).wrapping_mul(ONE)));
+                    ns += (v - c).unsigned_abs();
+                    cs += (c + 1) as u32 * POW3_DIRS[l];
+                }
+                acc.kicks += nk as u64;
+                acc.sat += ns as u64;
+                s += cs as u16;
                 let rnd = if rule == Rule::Chiral {
                     if x % 32 == 0 {
                         chir = crate::chunk_rand(kc, y as u32 * w32 + (x / 32) as u32);
