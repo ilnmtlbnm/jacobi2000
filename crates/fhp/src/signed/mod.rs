@@ -387,8 +387,14 @@ impl Signed {
 
     #[inline(always)]
     pub fn block_of(&self, i: usize) -> usize {
-        let b = self.params.block;
-        (i / self.w / b) * self.nbx + (i % self.w) / b
+        let lb = self.params.block.trailing_zeros();
+        ((i / self.w) >> lb) * self.nbx + ((i % self.w) >> lb)
+    }
+
+    /// Per block: the reservoir spread over its fluid sites, truncated (zero
+    /// for blocks without fluid).
+    fn shares(&self) -> Vec<[i32; NCH]> {
+        self.res.iter().zip(&self.fluid).map(|(r, &n)| if n == 0 { [0; NCH] } else { r.map(|v| v.wrapping_div(n as i32)) }).collect()
     }
 
     pub fn rho0(&self) -> f64 {
@@ -428,7 +434,7 @@ impl Signed {
     /// Stream (with the reference correction) and collide one row; returns
     /// the row's reservoir additions per block column, saturations, kicks.
     fn row(&self, y: usize, out: &mut [u16]) -> (Vec<[i32; NCH]>, u64, u64) {
-        let b = self.params.block;
+        let lb = self.params.block.trailing_zeros();
         let mut add = vec![[0i32; NCH]; self.nbx];
         let (mut sat, mut kicks) = (0u64, 0u64);
         let kc = step_key(self.params.seed, self.step, STREAM_COLLIDE);
@@ -441,7 +447,7 @@ impl Signed {
             let own = self.cells[i];
             let mut s = (self.delta[(own & STATE) as usize][6] + 1) as u16 * POW3[6];
             let src = &self.src[i];
-            let a = &mut add[x / b];
+            let a = &mut add[x >> lb];
             for d in 0..NDIR {
                 let j = src[d] as usize;
                 let dl = self.delta[(self.cells[j] & STATE) as usize][d] as i32;
@@ -532,6 +538,7 @@ impl Signed {
     /// Per block and channel: sum over fluid sites of phi + delta.
     fn fluid_sums(&self) -> Vec<[i32; NCH]> {
         let b = self.params.block;
+        let lb = b.trailing_zeros();
         let work = |by: usize| {
             let mut v = vec![[0i32; NCH]; self.nbx];
             for y in by * b..(by + 1) * b {
@@ -541,7 +548,7 @@ impl Signed {
                         continue;
                     }
                     let d = self.deltas(i);
-                    let a = &mut v[x / b];
+                    let a = &mut v[x >> lb];
                     for ch in 0..NCH {
                         a[ch] = a[ch].wrapping_add(self.phi[i][ch].wrapping_add(d[ch] as i32 * ONE));
                     }
@@ -559,14 +566,12 @@ impl Signed {
         rows.concat()
     }
 
-    /// Site i's represented f per channel in ONE units, the reservoir
-    /// spread over its block's fluid sites (truncated).
+    /// Site i's represented f per channel in ONE units, plus `share`, its
+    /// block's reservoir spread over the block's fluid sites (`shares`).
     #[inline(always)]
-    fn site_fixed(&self, i: usize) -> [i32; NCH] {
-        let k = self.block_of(i);
+    fn site_fixed(&self, i: usize, share: &[i32; NCH]) -> [i32; NCH] {
         let d = self.deltas(i);
-        let nf = self.fluid[k] as i32;
-        std::array::from_fn(|ch| self.phi[i][ch].wrapping_add(d[ch] as i32 * ONE).wrapping_add(self.res[k][ch].wrapping_div(nf)))
+        std::array::from_fn(|ch| self.phi[i][ch].wrapping_add(d[ch] as i32 * ONE).wrapping_add(share[ch]))
     }
 
     /// Block sums of the represented mass and momentum over `bw` x `bh`
@@ -620,6 +625,8 @@ impl Signed {
     pub fn page_sums(&self, bw: usize, bh: usize) -> crate::coarse::BlockSums {
         let (nx, ny) = (self.w / bw, self.h / bh);
         let mut s = crate::coarse::BlockSums { nx, ny, bw, bh, jx: vec![0; nx * ny], jy: vec![0; nx * ny], mass: vec![0; nx * ny], fluid: vec![0; nx * ny] };
+        let shares = self.shares();
+        let lb = self.params.block.trailing_zeros();
         for by in 0..ny {
             for bx in 0..nx {
                 let (mut m, mut jx, mut jy, mut n) = (0i32, 0i32, 0i32, 0i32);
@@ -629,7 +636,7 @@ impl Signed {
                         if self.cells[i] & OBST != 0 {
                             continue;
                         }
-                        let f = self.site_fixed(i);
+                        let f = self.site_fixed(i, &shares[(y >> lb) * self.nbx + (x >> lb)]);
                         for ch in 0..NCH {
                             m = m.wrapping_add(f[ch]);
                             if ch < NDIR {
@@ -687,6 +694,8 @@ impl Signed {
         let kq = step_key(self.params.seed, self.step, STREAM_REQUANT);
         let kr = step_key(self.params.seed, self.step, STREAM_REFRESH);
         let nokick = NOKICK.load(std::sync::atomic::Ordering::Relaxed);
+        let shares = self.shares();
+        let lb = b.trailing_zeros();
         let mut cells = std::mem::take(&mut self.cells);
         let w = self.w;
         let this = &*self;
@@ -705,11 +714,10 @@ impl Signed {
                     }
                 } else {
                     let d = this.delta[*cell as usize];
-                    let kb = this.block_of(i);
-                    let nf = this.fluid[kb] as i32;
+                    let share = &shares[(y >> lb) * this.nbx + (x >> lb)];
                     for ch in 0..NCH {
                         // The parked content is released into the field.
-                        let dphi = this.phi[i][ch].wrapping_add(this.res[kb][ch].wrapping_div(nf)).wrapping_sub(new[i][ch]);
+                        let dphi = this.phi[i][ch].wrapping_add(share[ch]).wrapping_sub(new[i][ch]);
                         let k = if dphi == 0 || nokick {
                             0
                         } else {
