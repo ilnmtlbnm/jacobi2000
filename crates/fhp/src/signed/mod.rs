@@ -624,34 +624,51 @@ impl Signed {
     /// down by `SUM_SHIFT`; the GPU engine's `coarse` gives the same.
     pub fn page_sums(&self, bw: usize, bh: usize) -> crate::coarse::BlockSums {
         let (nx, ny) = (self.w / bw, self.h / bh);
-        let mut s = crate::coarse::BlockSums { nx, ny, bw, bh, jx: vec![0; nx * ny], jy: vec![0; nx * ny], mass: vec![0; nx * ny], fluid: vec![0; nx * ny] };
         let shares = self.shares();
         let lb = self.params.block.trailing_zeros();
-        for by in 0..ny {
-            for bx in 0..nx {
-                let (mut m, mut jx, mut jy, mut n) = (0i32, 0i32, 0i32, 0i32);
-                for y in by * bh..(by + 1) * bh {
+        // One band of bh rows per task; wrapping sums, so the order is free.
+        let work = |by: usize| {
+            let mut v = vec![[0i32; 4]; nx];
+            for y in by * bh..(by + 1) * bh {
+                let srow = &shares[(y >> lb) * self.nbx..][..self.nbx];
+                for (bx, a) in v.iter_mut().enumerate() {
                     for x in bx * bw..(bx + 1) * bw {
                         let i = y * self.w + x;
                         if self.cells[i] & OBST != 0 {
                             continue;
                         }
-                        let f = self.site_fixed(i, &shares[(y >> lb) * self.nbx + (x >> lb)]);
+                        let f = self.site_fixed(i, &srow[x >> lb]);
                         for ch in 0..NCH {
-                            m = m.wrapping_add(f[ch]);
+                            a[0] = a[0].wrapping_add(f[ch]);
                             if ch < NDIR {
-                                jx = jx.wrapping_add(CX2[ch].wrapping_mul(f[ch]));
-                                jy = jy.wrapping_add(CY2[ch].wrapping_mul(f[ch]));
+                                a[1] = a[1].wrapping_add(CX2[ch].wrapping_mul(f[ch]));
+                                a[2] = a[2].wrapping_add(CY2[ch].wrapping_mul(f[ch]));
                             }
                         }
-                        n += 1;
+                        a[3] += 1;
                     }
                 }
-                let b = by * nx + bx;
-                (s.jx[b], s.jy[b], s.mass[b], s.fluid[b]) = (jx >> SUM_SHIFT, jy >> SUM_SHIFT, m >> SUM_SHIFT, n);
             }
+            v
+        };
+        #[cfg(feature = "threads")]
+        let rows: Vec<Vec<[i32; 4]>> = {
+            use rayon::prelude::*;
+            (0..ny).into_par_iter().map(work).collect()
+        };
+        #[cfg(not(feature = "threads"))]
+        let rows: Vec<Vec<[i32; 4]>> = (0..ny).map(work).collect();
+        let all = rows.concat();
+        crate::coarse::BlockSums {
+            nx,
+            ny,
+            bw,
+            bh,
+            jx: all.iter().map(|a| a[1] >> SUM_SHIFT).collect(),
+            jy: all.iter().map(|a| a[2] >> SUM_SHIFT).collect(),
+            mass: all.iter().map(|a| a[0] >> SUM_SHIFT).collect(),
+            fluid: all.iter().map(|a| a[3]).collect(),
         }
-        s
     }
 
     fn in_zone(&self, x: usize) -> bool {
