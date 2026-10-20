@@ -229,10 +229,15 @@ fn interp_with(columns: bool, nodes: &[[i32; 3]], nbx: usize, nby: usize, b: usi
     };
     let (x0, x1) = (wrap(bx0, nbx), wrap(bx0 + 1, nbx));
     let (y0, y1) = (wrap(by0, nby), wrap(by0 + 1, nby));
-    std::array::from_fn(|c| {
-        let row = |by: usize| ((sx - tx).wrapping_mul(nodes[by * nbx + x0][c]).wrapping_add(tx.wrapping_mul(nodes[by * nbx + x1][c]))) >> lx;
-        ((sy - ty).wrapping_mul(row(y0)).wrapping_add(ty.wrapping_mul(row(y1)))) >> ly
-    })
+    let (n00, n01) = (nodes[y0 * nbx + x0], nodes[y0 * nbx + x1]);
+    let (n10, n11) = (nodes[y1 * nbx + x0], nodes[y1 * nbx + x1]);
+    let mut out = [0i32; 3];
+    for c in 0..3 {
+        let r0 = ((sx - tx).wrapping_mul(n00[c]).wrapping_add(tx.wrapping_mul(n01[c]))) >> lx;
+        let r1 = ((sx - tx).wrapping_mul(n10[c]).wrapping_add(tx.wrapping_mul(n11[c]))) >> lx;
+        out[c] = ((sy - ty).wrapping_mul(r0).wrapping_add(ty.wrapping_mul(r1))) >> ly;
+    }
+    out
 }
 
 /// The initial deviation codes and block values for the field rho(x, y),
@@ -774,17 +779,16 @@ impl Signed {
             let (mut sat, mut kicks) = (0u64, 0u64);
             let mut after = vec![[0i32; NCH]; nbx];
             let mut fresh = vec![rest; w];
+            let mut vals = vec![[0i32; 3]; w];
             for (dy, (crow, prow)) in crows.chunks_mut(w).zip(prows.chunks_mut(w)).enumerate() {
                 let y = t * rows + dy;
                 let srow = &shares[(y >> lb) * nbx..][..nbx];
-                // The row's new reference first, in a loop of its own.
-                for (x, (f, cell)) in fresh.iter_mut().zip(crow.iter()).enumerate() {
-                    *f = if *cell & OBST != 0 {
-                        rest
-                    } else {
-                        let [nr, nx, ny] = interp_with(columns, &this.nodes, nbx, nby, b, x, y);
-                        feq_fixed(nr, nx, ny)
-                    };
+                // The row's new reference first, in loops of their own.
+                for (x, v) in vals.iter_mut().enumerate() {
+                    *v = interp_with(columns, &this.nodes, nbx, nby, b, x, y);
+                }
+                for ((f, cell), &[nr, nx, ny]) in fresh.iter_mut().zip(crow.iter()).zip(vals.iter()) {
+                    *f = if *cell & OBST != 0 { rest } else { feq_fixed(nr, nx, ny) };
                 }
                 for (x, ((cell, p), &new)) in crow.iter_mut().zip(prow.iter_mut()).zip(fresh.iter()).enumerate() {
                     if *cell & OBST != 0 {
