@@ -6,7 +6,7 @@
 // `mul_shr`, `interp`, `sround`), so the two agree bit for bit.
 //
 // Work is split in tiles of 64 columns x 4 R rows, one workgroup of 64 x 4
-// invocations per tile; invocation (lx, ly) takes R consecutive sites of
+// (TW x WGY) invocations per tile; invocation (lx, ly) takes R consecutive sites of
 // column lx, all in one reference block. A tile holds whole reference
 // blocks, so every per-block sum is a workgroup reduction (workgroup
 // atomics, exact for integers in any order) written to the block data by
@@ -274,6 +274,10 @@ fn in_zone(x: u32) -> bool {
 // ---- Tiles and per-block reductions ----
 
 const TW: u32 = 64u;
+// Workgroup rows (the workgroup is TW x WGY), log2 WGY.
+const WGY: u32 = 4u;
+const LWGY: u32 = 2u;
+const WG: u32 = TW * WGY;
 const NONE: u32 = 0xffffffffu;
 
 // Per (tile block, channel) sums, channel-major: channel c of tile block b
@@ -282,18 +286,18 @@ const NONE: u32 = 0xffffffffu;
 var<workgroup> acc0: array<atomic<i32>, 448>;
 var<workgroup> acc1: array<atomic<i32>, 448>;
 
-// A tile is 64 columns by 4 R rows (R = 2^lr rows per invocation, B / 4 <=
-// R <= B): invocation (lx, ly) takes rows ly R .. ly R + R - 1 of column lx,
-// all in one block. log2 of the tile blocks per tile:
+// A tile is 64 columns by WGY R rows (R = 2^lr rows per invocation, B /
+// WGY <= R <= B): invocation (lx, ly) takes rows ly R .. ly R + R - 1 of
+// column lx, all in one block. log2 of the tile blocks per tile:
 fn tile_lnb() -> u32 {
-    return 8u + P.lr - 2u * (P.lb - 1u);
+    return 6u + LWGY + P.lr - 2u * (P.lb - 1u);
 }
 
 // The global block of tile block b, or NONE past the last block row.
 fn tile_block(wid: vec2<u32>, b: u32) -> u32 {
     let lbb = P.lb - 1u;
     let lpr = 6u - lbb;
-    let ky = wid.y * ((4u << P.lr) >> lbb) + (b >> lpr);
+    let ky = wid.y * ((WGY << P.lr) >> lbb) + (b >> lpr);
     return select(NONE, ky * P.nbx + (wid.x << lpr) + (b & ((1u << lpr) - 1u)), ky < P.nby);
 }
 
@@ -304,7 +308,7 @@ fn own_block(lid: vec3<u32>) -> u32 {
 }
 
 fn clear(li: u32) {
-    for (var t = li; t < 7u << tile_lnb(); t += 256u) {
+    for (var t = li; t < 7u << tile_lnb(); t += WG) {
         atomicStore(&acc0[t], 0);
         atomicStore(&acc1[t], 0);
     }
@@ -347,10 +351,10 @@ fn chan(d: u32, dl: i32, r: i32, i: u32) -> vec2<i32> {
     return vec2<i32>(c + 1, a + (v - c) * ONE);
 }
 
-@compute @workgroup_size(64, 4)
+@compute @workgroup_size(TW, WGY)
 fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let x = wid.x * TW + lid.x;
-    let y0 = ((wid.y * 4u + lid.y) << P.lr);
+    let y0 = ((wid.y * WGY + lid.y) << P.lr);
     let reest = (P.flags & REEST) != 0u;
     clear(li);
     workgroupBarrier();
@@ -411,7 +415,7 @@ fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
     let lnb = tile_lnb();
     let nb = 1u << lnb;
     if (!reest) {
-        for (var t = li; t < 7u * nb; t += 256u) {
+        for (var t = li; t < 7u * nb; t += WG) {
             let k = tile_block(wid.xy, t & (nb - 1u));
             if (k != NONE) {
                 blk[k * 32u + RES + (t >> lnb)] += atomicLoad(&acc0[t]);
@@ -422,7 +426,7 @@ fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
     // Per (block, channel): the content (sum of phi + delta + reservoir
     // after this step), the old reservoir's share, the reservoir set to the
     // content (0 in a refreshed zone; unchanged without fluid sites).
-    for (var t = li; t < 7u * nb; t += 256u) {
+    for (var t = li; t < 7u * nb; t += WG) {
         let k = tile_block(wid.xy, t & (nb - 1u));
         if (k == NONE) {
             continue;
@@ -443,7 +447,7 @@ fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
     }
     workgroupBarrier();
     // Per block: the new values into the other node slot.
-    for (var b = li; b < nb; b += 256u) {
+    for (var b = li; b < nb; b += WG) {
         let k = tile_block(wid.xy, b);
         if (k == NONE) {
             continue;
@@ -488,10 +492,10 @@ fn fresh(c: u32, i: u32) -> u32 {
 
 // The re-estimate's second half, after a `step` with REEST: node slot cur
 // holds the old block values, 1 - cur the new ones.
-@compute @workgroup_size(64, 4)
+@compute @workgroup_size(TW, WGY)
 fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let x = wid.x * TW + lid.x;
-    let y0 = ((wid.y * 4u + lid.y) << P.lr);
+    let y0 = ((wid.y * WGY + lid.y) << P.lr);
     let init = (P.flags & INIT) != 0u;
     let slot = select(1u - P.cur, P.cur, init);
     clear(li);
@@ -547,7 +551,7 @@ fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) 
     workgroupBarrier();
     let lnb = tile_lnb();
     let nb = 1u << lnb;
-    for (var t = li; t < 7u * nb; t += 256u) {
+    for (var t = li; t < 7u * nb; t += WG) {
         let k = tile_block(wid.xy, t & (nb - 1u));
         if (k == NONE || blk[k * 32u + FLUID] == 0) {
             continue;

@@ -14,6 +14,8 @@ use crate::step_key;
 use crate::ternary::{Rule, Table, NCH, NSTATE};
 
 const BATCH: usize = 128;
+/// Workgroup rows of `step` and `requant` (`WGY` in the shader).
+const WGY: usize = 4;
 const SLOT: u64 = 256;
 const PARAMS: u64 = 80;
 /// Words per reference block, and their layout (as in the shader).
@@ -246,19 +248,17 @@ impl Gpu {
 
     /// Rows per invocation of `step` and `requant`: R = B up to 16 (an
     /// invocation's sites are one column of one block, so a tile has few
-    /// blocks and few atomic additions per site), 1 at B = 2 (at most 64
-    /// blocks per tile). B / 4 <= R <= B always.
+    /// blocks and few atomic additions per site), with at most 64 blocks per
+    /// tile (R <= B^2 / WGY) and whole blocks in a tile (R >= B / WGY).
     fn rows(&self) -> usize {
-        match self.params.block {
-            2 => 1,
-            b => b.min(16),
-        }
+        let b = self.params.block;
+        b.min(16).min(b * b / WGY).max(b / WGY)
     }
 
-    /// Workgroups of `step` and `requant`: tiles of 64 columns by 4 R rows
+    /// Workgroups of `step` and `requant`: tiles of 64 columns by WGY R rows
     /// (the last one partly empty when they do not divide H).
     fn tiles(&self) -> (u32, u32) {
-        ((self.w / 64) as u32, self.h.div_ceil(4 * self.rows()) as u32)
+        ((self.w / 64) as u32, self.h.div_ceil(WGY * self.rows()) as u32)
     }
 
     /// The uniform words of step `t` (node slot `self.slot`).
