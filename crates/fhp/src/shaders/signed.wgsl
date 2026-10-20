@@ -6,12 +6,12 @@
 // block. Every integer operation is the CPU's (`feq_fixed`, `div16`,
 // `mul_shr`, `interp`, `sround`), so the two agree bit for bit.
 //
-// Work is split in tiles of 64 columns x 4 R rows, one workgroup of 64 x 4
-// (TW x WGY) invocations per tile; invocation (lx, ly) takes R consecutive sites of
-// column lx, all in one reference block. A tile holds whole reference
-// blocks, so every per-block sum is a workgroup reduction (workgroup
-// atomics, exact for integers in any order) written to the block data by
-// that one workgroup.
+// Work is split in tiles of 64 columns x WGY R rows, one workgroup of
+// TW x WGY invocations per tile; invocation (lx, ly) takes R consecutive
+// sites of column lx, all in one reference block. A tile holds whole
+// reference blocks, so every per-block sum is a workgroup reduction
+// (workgroup atomics, exact for integers in any order) written to the block
+// data by that one workgroup.
 //
 // Entry points:
 // - step: stream with the reference correction, collide, and add the
@@ -266,8 +266,8 @@ fn in_zone(x: u32) -> bool {
 
 const TW: u32 = 64u;
 // Workgroup rows (the workgroup is TW x WGY), log2 WGY.
-const WGY: u32 = 4u;
-const LWGY: u32 = 2u;
+const WGY: u32 = 1u;
+const LWGY: u32 = 0u;
 const WG: u32 = TW * WGY;
 const NONE: u32 = 0xffffffffu;
 

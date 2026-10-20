@@ -15,7 +15,7 @@ use crate::ternary::{Rule, Table, NCH, NSTATE};
 
 const BATCH: usize = 128;
 /// Workgroup rows of `step` and `requant` (`WGY` in the shader).
-const WGY: usize = 4;
+const WGY: usize = 1;
 const SLOT: u64 = 256;
 const PARAMS: u64 = 80;
 /// Words per reference block, and their layout (as in the shader).
