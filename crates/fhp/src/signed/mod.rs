@@ -26,7 +26,7 @@ pub mod gpu;
 pub mod measure;
 
 use crate::ternary::{counts, Rule, Table, NCH, NSTATE, POW3};
-use crate::{lowbias32, source, step_key, CX2, CY2, NDIR};
+use crate::{lowbias32, step_key, CX2, CY2, DX, DY, NDIR};
 
 /// Diagnostics: keep the reference at rest (density only), and skip the
 /// re-quantization kicks (the reservoir takes everything).
@@ -63,7 +63,6 @@ pub const SUM_SHIFT: u32 = 4;
 /// Lanes of the per-channel arithmetic: the seven channels padded to eight.
 const LANES: usize = 8;
 const POW3_LANES: [u32; LANES] = [1, 3, 9, 27, 81, 243, 729, 0];
-const POW3_DIRS: [u32; LANES] = [1, 3, 9, 27, 81, 243, 0, 0];
 
 pub fn velocity(i: usize) -> (f64, f64) {
     crate::ternary::velocity(i)
@@ -329,7 +328,6 @@ pub struct Signed {
     /// Base-3 code of delta + 1 per site, OBST for obstacles.
     pub cells: Vec<u16>,
     next: Vec<u16>,
-    src: Vec<[u32; NDIR]>,
     /// Reference F per site and channel (ONE units), a function of `nodes`
     /// cached between re-estimates.
     pub phi: Vec<[i32; NCH]>,
@@ -378,15 +376,6 @@ impl Signed {
         crate::check_shape(w, h).expect("lattice shape");
         assert!(b.is_power_of_two() && w.is_multiple_of(b) && h.is_multiple_of(b), "block must be a power of two dividing the lattice");
         assert_eq!(cells.len(), w * h);
-        let mut src = vec![[0u32; NDIR]; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                for d in 0..NDIR {
-                    let (sx, sy) = source(x, y, d, w, h);
-                    src[y * w + x][d] = (sy * w + sx) as u32;
-                }
-            }
-        }
         let (nbx, nby) = (w / b, h / b);
         let mut fluid = vec![0u32; nbx * nby];
         for (i, c) in cells.iter().enumerate() {
@@ -401,7 +390,6 @@ impl Signed {
             h,
             next: vec![0; w * h],
             cells,
-            src,
             phi: vec![feq_fixed(rest[0], 0, 0); w * h],
             nbx,
             nby,
@@ -498,46 +486,74 @@ impl Signed {
     /// Stream (with the reference correction) and collide the rows from
     /// `y0` into `out`; returns the reservoir additions per block column
     /// and, with `sums`, the new fluid sums per block column.
+    ///
+    /// Per row: the incoming deviations and reference differences are
+    /// gathered into one plane per direction, the rounding then runs along
+    /// each plane (contiguous lanes, so it vectorizes), and the collision
+    /// last, site by site.
+    #[inline(never)]
     fn band(&self, y0: usize, out: &mut [u16], sums: bool) -> Band {
+        let w = self.w;
         let lb = self.params.block.trailing_zeros();
+        let b = 1usize << lb;
         let mut acc = Band { add: vec![[0i32; LANES]; self.nbx], sum: vec![[0i32; NCH]; if sums { self.nbx } else { 0 }], sat: 0, kicks: 0 };
         let kc = step_key(self.params.seed, self.step, STREAM_COLLIDE);
         let ks = step_key(self.params.seed, self.step, STREAM_ROUND);
         let rule = self.params.rule;
-        let w32 = (self.w / 32) as u32;
-        for (dy, orow) in out.chunks_mut(self.w).enumerate() {
+        let w32 = (w / 32) as u32;
+        let (mut dl, mut r) = (vec![0i32; NDIR * w], vec![0i32; NDIR * w]);
+        let (mut code, mut add) = (vec![0u32; w], vec![0i32; w]);
+        for (dy, orow) in out.chunks_mut(w).enumerate() {
             let y = y0 + dy;
-            let mut chir = 0u32;
-            for (x, o) in orow.iter_mut().enumerate() {
-                let i = y * self.w + x;
-                let own = self.cells[i];
-                let mut s = (self.delta[(own & STATE) as usize][6] + 1) as u16 * POW3[6];
-                let src = &self.src[i];
-                let a = &mut acc.add[x >> lb];
-                // Eight lanes, the six directions and two idle ones (zero
-                // difference, zero deviation, weight 0).
-                let (mut dl, mut r) = ([0i32; LANES], [0i32; LANES]);
-                let pi = &self.phi[i];
-                for d in 0..NDIR {
-                    let j = src[d] as usize;
-                    dl[d] = self.delta[(self.cells[j] & STATE) as usize][d] as i32;
-                    r[d] = self.phi[j][d].wrapping_sub(pi[d]);
+            let row = y * w;
+            let prow = &self.phi[row..][..w];
+            for (d, (dlp, rp)) in dl.chunks_mut(w).zip(r.chunks_mut(w)).enumerate() {
+                // Direction d arrives from row sy, column x + dx (periodic).
+                let sy = ((y + self.h) as i32 - DY[d]) as usize % self.h;
+                let dx = DX[y & 1][(d + 3) % NDIR];
+                let (sc, sp) = (&self.cells[sy * w..][..w], &self.phi[sy * w..][..w]);
+                // Columns 1..w-1 read the source row shifted by dx (no wrap),
+                // the two end columns wrap.
+                let lo = (1 + dx) as usize;
+                let inner = dlp[1..w - 1].iter_mut().zip(rp[1..w - 1].iter_mut()).zip(&prow[1..w - 1]).zip(sc[lo..lo + w - 2].iter().zip(&sp[lo..lo + w - 2]));
+                for (((dv, rv), pi), (c, p)) in inner {
+                    *dv = self.delta[(c & STATE) as usize][d] as i32;
+                    *rv = p[d].wrapping_sub(pi[d]);
                 }
-                let base = (i as u32).wrapping_mul(8);
-                let (mut nk, mut ns, mut cs) = (0u32, 0u32, 0u32);
-                for l in 0..LANES {
+                for x in [0, w - 1] {
+                    let xs = (x as i32 + dx).rem_euclid(w as i32) as usize;
+                    dlp[x] = self.delta[(sc[xs] & STATE) as usize][d] as i32;
+                    rp[x] = sp[xs][d].wrapping_sub(prow[x][d]);
+                }
+            }
+            for (c, own) in code.iter_mut().zip(&self.cells[row..][..w]) {
+                *c = (self.delta[(own & STATE) as usize][6] + 1) as u32 * POW3[6] as u32;
+            }
+            for d in 0..NDIR {
+                let (dlp, rp) = (&dl[d * w..][..w], &r[d * w..][..w]);
+                let (mut nk, mut ns) = (0u32, 0u32);
+                for x in 0..w {
+                    let i = (row + x) as u32;
                     // sround(0, _) is 0, so r = 0 needs no case of its own.
-                    let k = sround(r[l], lowbias32(ks ^ base.wrapping_add(l as u32).wrapping_mul(0x9e37_79b9)));
+                    let k = sround(rp[x], lowbias32(ks ^ i.wrapping_mul(8).wrapping_add(d as u32).wrapping_mul(0x9e37_79b9)));
                     nk += (k != 0) as u32;
-                    let v = dl[l] + k;
+                    let v = dlp[x] + k;
                     let c = v.clamp(-1, 1);
-                    a[l] = a[l].wrapping_add(r[l].wrapping_sub(c.wrapping_sub(dl[l]).wrapping_mul(ONE)));
                     ns += (v - c).unsigned_abs();
-                    cs += (c + 1) as u32 * POW3_DIRS[l];
+                    code[x] += (c + 1) as u32 * POW3[d] as u32;
+                    add[x] = rp[x].wrapping_sub(c.wrapping_sub(dlp[x]).wrapping_mul(ONE));
+                }
+                for (a, part) in acc.add.iter_mut().zip(add.chunks(b)) {
+                    a[d] = part.iter().fold(a[d], |s, &v| s.wrapping_add(v));
                 }
                 acc.kicks += nk as u64;
                 acc.sat += ns as u64;
-                s += cs as u16;
+            }
+            let mut chir = 0u32;
+            for (x, o) in orow.iter_mut().enumerate() {
+                let i = row + x;
+                let own = self.cells[i];
+                let s = code[x] as u16;
                 let rnd = if rule == Rule::Chiral {
                     if x % 32 == 0 {
                         chir = crate::chunk_rand(kc, y as u32 * w32 + (x / 32) as u32);
