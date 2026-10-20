@@ -60,6 +60,10 @@ pub const REFRESH: u32 = 32;
 /// frame's sum of 32 x 32 blocks fits an i32.
 pub const SUM_SHIFT: u32 = 4;
 
+/// Lanes of the per-channel arithmetic: the seven channels padded to eight.
+const LANES: usize = 8;
+const POW3_LANES: [u32; LANES] = [1, 3, 9, 27, 81, 243, 729, 0];
+
 pub fn velocity(i: usize) -> (f64, f64) {
     crate::ternary::velocity(i)
 }
@@ -777,7 +781,7 @@ impl Signed {
         // deviations are re-quantized, and the new fluid sums are kept.
         let work = |(t, (crows, prows)): (usize, (&mut [u16], &mut [[i32; NCH]]))| {
             let (mut sat, mut kicks) = (0u64, 0u64);
-            let mut after = vec![[0i32; NCH]; nbx];
+            let mut after = vec![[0i32; LANES]; nbx];
             let mut fresh = vec![rest; w];
             let mut vals = vec![[0i32; 3]; w];
             for (dy, (crow, prow)) in crows.chunks_mut(w).zip(prows.chunks_mut(w)).enumerate() {
@@ -806,20 +810,33 @@ impl Signed {
                             a[ch] = a[ch].wrapping_add(new[ch].wrapping_add((n as i32 - 1) * ONE));
                         }
                     } else {
-                        let d = this.delta[*cell as usize];
+                        let d = &this.delta[*cell as usize];
                         let share = &srow[x >> lb];
+                        // Eight lanes, the seven channels and an idle one (zero
+                        // difference, zero deviation, weight 0), so the
+                        // arithmetic maps onto two 4-lane vectors.
+                        let (mut dp, mut dl, mut nw) = ([0i32; LANES], [0i32; LANES], [0i32; LANES]);
                         for ch in 0..NCH {
                             // The parked content is released into the field.
-                            let dphi = p[ch].wrapping_add(share[ch]).wrapping_sub(new[ch]);
-                            // sround(0, _) is 0, so dphi = 0 needs no case of its own.
-                            let k = if nokick { 0 } else { sround(dphi, lowbias32(kq ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9))) };
-                            kicks += (k != 0) as u64;
-                            let v = d[ch] as i32 + k;
-                            let c = v.clamp(-1, 1);
-                            sat += (v - c).unsigned_abs() as u64;
-                            code += (c + 1) as u16 * POW3[ch];
-                            a[ch] = a[ch].wrapping_add(new[ch].wrapping_add(c * ONE));
+                            dp[ch] = p[ch].wrapping_add(share[ch]).wrapping_sub(new[ch]);
+                            dl[ch] = d[ch] as i32;
+                            nw[ch] = new[ch];
                         }
+                        let base = (i as u32).wrapping_mul(8);
+                        let (mut nk, mut ns, mut cs) = (0u32, 0u32, 0u32);
+                        for l in 0..LANES {
+                            // sround(0, _) is 0, so dphi = 0 needs no case of its own.
+                            let k = if nokick { 0 } else { sround(dp[l], lowbias32(kq ^ base.wrapping_add(l as u32).wrapping_mul(0x9e37_79b9))) };
+                            nk += (k != 0) as u32;
+                            let v = dl[l] + k;
+                            let c = v.clamp(-1, 1);
+                            ns += (v - c).unsigned_abs();
+                            cs += (c + 1) as u32 * POW3_LANES[l];
+                            a[l] = a[l].wrapping_add(nw[l].wrapping_add(c * ONE));
+                        }
+                        kicks += nk as u64;
+                        sat += ns as u64;
+                        code = cs as u16;
                     }
                     *cell = code;
                     *p = new;
@@ -829,12 +846,12 @@ impl Signed {
         };
         let chunk = rows * w;
         #[cfg(feature = "threads")]
-        let bands: Vec<(Vec<[i32; NCH]>, u64, u64)> = {
+        let bands: Vec<(Vec<[i32; LANES]>, u64, u64)> = {
             use rayon::prelude::*;
             cells.par_chunks_mut(chunk).zip(phi.par_chunks_mut(chunk)).enumerate().map(work).collect()
         };
         #[cfg(not(feature = "threads"))]
-        let bands: Vec<(Vec<[i32; NCH]>, u64, u64)> = cells.chunks_mut(chunk).zip(phi.chunks_mut(chunk)).enumerate().map(work).collect();
+        let bands: Vec<(Vec<[i32; LANES]>, u64, u64)> = cells.chunks_mut(chunk).zip(phi.chunks_mut(chunk)).enumerate().map(work).collect();
         self.cells = cells;
         self.phi = phi;
         let mut after = vec![[0i32; NCH]; nbx * nby];
