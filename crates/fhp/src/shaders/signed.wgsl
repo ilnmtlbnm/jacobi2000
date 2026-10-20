@@ -266,9 +266,10 @@ fn in_zone(x: u32) -> bool {
 
 const TW: u32 = 64u;
 
-// Reduction scratch, 7 words per invocation, then per (tile block,
-// channel) two results.
+// Reduction scratch, 7 words per invocation, then the partial sums, then
+// per (tile block, channel) two results.
 var<workgroup> scratch: array<i32, 1792>;
+var<workgroup> part: array<i32, 448>;
 var<workgroup> bsum0: array<i32, 448>;
 var<workgroup> bsum1: array<i32, 448>;
 
@@ -295,34 +296,45 @@ fn put7(li: u32, v: Ch) {
     scratch[o + 6u] = v.b.z;
 }
 
-// Sum over the invocations of tile block t / 7 of their channel t % 7
-// (after `put7`). Invocation (lx, ly) is in tile block
-// (ly / min(B, 4)) * (64 / B) + lx / B.
-fn block_total(t: u32) -> i32 {
-    let b = t / 7u;
-    let c = t % 7u;
-    let nbt = TW / P.b;
-    let rows = min(P.b, 4u);
-    let bx = b % nbt;
-    let by = b / nbt;
-    var s = 0;
-    for (var v = 0u; v < rows; v++) {
-        let base = ((by * rows + v) * TW + bx * P.b) * 7u + c;
-        for (var u = 0u; u < P.b; u++) {
-            s += scratch[base + u * 7u];
-        }
-    }
-    return s;
-}
-
-// The per-block totals of v into `bsum0` (a = false) or `bsum1`.
+// The per-block totals of v into `bsum0` (a = false) or `bsum1`, in two
+// levels: tile block t / 7 holds the B x min(B, 4) invocations
+// (ly / min(B, 4)) * (64 / B) + lx / B; its channel t % 7 is summed in
+// parts of (at most) 8 values, then the parts are summed. Integer sums do
+// not depend on the order.
 fn reduce(li: u32, v: Ch, into1: bool) {
     workgroupBarrier();
     put7(li, v);
     workgroupBarrier();
+    let lbb = P.lb - 1u;
+    let rows = min(P.b, 4u);
+    let lrows = min(lbb, 2u);
+    let chunk = min(P.b * rows, 8u);
+    let lchunk = min(lbb + lrows, 3u);
+    let lparts = lbb + lrows - lchunk;
+    let lnbt = 6u - lbb;
     let n = tile_blocks() * 7u;
+    for (var t = li; t < n << lparts; t += 256u) {
+        let o = t >> lparts;
+        let b = o / 7u;
+        let c = o % 7u;
+        let k0 = (t & ((1u << lparts) - 1u)) << lchunk;
+        let bx = b & ((1u << lnbt) - 1u);
+        let by = b >> lnbt;
+        var s = 0;
+        for (var j = 0u; j < chunk; j++) {
+            let k = k0 + j;
+            let lx = (bx << lbb) + (k & (P.b - 1u));
+            let ly = (by << lrows) + (k >> lbb);
+            s += scratch[(ly * TW + lx) * 7u + c];
+        }
+        part[t] = s;
+    }
+    workgroupBarrier();
     for (var t = li; t < n; t += 256u) {
-        let s = block_total(t);
+        var s = 0;
+        for (var q = 0u; q < 1u << lparts; q++) {
+            s += part[(t << lparts) + q];
+        }
         if (into1) {
             bsum1[t] = s;
         } else {
