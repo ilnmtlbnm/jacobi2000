@@ -95,6 +95,21 @@ pub fn div16(num: i32, den: i32) -> i32 {
     q1.wrapping_mul(256).wrapping_add(q2)
 }
 
+/// `div16` of two numerators by one denominator. When nothing in `div16`
+/// wraps (|num| < 2^23, den < 2^23, quotient below 2^31) it is
+/// trunc(num 2^16 / den), one 64-bit division each; otherwise `div16`.
+#[inline(always)]
+pub fn div16_pair(n0: i32, n1: i32, den: i32) -> (i32, i32) {
+    const LIM: i64 = 1 << 23;
+    let d = den as i64;
+    let fits = |n: i32| (n as i64).abs() < LIM.min(d << 15);
+    if !(den > 0 && d < LIM && fits(n0) && fits(n1)) {
+        return (div16(n0, den), div16(n1, den));
+    }
+    let q = |n: i32| (((n as i64) << 16) / d) as i32;
+    (q(n0), q(n1))
+}
+
 /// sign(a b) (|a| |b| >> s), the low 32 bits (as `mul_shr` in the shader).
 #[inline(always)]
 pub fn mul_shr(a: i32, b: i32, s: u32) -> i32 {
@@ -113,8 +128,7 @@ pub fn mul_shr(a: i32, b: i32, s: u32) -> i32 {
 #[inline(always)]
 pub fn feq_fixed(r: i32, jx: i32, jy: i32) -> [i32; NCH] {
     let r = r.max(1);
-    let ux = div16(jx, r);
-    let uy = div16(jy, r);
+    let (ux, uy) = div16_pair(jx, jy, r);
     // 4 rho u^2 (ONE units).
     let p = mul_shr(jx, ux, 16).wrapping_add(3i32.wrapping_mul(mul_shr(jy, uy, 16)));
     std::array::from_fn(|i| {
