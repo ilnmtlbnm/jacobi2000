@@ -336,6 +336,17 @@ pub struct Signed {
     pub kicks: u64,
 }
 
+/// The per-step constants of a re-estimate pass.
+#[derive(Clone, Copy)]
+struct Requant {
+    kq: u32,
+    kr: u32,
+    nokick: bool,
+    columns: bool,
+    refresh: bool,
+    rest: [i32; NCH],
+}
+
 /// One task's share of a step: reservoir additions and (on re-estimate
 /// steps) fluid sums per block column, saturations and kicks.
 struct Band {
@@ -788,74 +799,8 @@ impl Signed {
         let rows = self.band_rows();
         let mut cells = std::mem::take(&mut self.cells);
         let mut phi = std::mem::take(&mut self.phi);
-        let this = &*self;
-        // Per band: the new reference replaces the old in place, the
-        // deviations are re-quantized, and the new fluid sums are kept.
-        let work = |(t, (crows, prows)): (usize, (&mut [u16], &mut [[i32; NCH]]))| {
-            let (mut sat, mut kicks) = (0u64, 0u64);
-            let mut after = vec![[0i32; LANES]; nbx];
-            let mut fresh = vec![rest; w];
-            let mut vals = vec![[0i32; 3]; w];
-            for (dy, (crow, prow)) in crows.chunks_mut(w).zip(prows.chunks_mut(w)).enumerate() {
-                let y = t * rows + dy;
-                let srow = &shares[(y >> lb) * nbx..][..nbx];
-                // The row's new reference first, in loops of their own.
-                for (x, v) in vals.iter_mut().enumerate() {
-                    *v = interp_with(columns, &this.nodes, nbx, nby, b, x, y);
-                }
-                for ((f, cell), &[nr, nx, ny]) in fresh.iter_mut().zip(crow.iter()).zip(vals.iter()) {
-                    *f = if *cell & OBST != 0 { rest } else { feq_fixed(nr, nx, ny) };
-                }
-                for (x, ((cell, p), &new)) in crow.iter_mut().zip(prow.iter_mut()).zip(fresh.iter()).enumerate() {
-                    if *cell & OBST != 0 {
-                        *p = rest;
-                        continue;
-                    }
-                    let i = y * w + x;
-                    let a = &mut after[x >> lb];
-                    let mut code = 0u16;
-                    if refresh && this.in_zone(x) {
-                        for ch in 0..NCH {
-                            let r = lowbias32(kr ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9));
-                            let n = mulhi(r, 3);
-                            code += n as u16 * POW3[ch];
-                            a[ch] = a[ch].wrapping_add(new[ch].wrapping_add((n as i32 - 1) * ONE));
-                        }
-                    } else {
-                        let d = &this.delta[*cell as usize];
-                        let share = &srow[x >> lb];
-                        // Eight lanes, the seven channels and an idle one (zero
-                        // difference, zero deviation, weight 0), so the
-                        // arithmetic maps onto two 4-lane vectors.
-                        let (mut dp, mut dl, mut nw) = ([0i32; LANES], [0i32; LANES], [0i32; LANES]);
-                        for ch in 0..NCH {
-                            // The parked content is released into the field.
-                            dp[ch] = p[ch].wrapping_add(share[ch]).wrapping_sub(new[ch]);
-                            dl[ch] = d[ch] as i32;
-                            nw[ch] = new[ch];
-                        }
-                        let base = (i as u32).wrapping_mul(8);
-                        let (mut nk, mut ns, mut cs) = (0u32, 0u32, 0u32);
-                        for l in 0..LANES {
-                            // sround(0, _) is 0, so dphi = 0 needs no case of its own.
-                            let k = if nokick { 0 } else { sround(dp[l], lowbias32(kq ^ base.wrapping_add(l as u32).wrapping_mul(0x9e37_79b9))) };
-                            nk += (k != 0) as u32;
-                            let v = dl[l] + k;
-                            let c = v.clamp(-1, 1);
-                            ns += (v - c).unsigned_abs();
-                            cs += (c + 1) as u32 * POW3_LANES[l];
-                            a[l] = a[l].wrapping_add(nw[l].wrapping_add(c * ONE));
-                        }
-                        kicks += nk as u64;
-                        sat += ns as u64;
-                        code = cs as u16;
-                    }
-                    *cell = code;
-                    *p = new;
-                }
-            }
-            (after, sat, kicks)
-        };
+        let q = Requant { kq, kr, nokick, columns, refresh, rest };
+        let work = |(t, (crows, prows)): (usize, (&mut [u16], &mut [[i32; NCH]]))| self.requant_band(q, &shares, t * rows, crows, prows);
         let chunk = rows * w;
         #[cfg(feature = "threads")]
         let bands: Vec<(Vec<[i32; LANES]>, u64, u64)> = {
@@ -887,6 +832,84 @@ impl Signed {
                 self.res[k][ch] = if zone { 0 } else { content[k][ch].wrapping_sub(after[k][ch]) };
             }
         }
+    }
+
+    /// One band of the re-estimate from row `y0`: the new reference
+    /// replaces the old in place, the deviations are re-quantized, and the
+    /// new fluid sums per block column are returned with the saturations and
+    /// kicks. A function of its own so the threaded and the single-thread
+    /// builds compile the same loop.
+    #[inline(never)]
+    fn requant_band(&self, q: Requant, shares: &[[i32; NCH]], y0: usize, crows: &mut [u16], prows: &mut [[i32; NCH]]) -> (Vec<[i32; LANES]>, u64, u64) {
+        let Requant { kq, kr, nokick, columns, refresh, rest } = q;
+        // All ones, or zero with no kicks: a mask keeps the lane loop free of branches.
+        let kick = if nokick { 0 } else { -1i32 };
+        let b = self.params.block;
+        let lb = b.trailing_zeros();
+        let (w, nbx, nby) = (self.w, self.nbx, self.nby);
+        let (mut sat, mut kicks) = (0u64, 0u64);
+        let mut after = vec![[0i32; LANES]; nbx];
+        let mut fresh = vec![rest; w];
+        let mut vals = vec![[0i32; 3]; w];
+        for (dy, (crow, prow)) in crows.chunks_mut(w).zip(prows.chunks_mut(w)).enumerate() {
+            let y = y0 + dy;
+            let srow = &shares[(y >> lb) * nbx..][..nbx];
+            // The row's new reference first, in loops of their own.
+            for (x, v) in vals.iter_mut().enumerate() {
+                *v = interp_with(columns, &self.nodes, nbx, nby, b, x, y);
+            }
+            for ((f, cell), &[nr, nx, ny]) in fresh.iter_mut().zip(crow.iter()).zip(vals.iter()) {
+                *f = if *cell & OBST != 0 { rest } else { feq_fixed(nr, nx, ny) };
+            }
+            for (x, ((cell, p), &new)) in crow.iter_mut().zip(prow.iter_mut()).zip(fresh.iter()).enumerate() {
+                if *cell & OBST != 0 {
+                    *p = rest;
+                    continue;
+                }
+                let i = y * w + x;
+                let a = &mut after[x >> lb];
+                let mut code = 0u16;
+                if refresh && self.in_zone(x) {
+                    for ch in 0..NCH {
+                        let r = lowbias32(kr ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9));
+                        let n = mulhi(r, 3);
+                        code += n as u16 * POW3[ch];
+                        a[ch] = a[ch].wrapping_add(new[ch].wrapping_add((n as i32 - 1) * ONE));
+                    }
+                } else {
+                    let d = &self.delta[*cell as usize];
+                    let share = &srow[x >> lb];
+                    // Eight lanes, the seven channels and an idle one (zero
+                    // difference, zero deviation, weight 0), so the
+                    // arithmetic maps onto two 4-lane vectors.
+                    let (mut dp, mut dl, mut nw) = ([0i32; LANES], [0i32; LANES], [0i32; LANES]);
+                    for ch in 0..NCH {
+                        // The parked content is released into the field.
+                        dp[ch] = p[ch].wrapping_add(share[ch]).wrapping_sub(new[ch]);
+                        dl[ch] = d[ch] as i32;
+                        nw[ch] = new[ch];
+                    }
+                    let base = (i as u32).wrapping_mul(8);
+                    let (mut nk, mut ns, mut cs) = (0u32, 0u32, 0u32);
+                    for l in 0..LANES {
+                        // sround(0, _) is 0, so dphi = 0 needs no case of its own.
+                        let k = sround(dp[l], lowbias32(kq ^ base.wrapping_add(l as u32).wrapping_mul(0x9e37_79b9))) & kick;
+                        nk += (k != 0) as u32;
+                        let v = dl[l] + k;
+                        let c = v.clamp(-1, 1);
+                        ns += (v - c).unsigned_abs();
+                        cs += (c + 1) as u32 * POW3_LANES[l];
+                        a[l] = a[l].wrapping_add(nw[l].wrapping_add(c * ONE));
+                    }
+                    kicks += nk as u64;
+                    sat += ns as u64;
+                    code = cs as u16;
+                }
+                *cell = code;
+                *p = new;
+            }
+        }
+        (after, sat, kicks)
     }
 
     /// Total represented content per channel (all sites and reservoirs),
