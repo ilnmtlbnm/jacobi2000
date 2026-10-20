@@ -3,7 +3,8 @@
 //! words per reference block (reservoir, fluid sites, the old reservoir's
 //! share during a re-estimate, the sum of phi, two slots of block values).
 //! A step is one dispatch; a re-estimate adds one (`requant`). Block sums
-//! are workgroup reductions over block-aligned tiles, with no atomics.
+//! are workgroup reductions (workgroup atomics, exact for integers) over
+//! block-aligned tiles, written by one workgroup each, with no global atomics.
 
 #![cfg(feature = "gpu")]
 
@@ -36,8 +37,6 @@ pub struct Gpu {
     pub adapter: String,
     nbx: usize,
     nby: usize,
-    /// Tile height, max(B, 4).
-    th: usize,
     device: wgpu::Device,
     queue: wgpu::Queue,
     step_pipe: wgpu::ComputePipeline,
@@ -91,10 +90,6 @@ impl Gpu {
         let b = params.block;
         if !(b.is_power_of_two() && (2..=64).contains(&b) && w.is_multiple_of(b) && h.is_multiple_of(b)) {
             return Err(format!("reference block {b}: a power of two from 2 to 64 dividing {w}x{h}"));
-        }
-        let th = b.max(4);
-        if !h.is_multiple_of(th) {
-            return Err(format!("reference block {b}: H must be a multiple of {th}"));
         }
         if !matches!(params.rule, Rule::Optimal | Rule::Chiral) {
             return Err("the GPU engine has rules optimal and chiral".into());
@@ -206,7 +201,6 @@ impl Gpu {
             adapter: adapter_name,
             nbx,
             nby,
-            th,
             device,
             queue,
             step_pipe,
@@ -234,7 +228,8 @@ impl Gpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&g.requant_pipe);
             pass.set_bind_group(0, &g.groups[0][1], &[]);
-            pass.dispatch_workgroups((w / 64) as u32, (h / th) as u32, 1);
+            let (tx, ty) = g.tiles();
+            pass.dispatch_workgroups(tx, ty, 1);
         }
         g.queue.submit(Some(enc.finish()));
         Ok(g)
@@ -247,6 +242,23 @@ impl Gpu {
         let mut g = Self::new(s.w, s.h, s.params, || (s.cells.clone(), s.nodes.clone(), s.res.clone())).await?;
         g.step = s.step;
         Ok(g)
+    }
+
+    /// Rows per invocation of `step` and `requant`: R = B up to 16 (an
+    /// invocation's sites are one column of one block, so a tile has few
+    /// blocks and few atomic additions per site), 1 at B = 2 (at most 64
+    /// blocks per tile). B / 4 <= R <= B always.
+    fn rows(&self) -> usize {
+        match self.params.block {
+            2 => 1,
+            b => b.min(16),
+        }
+    }
+
+    /// Workgroups of `step` and `requant`: tiles of 64 columns by 4 R rows
+    /// (the last one partly empty when they do not divide H).
+    fn tiles(&self) -> (u32, u32) {
+        ((self.w / 64) as u32, self.h.div_ceil(4 * self.rows()) as u32)
     }
 
     /// The uniform words of step `t` (node slot `self.slot`).
@@ -284,7 +296,7 @@ impl Gpu {
             jx_in,
             p.rho0(),
             self.slot as i32,
-            self.th as i32,
+            self.rows().trailing_zeros() as i32,
             0,
         ]
     }
@@ -292,7 +304,7 @@ impl Gpu {
     /// Queue `n` steps (does not wait).
     pub fn run(&mut self, n: usize) {
         let mut left = n;
-        let tiles = ((self.w / 64) as u32, (self.h / self.th) as u32);
+        let tiles = self.tiles();
         while left > 0 {
             let k = left.min(BATCH);
             let mut u = vec![0i32; k * SLOT as usize / 4];

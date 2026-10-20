@@ -65,6 +65,8 @@ fn gpu_equals_cpu_periodic() {
     compare(smooth(128, 64, params(Rule::Optimal, 8, 4, None), |_, _| false), 300, 50, "128x64 B8 N4 optimal");
     compare(smooth(192, 64, params(Rule::Chiral, 4, 1, None), |_, _| false), 200, 40, "192x64 B4 N1 chiral");
     compare(smooth(64, 32, params(Rule::Optimal, 2, 1, None), |_, _| false), 120, 40, "64x32 B2 N1 optimal");
+    // Five block rows: the second tile has one.
+    compare(smooth(128, 40, params(Rule::Optimal, 8, 1, None), |_, _| false), 120, 40, "128x40 B8 N1 optimal");
 }
 
 #[test]

@@ -5,10 +5,12 @@
 // block. Every integer operation is the CPU's (`feq_fixed`, `div16`,
 // `mul_shr`, `interp`, `sround`), so the two agree bit for bit.
 //
-// Work is split in tiles of 64 columns x TH rows (TH = max(B, 4)), one
-// workgroup of 64 x 4 invocations per tile, looping over the tile's rows four
-// at a time. A tile holds whole reference blocks, so every per-block sum is
-// a workgroup reduction written by that one workgroup (no atomics).
+// Work is split in tiles of 64 columns x 4 R rows, one workgroup of 64 x 4
+// invocations per tile; invocation (lx, ly) takes R consecutive sites of
+// column lx, all in one reference block. A tile holds whole reference
+// blocks, so every per-block sum is a workgroup reduction (workgroup
+// atomics, exact for integers in any order) written to the block data by
+// that one workgroup.
 //
 // Entry points:
 // - step: stream with the reference correction, collide, and add the
@@ -45,8 +47,8 @@ struct Params {
     rho0: i32,
     // node slot of the current block values (0 or 1)
     cur: u32,
-    // tile height, max(B, 4)
-    th: u32,
+    // log2 of the rows per invocation of `step` and `requant`
+    lr: u32,
     _a: u32,
 }
 
@@ -272,83 +274,62 @@ fn in_zone(x: u32) -> bool {
 // ---- Tiles and per-block reductions ----
 
 const TW: u32 = 64u;
+const NONE: u32 = 0xffffffffu;
 
-// Reduction scratch, 7 words per invocation, then the partial sums, then
-// per (tile block, channel) two results.
-var<workgroup> scratch: array<i32, 1792>;
-var<workgroup> part: array<i32, 448>;
-var<workgroup> bsum0: array<i32, 448>;
-var<workgroup> bsum1: array<i32, 448>;
+// Per (tile block, channel) sums, channel-major: channel c of tile block b
+// at (c << tile_lnb()) + b. Integer sums do not depend on the order of the
+// additions.
+var<workgroup> acc0: array<atomic<i32>, 448>;
+var<workgroup> acc1: array<atomic<i32>, 448>;
 
-// Blocks per tile and the global block of tile block t.
-fn tile_blocks() -> u32 {
-    return (TW / P.b) * (4u / min(P.b, 4u));
+// A tile is 64 columns by 4 R rows (R = 2^lr rows per invocation, B / 4 <=
+// R <= B): invocation (lx, ly) takes rows ly R .. ly R + R - 1 of column lx,
+// all in one block. log2 of the tile blocks per tile:
+fn tile_lnb() -> u32 {
+    return 8u + P.lr - 2u * (P.lb - 1u);
 }
 
-fn tile_block(wid: vec2<u32>, t: u32) -> u32 {
-    let nbt = TW / P.b;
-    let kx = wid.x * nbt + t % nbt;
-    let ky = (wid.y * P.th) / P.b + t / nbt;
-    return ky * P.nbx + kx;
-}
-
-fn put7(li: u32, v: Ch) {
-    let o = li * 7u;
-    scratch[o] = v.a.x;
-    scratch[o + 1u] = v.a.y;
-    scratch[o + 2u] = v.a.z;
-    scratch[o + 3u] = v.a.w;
-    scratch[o + 4u] = v.b.x;
-    scratch[o + 5u] = v.b.y;
-    scratch[o + 6u] = v.b.z;
-}
-
-// The per-block totals of v into `bsum0` (a = false) or `bsum1`, in two
-// levels: tile block t / 7 holds the B x min(B, 4) invocations
-// (ly / min(B, 4)) * (64 / B) + lx / B; its channel t % 7 is summed in
-// parts of (at most) 8 values, then the parts are summed. Integer sums do
-// not depend on the order.
-fn reduce(li: u32, v: Ch, into1: bool) {
-    workgroupBarrier();
-    put7(li, v);
-    workgroupBarrier();
+// The global block of tile block b, or NONE past the last block row.
+fn tile_block(wid: vec2<u32>, b: u32) -> u32 {
     let lbb = P.lb - 1u;
-    let rows = min(P.b, 4u);
-    let lrows = min(lbb, 2u);
-    let chunk = min(P.b * rows, 8u);
-    let lchunk = min(lbb + lrows, 3u);
-    let lparts = lbb + lrows - lchunk;
-    let lnbt = 6u - lbb;
-    let n = tile_blocks() * 7u;
-    for (var t = li; t < n << lparts; t += 256u) {
-        let o = t >> lparts;
-        let b = o / 7u;
-        let c = o % 7u;
-        let k0 = (t & ((1u << lparts) - 1u)) << lchunk;
-        let bx = b & ((1u << lnbt) - 1u);
-        let by = b >> lnbt;
-        var s = 0;
-        for (var j = 0u; j < chunk; j++) {
-            let k = k0 + j;
-            let lx = (bx << lbb) + (k & (P.b - 1u));
-            let ly = (by << lrows) + (k >> lbb);
-            s += scratch[(ly * TW + lx) * 7u + c];
-        }
-        part[t] = s;
+    let lpr = 6u - lbb;
+    let ky = wid.y * ((4u << P.lr) >> lbb) + (b >> lpr);
+    return select(NONE, ky * P.nbx + (wid.x << lpr) + (b & ((1u << lpr) - 1u)), ky < P.nby);
+}
+
+// The tile block of invocation (lx, ly).
+fn own_block(lid: vec3<u32>) -> u32 {
+    let lbb = P.lb - 1u;
+    return (((lid.y << P.lr) >> lbb) << (6u - lbb)) + (lid.x >> lbb);
+}
+
+fn clear(li: u32) {
+    for (var t = li; t < 7u << tile_lnb(); t += 256u) {
+        atomicStore(&acc0[t], 0);
+        atomicStore(&acc1[t], 0);
     }
-    workgroupBarrier();
-    for (var t = li; t < n; t += 256u) {
-        var s = 0;
-        for (var q = 0u; q < 1u << lparts; q++) {
-            s += part[(t << lparts) + q];
-        }
-        if (into1) {
-            bsum1[t] = s;
-        } else {
-            bsum0[t] = s;
-        }
-    }
-    workgroupBarrier();
+}
+
+fn add0(b: u32, v: Ch) {
+    let l = tile_lnb();
+    atomicAdd(&acc0[b], v.a.x);
+    atomicAdd(&acc0[(1u << l) + b], v.a.y);
+    atomicAdd(&acc0[(2u << l) + b], v.a.z);
+    atomicAdd(&acc0[(3u << l) + b], v.a.w);
+    atomicAdd(&acc0[(4u << l) + b], v.b.x);
+    atomicAdd(&acc0[(5u << l) + b], v.b.y);
+    atomicAdd(&acc0[(6u << l) + b], v.b.z);
+}
+
+fn add1(b: u32, v: Ch) {
+    let l = tile_lnb();
+    atomicAdd(&acc1[b], v.a.x);
+    atomicAdd(&acc1[(1u << l) + b], v.a.y);
+    atomicAdd(&acc1[(2u << l) + b], v.a.z);
+    atomicAdd(&acc1[(3u << l) + b], v.a.w);
+    atomicAdd(&acc1[(4u << l) + b], v.b.x);
+    atomicAdd(&acc1[(5u << l) + b], v.b.y);
+    atomicAdd(&acc1[(6u << l) + b], v.b.z);
 }
 
 // Channel d of site i streamed from a neighbour whose deviation is dl, with
@@ -368,14 +349,16 @@ fn chan(d: u32, dl: i32, r: i32, i: u32) -> vec2<i32> {
 
 @compute @workgroup_size(64, 4)
 fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
-    let x0 = wid.x * TW;
-    let y0 = wid.y * P.th;
-    let x = x0 + lid.x;
+    let x = wid.x * TW + lid.x;
+    let y0 = ((wid.y * 4u + lid.y) << P.lr);
     let reest = (P.flags & REEST) != 0u;
+    clear(li);
+    workgroupBarrier();
     var res = Ch(vec4<i32>(0), vec4<i32>(0));
     var dsum = Ch(vec4<i32>(0), vec4<i32>(0));
-    for (var c0 = 0u; c0 < P.th; c0 += 4u) {
-        let y = y0 + c0 + lid.y;
+    let rows = select(0u, 1u << P.lr, y0 < P.h);
+    for (var r = 0u; r < rows; r++) {
+        let y = y0 + r;
         let i = y * P.w + x;
         let n = P.w * P.h;
         let ym = select(y - 1u, P.h - 1u, y == 0u);
@@ -419,27 +402,37 @@ fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
             dsum.b += d.b;
         }
     }
-    reduce(li, res, false);
-    let n = tile_blocks() * 7u;
+    let ob = own_block(lid);
+    add0(ob, res);
+    if (reest) {
+        add1(ob, dsum);
+    }
+    workgroupBarrier();
+    let lnb = tile_lnb();
+    let nb = 1u << lnb;
     if (!reest) {
-        for (var t = li; t < n; t += 256u) {
-            let o = tile_block(wid.xy, t / 7u) * 32u + RES + t % 7u;
-            blk[o] += bsum0[t];
+        for (var t = li; t < 7u * nb; t += 256u) {
+            let k = tile_block(wid.xy, t & (nb - 1u));
+            if (k != NONE) {
+                blk[k * 32u + RES + (t >> lnb)] += atomicLoad(&acc0[t]);
+            }
         }
         return;
     }
-    reduce(li, dsum, true);
     // Per (block, channel): the content (sum of phi + delta + reservoir
     // after this step), the old reservoir's share, the reservoir set to the
     // content (0 in a refreshed zone; unchanged without fluid sites).
-    for (var t = li; t < n; t += 256u) {
-        let k = tile_block(wid.xy, t / 7u);
-        let c = t % 7u;
+    for (var t = li; t < 7u * nb; t += 256u) {
+        let k = tile_block(wid.xy, t & (nb - 1u));
+        if (k == NONE) {
+            continue;
+        }
+        let c = t >> lnb;
         let o = k * 32u;
         let nf = blk[o + FLUID];
-        let r = blk[o + RES + c] + bsum0[t];
-        let content = blk[o + SPHI + c] + bsum1[t] * ONE + r;
-        bsum1[t] = content;
+        let r = blk[o + RES + c] + atomicLoad(&acc0[t]);
+        let content = blk[o + SPHI + c] + atomicLoad(&acc1[t]) * ONE + r;
+        atomicStore(&acc0[t], content);
         if (nf == 0) {
             blk[o + RES + c] = r;
         } else {
@@ -450,16 +443,25 @@ fn step(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
     }
     workgroupBarrier();
     // Per block: the new values into the other node slot.
-    for (var t = li; t < tile_blocks(); t += 256u) {
-        let k = tile_block(wid.xy, t);
+    for (var b = li; b < nb; b += 256u) {
+        let k = tile_block(wid.xy, b);
+        if (k == NONE) {
+            continue;
+        }
         let o = k * 32u;
         let nf = blk[o + FLUID];
         var v = node(k, P.cur);
         if (nf != 0) {
-            let s = t * 7u;
-            let m = bsum1[s] + bsum1[s + 1u] + bsum1[s + 2u] + bsum1[s + 3u] + bsum1[s + 4u] + bsum1[s + 5u] + bsum1[s + 6u];
-            let jx = 2 * bsum1[s] + bsum1[s + 1u] - bsum1[s + 2u] - 2 * bsum1[s + 3u] - bsum1[s + 4u] + bsum1[s + 5u];
-            let jy = bsum1[s + 1u] + bsum1[s + 2u] - bsum1[s + 4u] - bsum1[s + 5u];
+            let c0 = atomicLoad(&acc0[b]);
+            let c1 = atomicLoad(&acc0[nb + b]);
+            let c2 = atomicLoad(&acc0[2u * nb + b]);
+            let c3 = atomicLoad(&acc0[3u * nb + b]);
+            let c4 = atomicLoad(&acc0[4u * nb + b]);
+            let c5 = atomicLoad(&acc0[5u * nb + b]);
+            let c6 = atomicLoad(&acc0[6u * nb + b]);
+            let m = c0 + c1 + c2 + c3 + c4 + c5 + c6;
+            let jx = 2 * c0 + c1 - c2 - 2 * c3 - c4 + c5;
+            let jy = c1 + c2 - c4 - c5;
             v = vec3<i32>(m / nf, jx / nf, jy / nf);
             if ((P.flags & REFRESH) != 0u && in_zone((k % P.nbx) * P.b)) {
                 v = vec3<i32>(P.r_in, P.jx_in, 0);
@@ -489,12 +491,19 @@ fn fresh(c: u32, i: u32) -> u32 {
 @compute @workgroup_size(64, 4)
 fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let x = wid.x * TW + lid.x;
+    let y0 = ((wid.y * 4u + lid.y) << P.lr);
     let init = (P.flags & INIT) != 0u;
     let slot = select(1u - P.cur, P.cur, init);
+    clear(li);
+    workgroupBarrier();
     var sphi = Ch(vec4<i32>(0), vec4<i32>(0));
     var dsum = Ch(vec4<i32>(0), vec4<i32>(0));
-    for (var c0 = 0u; c0 < P.th; c0 += 4u) {
-        let y = wid.y * P.th + c0 + lid.y;
+    let rows = select(0u, 1u << P.lr, y0 < P.h);
+    // The old reservoir's share per fluid site of this invocation's block.
+    let o = ((min(y0, P.h - 1u) >> (P.lb - 1u)) * P.nbx + (x >> (P.lb - 1u))) * 32u + REL;
+    let rel = Ch(vec4<i32>(blk[o], blk[o + 1u], blk[o + 2u], blk[o + 3u]), vec4<i32>(blk[o + 4u], blk[o + 5u], blk[o + 6u], 0));
+    for (var r = 0u; r < rows; r++) {
+        let y = y0 + r;
         let i = y * P.w + x;
         let cell = dst[i];
         if (init) {
@@ -518,8 +527,6 @@ fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) 
             code = fresh(0u, i) + fresh(1u, i) * 3u + fresh(2u, i) * 9u + fresh(3u, i) * 27u + fresh(4u, i) * 81u + fresh(5u, i) * 243u + fresh(6u, i) * 729u;
         } else {
             let old = load_phi(i);
-            let o = ((y >> (P.lb - 1u)) * P.nbx + (x >> (P.lb - 1u))) * 32u + REL;
-            let rel = Ch(vec4<i32>(blk[o], blk[o + 1u], blk[o + 2u], blk[o + 3u]), vec4<i32>(blk[o + 4u], blk[o + 5u], blk[o + 6u], 0));
             let da = old.a + rel.a - f.a;
             let db = old.b + rel.b - f.b;
             let d = deltas(cell);
@@ -532,21 +539,25 @@ fn requant(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) 
         dsum.a += nd.a;
         dsum.b += nd.b;
     }
-    reduce(li, sphi, false);
+    let ob = own_block(lid);
+    add0(ob, sphi);
     if (!init) {
-        reduce(li, dsum, true);
+        add1(ob, dsum);
     }
-    let n = tile_blocks() * 7u;
-    for (var t = li; t < n; t += 256u) {
-        let k = tile_block(wid.xy, t / 7u);
-        let o = k * 32u;
-        if (blk[o + FLUID] == 0) {
+    workgroupBarrier();
+    let lnb = tile_lnb();
+    let nb = 1u << lnb;
+    for (var t = li; t < 7u * nb; t += 256u) {
+        let k = tile_block(wid.xy, t & (nb - 1u));
+        if (k == NONE || blk[k * 32u + FLUID] == 0) {
             continue;
         }
-        let c = t % 7u;
-        blk[o + SPHI + c] = bsum0[t];
+        let o = k * 32u;
+        let c = t >> lnb;
+        let s0 = atomicLoad(&acc0[t]);
+        blk[o + SPHI + c] = s0;
         if (!init && !((P.flags & REFRESH) != 0u && in_zone((k % P.nbx) * P.b))) {
-            blk[o + RES + c] -= bsum0[t] + bsum1[t] * ONE;
+            blk[o + RES + c] -= s0 + atomicLoad(&acc1[t]) * ONE;
         }
     }
 }
