@@ -416,7 +416,7 @@ impl Gpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.coarse_pipe);
             pass.set_bind_group(0, &c.groups[self.cur], &[]);
-            pass.dispatch_workgroups(c.nx.div_ceil(64) as u32, c.ny as u32, 1);
+            pass.dispatch_workgroups(c.nx as u32, c.ny as u32, 1);
         }
         self.queue.submit(Some(enc.finish()));
     }

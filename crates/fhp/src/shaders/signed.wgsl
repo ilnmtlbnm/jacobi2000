@@ -574,8 +574,10 @@ fn phi_out(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Block sums for the coarse-grained field, added to `out` (cleared by the
 // host): jx, jy (units 2 px, 2 py / sqrt 3), mass, each shifted down by
-// SUM_SHIFT, and fluid sites, as `Signed::page_sums`. One invocation per
-// display block.
+// SUM_SHIFT, and fluid sites, as `Signed::page_sums`. One workgroup per
+// display block: invocation (li % 16, li / 16) takes every 16th column and
+// every 4th row, then the 64 partial sums are added in two levels (integer
+// sums do not depend on the order).
 struct CoarseParams {
     bw: u32,
     bh: u32,
@@ -585,25 +587,25 @@ struct CoarseParams {
 
 @group(0) @binding(6) var<uniform> C: CoarseParams;
 
+var<workgroup> csum: array<i32, 256>;
+var<workgroup> cpart: array<i32, 16>;
+
 @compute @workgroup_size(64)
-fn coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let bx = gid.x;
-    let by = gid.y;
-    if (bx >= C.nx || by >= C.ny) {
-        return;
-    }
+fn coarse(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let bx = wid.x;
+    let by = wid.y;
     var jx = 0;
     var jy = 0;
     var mass = 0;
     var fluid = 0;
-    for (var y = by * C.bh; y < (by + 1u) * C.bh; y++) {
-        for (var x = bx * C.bw; x < (bx + 1u) * C.bw; x++) {
+    for (var y = by * C.bh + li / 16u; y < (by + 1u) * C.bh; y += 4u) {
+        for (var x = bx * C.bw + li % 16u; x < (bx + 1u) * C.bw; x += 16u) {
             let i = y * P.w + x;
             let cell = src[i];
             if ((cell & OBST) != 0u) {
                 continue;
             }
-            let o = ((y / P.b) * P.nbx + x / P.b) * 32u;
+            let o = ((y >> (P.lb - 1u)) * P.nbx + (x >> (P.lb - 1u))) * 32u;
             let nf = blk[o + FLUID];
             let f = load_phi(i);
             let d = deltas(cell);
@@ -615,9 +617,22 @@ fn coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
             fluid += 1;
         }
     }
-    let o = (by * C.nx + bx) * 4u;
-    out[o] += jx >> 4u;
-    out[o + 1u] += jy >> 4u;
-    out[o + 2u] += mass >> 4u;
-    out[o + 3u] += fluid;
+    csum[li] = jx;
+    csum[64u + li] = jy;
+    csum[128u + li] = mass;
+    csum[192u + li] = fluid;
+    workgroupBarrier();
+    if (li < 16u) {
+        var s = 0;
+        for (var j = 0u; j < 16u; j++) {
+            s += csum[li * 16u + j];
+        }
+        cpart[li] = s;
+    }
+    workgroupBarrier();
+    if (li < 4u) {
+        let s = cpart[li * 4u] + cpart[li * 4u + 1u] + cpart[li * 4u + 2u] + cpart[li * 4u + 3u];
+        let o = (by * C.nx + bx) * 4u + li;
+        out[o] += select(s >> 4u, s, li == 3u);
+    }
 }
