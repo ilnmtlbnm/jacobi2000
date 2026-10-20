@@ -258,6 +258,29 @@ fn interp_with(columns: bool, nodes: &[[i32; 3]], nbx: usize, nby: usize, b: usi
     out
 }
 
+/// The first, horizontal pass of `interp_with` for a whole row of sites:
+/// block row `by` of `nodes` interpolated at every column, for rows of
+/// parity `odd` (ignored with `columns`). `interp_with` is then the
+/// vertical blend of two of these, floored the same way.
+fn interp_x(columns: bool, nodes: &[[i32; 3]], nbx: usize, b: usize, odd: bool, by: usize, out: &mut [[i32; 3]]) {
+    let bi = b as i32;
+    let ly = (2 * bi).trailing_zeros();
+    let (sx, lx) = if columns { (2 * bi, ly) } else { (4 * bi, ly + 1) };
+    let nrow = &nodes[by * nbx..][..nbx];
+    let n = nbx as i32;
+    for (x, o) in out.iter_mut().enumerate() {
+        let fx = if columns { 2 * x as i32 + 1 - bi } else { 4 * x as i32 + 2 * odd as i32 + 1 - 2 * bi };
+        let bx0 = fx >> lx;
+        let tx = fx - (bx0 << lx);
+        let x0 = if bx0 < 0 { bx0 + n } else { bx0 } as usize;
+        let x1 = if bx0 + 1 >= n { bx0 + 1 - n } else { bx0 + 1 } as usize;
+        let (a, c) = (nrow[x0], nrow[x1]);
+        for k in 0..3 {
+            o[k] = ((sx - tx).wrapping_mul(a[k]).wrapping_add(tx.wrapping_mul(c[k]))) >> lx;
+        }
+    }
+}
+
 /// The initial deviation codes and block values for the field rho(x, y),
 /// u(x, y) (positions of `measure::position`): block values from block
 /// averages of the target, then per site and channel a deviation from the
@@ -881,12 +904,39 @@ impl Signed {
         let mut after = vec![[0i32; LANES]; nbx];
         let mut fresh = vec![rest; w];
         let mut vals = vec![[0i32; 3]; w];
+        // Horizontal passes of the interpolation (`interp_x`), two block rows
+        // per row parity, kept while consecutive rows share them.
+        let mut xrows: [Vec<[i32; 3]>; 4] = std::array::from_fn(|_| vec![[0i32; 3]; w]);
+        let mut held = [usize::MAX; 4];
+        let bi = b as i32;
+        let ly = (2 * bi).trailing_zeros();
         for (dy, (crow, prow)) in crows.chunks_mut(w).zip(prows.chunks_mut(w)).enumerate() {
             let y = y0 + dy;
             let srow = &shares[(y >> lb) * nbx..][..nbx];
-            // The row's new reference first, in loops of their own.
-            for (x, v) in vals.iter_mut().enumerate() {
-                *v = interp_with(columns, &self.nodes, nbx, nby, b, x, y);
+            // The row's new reference first, in loops of their own: the
+            // block rows above and below, then their vertical blend.
+            let fy = 2 * y as i32 + 1 - bi;
+            let by0 = fy >> ly;
+            let ty = fy - (by0 << ly);
+            let n = nby as i32;
+            let need = [if by0 < 0 { by0 + n } else { by0 } as usize, if by0 + 1 >= n { by0 + 1 - n } else { by0 + 1 } as usize];
+            let odd = !columns && y & 1 == 1;
+            let pair = if odd { 2 } else { 0 };
+            let mut slot = need.map(|r| (pair..pair + 2).find(|&k| held[k] == r));
+            for k in 0..2 {
+                if slot[k].is_none() {
+                    let s = if slot[1 - k] == Some(pair) { pair + 1 } else { pair };
+                    interp_x(columns, &self.nodes, nbx, b, odd, need[k], &mut xrows[s]);
+                    held[s] = need[k];
+                    slot[k] = Some(s);
+                }
+            }
+            let (r0, r1) = (&xrows[slot[0].unwrap()], &xrows[slot[1].unwrap()]);
+            let sy = 2 * bi;
+            for ((v, a), c) in vals.iter_mut().zip(r0.iter()).zip(r1.iter()) {
+                for k in 0..3 {
+                    v[k] = ((sy - ty).wrapping_mul(a[k]).wrapping_add(ty.wrapping_mul(c[k]))) >> ly;
+                }
             }
             for ((f, cell), &[nr, nx, ny]) in fresh.iter_mut().zip(crow.iter()).zip(vals.iter()) {
                 *f = if *cell & OBST != 0 { rest } else { feq_fixed(nr, nx, ny) };
