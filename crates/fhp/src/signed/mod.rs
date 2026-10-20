@@ -483,19 +483,13 @@ impl Signed {
                     let j = src[d] as usize;
                     let dl = self.delta[(self.cells[j] & STATE) as usize][d] as i32;
                     let r = self.phi[j][d].wrapping_sub(self.phi[i][d]);
-                    let v = if r == 0 {
-                        dl
-                    } else {
-                        let k = sround(r, lowbias32(ks ^ (i as u32).wrapping_mul(8).wrapping_add(d as u32).wrapping_mul(0x9e37_79b9)));
-                        acc.kicks += (k != 0) as u64;
-                        a[d] = a[d].wrapping_add(r.wrapping_sub(k.wrapping_mul(ONE)));
-                        dl + k
-                    };
+                    // sround(0, _) is 0, so r = 0 needs no case of its own.
+                    let k = sround(r, lowbias32(ks ^ (i as u32).wrapping_mul(8).wrapping_add(d as u32).wrapping_mul(0x9e37_79b9)));
+                    acc.kicks += (k != 0) as u64;
+                    let v = dl + k;
                     let c = v.clamp(-1, 1);
-                    if c != v {
-                        a[d] = a[d].wrapping_add((v - c).wrapping_mul(ONE));
-                        acc.sat += (v - c).unsigned_abs() as u64;
-                    }
+                    a[d] = a[d].wrapping_add(r.wrapping_sub(c.wrapping_sub(dl).wrapping_mul(ONE)));
+                    acc.sat += (v - c).unsigned_abs() as u64;
                     s += (c + 1) as u16 * POW3[d];
                 }
                 let rnd = if rule == Rule::Chiral {
@@ -813,11 +807,8 @@ impl Signed {
                         for ch in 0..NCH {
                             // The parked content is released into the field.
                             let dphi = p[ch].wrapping_add(share[ch]).wrapping_sub(new[ch]);
-                            let k = if dphi == 0 || nokick {
-                                0
-                            } else {
-                                sround(dphi, lowbias32(kq ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9)))
-                            };
+                            // sround(0, _) is 0, so dphi = 0 needs no case of its own.
+                            let k = if nokick { 0 } else { sround(dphi, lowbias32(kq ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9))) };
                             kicks += (k != 0) as u64;
                             let v = d[ch] as i32 + k;
                             let c = v.clamp(-1, 1);
