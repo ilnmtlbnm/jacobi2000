@@ -13,11 +13,11 @@ fn check_page(p: &mut Page, w: usize, h: usize, block: usize) {
     let s = p.setup;
     assert!(s.w >= w && s.h >= h && s.w.is_multiple_of(64) && s.h.is_multiple_of(16) && s.h.is_multiple_of(block), "{w}x{h} block {block} -> {}x{}", s.w, s.h);
     assert_eq!((p.field.nx, p.field.ny), (s.w / block, s.h / block));
-    p.advance(12);
+    p.advance(50);
     let sums = pollster::block_on(p.sample()).expect("block sums");
     assert_eq!(sums.mass.len(), (s.w / block) * (s.h / block));
     assert_eq!(p.frame().len(), (s.w / block) * (s.h / block) * 4);
-    assert_eq!(p.step(), 12);
+    assert_eq!(p.step(), 50);
     assert!(p.reynolds().is_finite());
 }
 
@@ -134,16 +134,16 @@ fn signed_street_options_place_the_plate_and_kick_the_wake() {
     assert_eq!(p.reference_block(), 8);
     assert_eq!(p.setup.obstacle, fhp::Obstacle::Plate { x: 256, y: 256, rows: 65, cols: 2 });
     let mut plain = Page::cpu_ref(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8).unwrap();
-    p.advance(12);
-    plain.advance(12);
+    p.advance(50);
+    plain.advance(50);
     pollster::block_on(p.sample());
     pollster::block_on(plain.sample());
     assert_ne!(p.frame(), plain.frame());
     // The default street is unchanged by the options' defaults.
     let mut same = Page::cpu_street(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8, &Street::default()).unwrap();
     let mut plain2 = Page::cpu_ref(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8).unwrap();
-    same.advance(12);
-    plain2.advance(12);
+    same.advance(50);
+    plain2.advance(50);
     pollster::block_on(same.sample());
     pollster::block_on(plain2.sample());
     assert_eq!(same.frame(), plain2.frame());
@@ -226,4 +226,54 @@ fn check_field(p: &Page, model: Model) {
         }
     }
     assert!(sat + signs > 0, "the flow has some vorticity");
+}
+
+/// The time average depends on the steps only: the same field after the
+/// same steps, whether they come in one call, one step per call, or mixed
+/// chunks with a `sample` after each call (as the page's frames do).
+fn chunked(mut p: Page, chunks: &[u32]) -> (Vec<f32>, Vec<u8>) {
+    for &n in chunks {
+        p.advance(n);
+        pollster::block_on(p.sample());
+    }
+    (p.field(), p.frame())
+}
+
+const STEPS: u32 = 230;
+
+fn splits() -> Vec<Vec<u32>> {
+    let mixed = [3u32, 7, 1, 50, 11, 2, 49, 5, 60, 42];
+    assert_eq!(mixed.iter().sum::<u32>(), STEPS);
+    vec![vec![STEPS], vec![1; STEPS as usize], mixed.to_vec()]
+}
+
+#[test]
+fn cpu_average_does_not_depend_on_the_steps_per_call() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let make = || Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
+        let r: Vec<_> = splits().iter().map(|c| chunked(make(), c)).collect();
+        assert!(r[0].0.iter().any(|&v| v != 0.0), "{model:?}: empty field");
+        assert_eq!(r[0], r[1], "{model:?}: one call vs one step per call");
+        assert_eq!(r[0], r[2], "{model:?}: one call vs mixed chunks");
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_average_does_not_depend_on_the_steps_per_call() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let make = || pollster::block_on(Page::gpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street));
+        let Ok(first) = make() else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let cpu = chunked(Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap(), &[STEPS]);
+        let s = splits();
+        let one = chunked(first, &s[0]);
+        assert_eq!(one, cpu, "{model:?}: GPU vs CPU");
+        assert_eq!(chunked(make().unwrap(), &s[1]), one, "{model:?}: one call vs one step per call");
+        assert_eq!(chunked(make().unwrap(), &s[2]), one, "{model:?}: one call vs mixed chunks");
+    }
 }

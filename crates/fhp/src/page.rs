@@ -13,11 +13,13 @@ use crate::ternary::engine::{self, Ternary};
 use crate::ternary::{self as tern, Rule};
 use crate::{Obstacle, Setup, SizeLimits};
 
-/// Steps between samples of the block sums inside a frame's window.
+/// The block sums are sampled after every step that is a multiple of
+/// SAMPLE_EVERY, counted from the start of the simulation.
 const SAMPLE_EVERY: u32 = 5;
-/// Steps at the end of each `advance` that are averaged into a frame.
+/// Steps per window: the samples of each window of WINDOW steps (aligned to
+/// step 0) are summed and folded into the running average as one value.
 const WINDOW: u32 = 50;
-/// Weight of a new frame in the running average across frames.
+/// Weight of a new window in the running average across windows.
 const ALPHA: f32 = 0.5;
 
 /// Ternary density (particles per channel), the operating point.
@@ -139,10 +141,17 @@ pub struct Page {
     pub field: Field,
     /// The signed model's reference block (0 for the others).
     pub refblock: usize,
-    /// CPU-side accumulated block sums of the current frame.
+    /// CPU-side accumulated block sums of the current window.
     acc: Option<BlockSums>,
-    /// Samples summed into the frame's block sums since the last fold.
+    /// Samples summed into the current window's block sums.
     samples: i32,
+    /// Steps asked for by `advance` and not run yet: the GPU engines stop at
+    /// the end of a window until its sums are read back (`sample`).
+    pending: u32,
+    /// A window is complete and its GPU sums are waiting for `sample`.
+    sealed: bool,
+    /// The sums of the last window folded since the last `sample`.
+    last: Option<BlockSums>,
     pub adapter: String,
 }
 
@@ -282,7 +291,7 @@ impl Page {
 
     fn new(model: Model, setup: Setup, block: usize, refblock: usize, eng: Eng, adapter: String) -> Self {
         let field = Field::new(setup.w / block, setup.h / block, block, block);
-        Page { eng, model, setup, block, field, refblock, acc: None, samples: 0, adapter }
+        Page { eng, model, setup, block, field, refblock, acc: None, samples: 0, pending: 0, sealed: false, last: None, adapter }
     }
 
     /// The signed model's parameters with reference block `refblock` (0:
@@ -426,21 +435,44 @@ impl Page {
         }
     }
 
-    /// Run `n` steps; the last min(n, 50) are sampled every 5 steps into
-    /// the frame's block sums.
+    /// Run `n` steps. The block sums are sampled after every step that is
+    /// a multiple of 5 and folded into the time average once per window of
+    /// 50 steps, so the average depends on the steps only, not on how they
+    /// are split across calls. On the GPU a completed window stops the run
+    /// until `sample` reads its sums; `sample` then runs the rest.
     pub fn advance(&mut self, n: u32) {
-        let window = n.min(WINDOW);
-        let samples = (window / SAMPLE_EVERY).max(1);
-        let gap = window / samples;
-        self.run(n - samples * gap);
-        for _ in 0..samples {
-            self.run(gap);
-            self.accumulate();
-        }
-        self.samples += samples as i32;
+        self.pending += n;
+        self.drive();
     }
 
-    /// The GPU engine's accumulated block sums of the frame (None on the CPU).
+    /// Run pending steps up to the end of the next window that needs a GPU
+    /// read-back (CPU windows are folded on the spot).
+    fn drive(&mut self) {
+        while self.pending > 0 && !self.sealed {
+            let to_sample = SAMPLE_EVERY - self.step() % SAMPLE_EVERY;
+            let k = self.pending.min(to_sample);
+            self.run(k);
+            self.pending -= k;
+            if self.step().is_multiple_of(SAMPLE_EVERY) {
+                self.accumulate();
+                self.samples += 1;
+                if self.samples as u32 == WINDOW / SAMPLE_EVERY {
+                    if self.acc.is_some() {
+                        self.fold_window(None);
+                    } else {
+                        self.sealed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether a completed window's GPU sums are waiting to be read.
+    pub fn needs_sums(&self) -> bool {
+        self.sealed
+    }
+
+    /// The GPU engine's accumulated block sums of the window (None on the CPU).
     pub async fn take_gpu_sums(&self) -> Option<BlockSums> {
         match &self.eng {
             #[cfg(feature = "gpu")]
@@ -453,9 +485,9 @@ impl Page {
         }
     }
 
-    /// Fold the frame's block sums (the GPU's, else the CPU's) into the
-    /// time-averaged field; returns them.
-    pub fn fold(&mut self, gpu: Option<BlockSums>) -> Option<BlockSums> {
+    /// Fold a completed window's block sums (the GPU's, else the CPU's)
+    /// into the time-averaged field; returns them.
+    fn fold_window(&mut self, gpu: Option<BlockSums>) -> Option<BlockSums> {
         let sums = gpu.or_else(|| self.acc.take());
         if let Some(s) = &sums {
             self.field.add(s, ALPHA);
@@ -466,13 +498,32 @@ impl Page {
             }
             self.samples = 0;
         }
+        self.last = sums.clone();
         sums
     }
 
-    /// `take_gpu_sums` then `fold`.
+    /// Fold the sealed window's GPU sums (from `take_gpu_sums`), then run
+    /// the pending steps up to the next sealed window; returns the sums.
+    pub fn fold(&mut self, gpu: Option<BlockSums>) -> Option<BlockSums> {
+        let sums = if self.sealed {
+            self.sealed = false;
+            self.fold_window(gpu)
+        } else {
+            None
+        };
+        self.drive();
+        sums
+    }
+
+    /// Read and fold every window completed by the pending steps, running
+    /// them all; returns the sums of the last window folded since the last
+    /// call (None if none completed).
     pub async fn sample(&mut self) -> Option<BlockSums> {
-        let g = self.take_gpu_sums().await;
-        self.fold(g)
+        while self.sealed {
+            let g = self.take_gpu_sums().await;
+            self.fold(g);
+        }
+        self.last.take()
     }
 
     /// RGBA vorticity image, one pixel per block, top row first; the scale

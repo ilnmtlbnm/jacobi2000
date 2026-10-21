@@ -58,27 +58,30 @@ impl Sim {
         Ok(Sim { inner: Rc::new(RefCell::new(p)) })
     }
 
-    /// Run `n` steps; the last min(n, 50) are sampled every 5 steps into
-    /// the frame's block sums.
+    /// Run `n` steps (see `Page::advance`: the time average is sampled
+    /// every 5 steps and folded every 50, whatever the split into calls).
     pub fn advance(&self, n: u32) {
         self.inner.borrow_mut().advance(n);
     }
 
-    /// Fold the frame's block sums into the time-averaged field. The worker
-    /// awaits this before its next call, so holding the borrow across the
-    /// readback cannot collide with another borrow.
+    /// Fold the completed windows' block sums into the time-averaged field
+    /// and run the steps still pending. The worker awaits this before its
+    /// next call, so holding the borrow across the readback cannot collide
+    /// with another borrow.
     #[cfg(feature = "gpu")]
     #[allow(clippy::await_holding_refcell_ref)]
     pub fn sample(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let sums = inner.borrow().take_gpu_sums().await;
-            inner.borrow_mut().fold(sums);
+            while inner.borrow().needs_sums() {
+                let sums = inner.borrow().take_gpu_sums().await;
+                inner.borrow_mut().fold(sums);
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
 
-    /// Fold the frame's block sums into the time-averaged field.
+    /// CPU windows are folded as they complete; nothing is left to do.
     #[cfg(not(feature = "gpu"))]
     pub fn sample(&self) {
         self.inner.borrow_mut().fold(None);
