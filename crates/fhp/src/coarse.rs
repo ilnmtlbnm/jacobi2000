@@ -1,6 +1,9 @@
 //! Coarse-graining: block sums of mass and momentum, a running time
 //! average, vorticity, and RGBA rendering.
 
+/// Samples of the block sums a GPU engine holds between read-backs.
+pub const SAMPLE_SLOTS: usize = 16;
+
 /// Integer block sums, row-major over blocks: momentum in units
 /// (2 px, 2 py / sqrt 3), particles, and fluid sites.
 #[derive(Clone, Debug, Default, PartialEq)]

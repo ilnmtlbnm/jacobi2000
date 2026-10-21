@@ -58,13 +58,13 @@ impl Sim {
         Ok(Sim { inner: Rc::new(RefCell::new(p)) })
     }
 
-    /// Run `n` steps (see `Page::advance`: the time average is sampled
-    /// every 5 steps and folded every 50, whatever the split into calls).
+    /// Run `n` steps (see `Page::advance`: the time average is sampled and
+    /// folded every 5 steps, whatever the split into calls).
     pub fn advance(&self, n: u32) {
         self.inner.borrow_mut().advance(n);
     }
 
-    /// Fold the completed windows' block sums into the time-averaged field
+    /// Read back the GPU samples, fold them into the time-averaged field
     /// and run the steps still pending. The worker awaits this before its
     /// next call, so holding the borrow across the readback cannot collide
     /// with another borrow.
@@ -74,17 +74,17 @@ impl Sim {
         let inner = self.inner.clone();
         wasm_bindgen_futures::future_to_promise(async move {
             while inner.borrow().needs_sums() {
-                let sums = inner.borrow().take_gpu_sums().await;
-                inner.borrow_mut().fold(sums);
+                let samples = inner.borrow_mut().take_gpu_samples().await;
+                inner.borrow_mut().fold(samples);
             }
             Ok(JsValue::UNDEFINED)
         })
     }
 
-    /// CPU windows are folded as they complete; nothing is left to do.
+    /// CPU samples are folded as they are taken; nothing is left to do.
     #[cfg(not(feature = "gpu"))]
     pub fn sample(&self) {
-        self.inner.borrow_mut().fold(None);
+        self.inner.borrow_mut().fold(vec![]);
     }
 
     /// RGBA vorticity image, `imageWidth` x `imageHeight`, top row first.

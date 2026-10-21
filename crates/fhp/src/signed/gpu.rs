@@ -9,7 +9,7 @@
 #![cfg(feature = "gpu")]
 
 use super::{fixed_values, Params, Signed, COLUMNS, NOKICK, WALLS, STREAM_COLLIDE, STREAM_REFRESH, STREAM_REQUANT, STREAM_ROUND};
-use crate::coarse::BlockSums;
+use crate::coarse::{BlockSums, SAMPLE_SLOTS};
 use crate::step_key;
 use crate::ternary::{Rule, Table, NCH, NSTATE};
 
@@ -68,6 +68,9 @@ struct Coarse {
     ny: usize,
     out: wgpu::Buffer,
     groups: [wgpu::BindGroup; 2],
+    /// `SAMPLE_SLOTS` samples of the block sums, and how many are held.
+    ring: wgpu::Buffer,
+    held: usize,
 }
 
 /// A cell from the CPU's form (base-3 code of delta + 1, flags in bits 14
@@ -461,6 +464,50 @@ impl Gpu {
         BlockSums { nx: c.nx, ny: c.ny, bw: c.bw, bh: c.bh, jx: col(0), jy: col(1), mass: col(2), fluid: col(3) }
     }
 
+    /// Sample the current block sums into the next slot of the sample ring
+    /// (queued, no wait): at most `SAMPLE_SLOTS` before `take_samples`.
+    /// Changing the block size resets the ring.
+    pub fn sample_sums(&mut self, bw: usize, bh: usize) {
+        assert!(self.w.is_multiple_of(bw) && self.h.is_multiple_of(bh));
+        if self.coarse.as_ref().is_none_or(|c| (c.bw, c.bh) != (bw, bh)) {
+            self.coarse = Some(self.make_coarse(bw, bh));
+        }
+        self.write_out_params();
+        let c = self.coarse.as_mut().unwrap();
+        assert!(c.held < SAMPLE_SLOTS, "take_samples first");
+        let size = (c.nx * c.ny * 16) as u64;
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.clear_buffer(&c.out, 0, None);
+        {
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.coarse_pipe);
+            pass.set_bind_group(0, &c.groups[self.cur], &[]);
+            pass.dispatch_workgroups(c.nx as u32, c.ny as u32, 1);
+        }
+        enc.copy_buffer_to_buffer(&c.out, 0, &c.ring, c.held as u64 * size, size);
+        self.queue.submit(Some(enc.finish()));
+        c.held += 1;
+    }
+
+    /// The samples taken since the last call, oldest first.
+    pub async fn take_samples(&mut self) -> Vec<BlockSums> {
+        let Some(c) = self.coarse.as_ref() else { return vec![] };
+        if c.held == 0 {
+            return vec![];
+        }
+        let n = c.nx * c.ny * 4;
+        let v = self.read_buffer(&c.ring, (c.held * n * 4) as u64).await;
+        let out = v
+            .chunks(n)
+            .map(|s| {
+                let col = |k: usize| s.iter().skip(k).step_by(4).copied().collect();
+                BlockSums { nx: c.nx, ny: c.ny, bw: c.bw, bh: c.bh, jx: col(0), jy: col(1), mass: col(2), fluid: col(3) }
+            })
+            .collect();
+        self.coarse.as_mut().unwrap().held = 0;
+        out
+    }
+
     fn make_coarse(&self, bw: usize, bh: usize) -> Coarse {
         let (nx, ny) = (self.w / bw, self.h / bh);
         let u = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("coarse params"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -482,6 +529,7 @@ impl Gpu {
                 ],
             })
         });
-        Coarse { bw, bh, nx, ny, out, groups }
+        let ring = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("samples"), size: size * SAMPLE_SLOTS as u64, usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        Coarse { bw, bh, nx, ny, out, groups, ring, held: 0 }
     }
 }

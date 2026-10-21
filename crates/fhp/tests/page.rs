@@ -161,7 +161,7 @@ fn field_and_obstacle_match_the_frame() {
         let mut p = Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
         for _ in 0..4 {
             p.advance(200);
-            p.fold(None);
+            p.fold(vec![]);
         }
         check_field(&p, model);
     }

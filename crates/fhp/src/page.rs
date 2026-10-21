@@ -14,13 +14,17 @@ use crate::ternary::{self as tern, Rule};
 use crate::{Obstacle, Setup, SizeLimits};
 
 /// The block sums are sampled after every step that is a multiple of
-/// SAMPLE_EVERY, counted from the start of the simulation.
+/// SAMPLE_EVERY, counted from the start of the simulation, and each sample
+/// is folded into the running average.
 const SAMPLE_EVERY: u32 = 5;
-/// Steps per window: the samples of each window of WINDOW steps (aligned to
-/// step 0) are summed and folded into the running average as one value.
-const WINDOW: u32 = 50;
-/// Weight of a new window in the running average across windows.
-const ALPHA: f32 = 0.5;
+/// Steps over which the running average decays by half (a weight of
+/// 1 - 0.5^(SAMPLE_EVERY / HALF_LIFE) per sample).
+const HALF_LIFE: f64 = 50.0;
+
+/// Weight of a new sample in the running average.
+fn alpha() -> f32 {
+    (1.0 - 0.5f64.powf(SAMPLE_EVERY as f64 / HALF_LIFE)) as f32
+}
 
 /// Ternary density (particles per channel), the operating point.
 pub const TERNARY_DENSITY: f64 = 0.6;
@@ -141,16 +145,12 @@ pub struct Page {
     pub field: Field,
     /// The signed model's reference block (0 for the others).
     pub refblock: usize,
-    /// CPU-side accumulated block sums of the current window.
-    acc: Option<BlockSums>,
-    /// Samples summed into the current window's block sums.
-    samples: i32,
-    /// Steps asked for by `advance` and not run yet: the GPU engines stop at
-    /// the end of a window until its sums are read back (`sample`).
+    /// Steps asked for by `advance` and not run yet: a GPU engine stops
+    /// when its sample ring is full, until `sample` reads it back.
     pending: u32,
-    /// A window is complete and its GPU sums are waiting for `sample`.
-    sealed: bool,
-    /// The sums of the last window folded since the last `sample`.
+    /// Samples held on the GPU, not yet read back.
+    held: usize,
+    /// The last sample folded since the last `sample`.
     last: Option<BlockSums>,
     pub adapter: String,
 }
@@ -291,7 +291,7 @@ impl Page {
 
     fn new(model: Model, setup: Setup, block: usize, refblock: usize, eng: Eng, adapter: String) -> Self {
         let field = Field::new(setup.w / block, setup.h / block, block, block);
-        Page { eng, model, setup, block, field, refblock, acc: None, samples: 0, pending: 0, sealed: false, last: None, adapter }
+        Page { eng, model, setup, block, field, refblock, pending: 0, held: 0, last: None, adapter }
     }
 
     /// The signed model's parameters with reference block `refblock` (0:
@@ -402,23 +402,26 @@ impl Page {
         }
     }
 
-    fn accumulate(&mut self) {
+    /// Sample the block sums: folded on the spot on the CPU, queued into
+    /// the engine's sample ring on the GPU.
+    fn take_sample(&mut self) {
         let b = self.block;
         let s = match &mut self.eng {
             Eng::Fhp3Cpu(e) => e.block_sums(b, b),
             Eng::TernaryCpu(e) => e.block_sums(b, b),
             Eng::SignedCpu(e) => e.page_sums(b, b),
             #[cfg(feature = "gpu")]
-            Eng::Fhp3Gpu(g) => return g.accumulate_sums(b, b),
+            Eng::Fhp3Gpu(g) => return g.sample_sums(b, b),
             #[cfg(feature = "gpu")]
-            Eng::TernaryGpu(g) => return g.accumulate_sums(b, b),
+            Eng::TernaryGpu(g) => return g.sample_sums(b, b),
             #[cfg(feature = "gpu")]
-            Eng::SignedGpu(g) => return g.accumulate_sums(b, b),
+            Eng::SignedGpu(g) => return g.sample_sums(b, b),
         };
-        match self.acc.as_mut() {
-            Some(a) => a.add(&s),
-            None => self.acc = Some(s),
-        }
+        self.fold_sample(s);
+    }
+
+    fn is_gpu(&self) -> bool {
+        !matches!(self.eng, Eng::Fhp3Cpu(_) | Eng::TernaryCpu(_) | Eng::SignedCpu(_))
     }
 
     pub fn step(&self) -> u32 {
@@ -436,92 +439,78 @@ impl Page {
     }
 
     /// Run `n` steps. The block sums are sampled after every step that is
-    /// a multiple of 5 and folded into the time average once per window of
-    /// 50 steps, so the average depends on the steps only, not on how they
-    /// are split across calls. On the GPU a completed window stops the run
-    /// until `sample` reads its sums; `sample` then runs the rest.
+    /// a multiple of 5 and each sample is folded into the time average, so
+    /// the average depends on the steps only, not on how they are split
+    /// across calls. The GPU engines keep up to `SAMPLE_SLOTS` samples on
+    /// the device; `sample` reads them back and folds them in order (a full
+    /// ring stops the run until then).
     pub fn advance(&mut self, n: u32) {
         self.pending += n;
         self.drive();
     }
 
-    /// Run pending steps up to the end of the next window that needs a GPU
-    /// read-back (CPU windows are folded on the spot).
+    /// Run pending steps, sampling on the way, until they are done or the
+    /// GPU sample ring is full.
     fn drive(&mut self) {
-        while self.pending > 0 && !self.sealed {
+        while self.pending > 0 && self.held < crate::coarse::SAMPLE_SLOTS {
             let to_sample = SAMPLE_EVERY - self.step() % SAMPLE_EVERY;
             let k = self.pending.min(to_sample);
             self.run(k);
             self.pending -= k;
             if self.step().is_multiple_of(SAMPLE_EVERY) {
-                self.accumulate();
-                self.samples += 1;
-                if self.samples as u32 == WINDOW / SAMPLE_EVERY {
-                    if self.acc.is_some() {
-                        self.fold_window(None);
-                    } else {
-                        self.sealed = true;
-                    }
+                self.take_sample();
+                if self.is_gpu() {
+                    self.held += 1;
                 }
             }
         }
     }
 
-    /// Whether a completed window's GPU sums are waiting to be read.
+    /// Whether GPU samples are waiting to be read back.
     pub fn needs_sums(&self) -> bool {
-        self.sealed
+        self.held > 0
     }
 
-    /// The GPU engine's accumulated block sums of the window (None on the CPU).
-    pub async fn take_gpu_sums(&self) -> Option<BlockSums> {
-        match &self.eng {
+    /// The GPU samples taken since the last read, oldest first (none on the
+    /// CPU).
+    pub async fn take_gpu_samples(&mut self) -> Vec<BlockSums> {
+        match &mut self.eng {
             #[cfg(feature = "gpu")]
-            Eng::Fhp3Gpu(g) => Some(g.take_sums().await),
+            Eng::Fhp3Gpu(g) => g.take_samples().await,
             #[cfg(feature = "gpu")]
-            Eng::TernaryGpu(g) => Some(g.take_sums().await),
+            Eng::TernaryGpu(g) => g.take_samples().await,
             #[cfg(feature = "gpu")]
-            Eng::SignedGpu(g) => Some(g.take_sums().await),
-            _ => None,
+            Eng::SignedGpu(g) => g.take_samples().await,
+            _ => vec![],
         }
     }
 
-    /// Fold a completed window's block sums (the GPU's, else the CPU's)
-    /// into the time-averaged field; returns them.
-    fn fold_window(&mut self, gpu: Option<BlockSums>) -> Option<BlockSums> {
-        let sums = gpu.or_else(|| self.acc.take());
-        if let Some(s) = &sums {
-            self.field.add(s, ALPHA);
-            // The sums hold every sample's fluid count: a block with an obstacle site has fewer.
-            let full = (s.bw * s.bh) as i32 * self.samples.max(1);
-            for (solid, &f) in self.field.solid.iter_mut().zip(&s.fluid) {
-                *solid = f < full;
-            }
-            self.samples = 0;
+    fn fold_sample(&mut self, s: BlockSums) {
+        self.field.add(&s, alpha());
+        let full = (s.bw * s.bh) as i32;
+        for (solid, &f) in self.field.solid.iter_mut().zip(&s.fluid) {
+            *solid = f < full;
         }
-        self.last = sums.clone();
-        sums
+        self.last = Some(s);
     }
 
-    /// Fold the sealed window's GPU sums (from `take_gpu_sums`), then run
-    /// the pending steps up to the next sealed window; returns the sums.
-    pub fn fold(&mut self, gpu: Option<BlockSums>) -> Option<BlockSums> {
-        let sums = if self.sealed {
-            self.sealed = false;
-            self.fold_window(gpu)
-        } else {
-            None
-        };
+    /// Fold GPU samples (from `take_gpu_samples`) in order, then run the
+    /// pending steps.
+    pub fn fold(&mut self, samples: Vec<BlockSums>) {
+        self.held = 0;
+        for s in samples {
+            self.fold_sample(s);
+        }
         self.drive();
-        sums
     }
 
-    /// Read and fold every window completed by the pending steps, running
-    /// them all; returns the sums of the last window folded since the last
-    /// call (None if none completed).
+    /// Read back and fold the GPU samples, running every pending step (one
+    /// read-back unless more than `SAMPLE_SLOTS` samples were due); returns
+    /// the last sample folded since the last call.
     pub async fn sample(&mut self) -> Option<BlockSums> {
-        while self.sealed {
-            let g = self.take_gpu_sums().await;
-            self.fold(g);
+        while self.needs_sums() {
+            let s = self.take_gpu_samples().await;
+            self.fold(s);
         }
         self.last.take()
     }
