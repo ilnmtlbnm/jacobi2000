@@ -32,6 +32,9 @@ pub struct Average {
     group: wgpu::BindGroup,
     samples: u32,
     read: Option<Read>,
+    /// The staging buffer, kept between reads (one read at a time, so it is
+    /// always unmapped before the next copy into it).
+    staging: Option<wgpu::Buffer>,
     /// Read-backs whose map failed (dropped; the average is unaffected).
     pub failures: u32,
 }
@@ -53,7 +56,7 @@ impl Average {
                 wgpu::BindGroupEntry { binding: 2, resource: q.as_entire_binding() },
             ],
         });
-        Average { n, q, params, pipe, group, samples: 0, read: None, failures: 0 }
+        Average { n, q, params, pipe, group, samples: 0, read: None, staging: None, failures: 0 }
     }
 
     /// Record the fold of the sums into `enc` (submitted by the caller);
@@ -81,7 +84,7 @@ impl Average {
             return;
         }
         let size = (self.n * 16) as u64;
-        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("average read"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let buf = self.staging.take().unwrap_or_else(|| device.create_buffer(&wgpu::BufferDescriptor { label: Some("average read"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
         let mut enc = device.create_command_encoder(&Default::default());
         enc.copy_buffer_to_buffer(&self.q, 0, &buf, 0, size);
         queue.submit(Some(enc.finish()));
@@ -125,6 +128,7 @@ impl Average {
             data.as_chunks::<4>().0.iter().map(|c| i32::from_le_bytes(*c)).collect()
         };
         r.buf.unmap();
+        self.staging = Some(r.buf);
         Some((q, r.samples))
     }
 
