@@ -458,22 +458,24 @@ impl Page {
     /// requested read-back has arrived (taken into the field); on the CPU,
     /// always. Does not wait.
     pub fn field_ready(&mut self) -> bool {
-        let got = match &mut self.eng {
-            #[cfg(feature = "gpu")]
-            Eng::Fhp3Gpu(g) => g.average_ready(),
-            #[cfg(feature = "gpu")]
-            Eng::TernaryGpu(g) => g.average_ready(),
-            #[cfg(feature = "gpu")]
-            Eng::SignedGpu(g) => g.average_ready(),
-            _ => return true,
-        };
-        match got {
-            Some((q, samples)) => {
-                self.field.set_q(&q, samples);
-                true
+        #[cfg(feature = "gpu")]
+        {
+            let got = match &mut self.eng {
+                Eng::Fhp3Gpu(g) => g.average_ready(),
+                Eng::TernaryGpu(g) => g.average_ready(),
+                Eng::SignedGpu(g) => g.average_ready(),
+                _ => return true,
+            };
+            match got {
+                Some((q, samples)) => {
+                    self.field.set_q(&q, samples);
+                    true
+                }
+                None => false,
             }
-            None => false,
         }
+        #[cfg(not(feature = "gpu"))]
+        true
     }
 
     /// Whether a read-back of the average is in flight.
