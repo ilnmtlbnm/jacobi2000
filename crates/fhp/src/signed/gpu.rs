@@ -1,18 +1,22 @@
 //! Signed ternary FHP on the GPU (`shaders/signed.wgsl`), bit-identical to
-//! `Signed`: one u32 per site, the reference phi as 7 i32 per site, and 32
+//! `Signed`: one u32 per site (two bits per channel, see `two_bit`), the reference phi as 7 i32 per site, and 32
 //! words per reference block (reservoir, fluid sites, the old reservoir's
 //! share during a re-estimate, the sum of phi, two slots of block values).
 //! A step is one dispatch; a re-estimate adds one (`requant`). Block sums
-//! are workgroup reductions over block-aligned tiles, with no atomics.
+//! are workgroup reductions (workgroup atomics, exact for integers) over
+//! block-aligned tiles, written by one workgroup each, with no global atomics.
 
 #![cfg(feature = "gpu")]
 
 use super::{fixed_values, Params, Signed, COLUMNS, NOKICK, WALLS, STREAM_COLLIDE, STREAM_REFRESH, STREAM_REQUANT, STREAM_ROUND};
+use crate::average::Average;
 use crate::coarse::BlockSums;
 use crate::step_key;
 use crate::ternary::{Rule, Table, NCH, NSTATE};
 
 const BATCH: usize = 128;
+/// Workgroup rows of `step` and `requant` (`WGY` in the shader).
+const WGY: usize = 1;
 const SLOT: u64 = 256;
 const PARAMS: u64 = 80;
 /// Words per reference block, and their layout (as in the shader).
@@ -36,9 +40,9 @@ pub struct Gpu {
     pub adapter: String,
     nbx: usize,
     nby: usize,
-    /// Tile height, max(B, 4).
-    th: usize,
     device: wgpu::Device,
+    /// The first GPU error or device loss (browser only).
+    pub health: crate::health::Health,
     queue: wgpu::Queue,
     step_pipe: wgpu::ComputePipeline,
     requant_pipe: wgpu::ComputePipeline,
@@ -67,6 +71,25 @@ struct Coarse {
     ny: usize,
     out: wgpu::Buffer,
     groups: [wgpu::BindGroup; 2],
+    /// The running time average of the samples.
+    avg: Average,
+}
+
+/// A cell from the CPU's form (base-3 code of delta + 1, flags in bits 14
+/// and 15) to the GPU's (delta + 1 in two bits per channel, same flags).
+fn two_bit(c: u32) -> u32 {
+    let mut code = c & 0x3fff;
+    let mut out = c & 0xc000;
+    for ch in 0..NCH {
+        out |= (code % 3) << (2 * ch);
+        code /= 3;
+    }
+    out
+}
+
+/// The inverse of `two_bit`.
+fn base3(c: u32) -> u32 {
+    (0..NCH).rev().fold(0, |code, ch| code * 3 + ((c >> (2 * ch)) & 3)) | (c & 0xc000)
 }
 
 fn bytes<T: Copy + Into<i64>>(v: &[T]) -> Vec<u8> {
@@ -91,10 +114,6 @@ impl Gpu {
         let b = params.block;
         if !(b.is_power_of_two() && (2..=64).contains(&b) && w.is_multiple_of(b) && h.is_multiple_of(b)) {
             return Err(format!("reference block {b}: a power of two from 2 to 64 dividing {w}x{h}"));
-        }
-        let th = b.max(4);
-        if !h.is_multiple_of(th) {
-            return Err(format!("reference block {b}: H must be a multiple of {th}"));
         }
         if !matches!(params.rule, Rule::Optimal | Rule::Chiral) {
             return Err("the GPU engine has rules optimal and chiral".into());
@@ -146,9 +165,9 @@ impl Gpu {
         let coarse_pipe = pipe("coarse", Some(&out_layout));
 
         let t = Table::new();
-        let mut tab: Vec<u32> = t.chiral.iter().map(|c| c[0] as u32 | (c[1] as u32) << 16).collect();
-        tab.extend((0..NSTATE as u16).map(|s| crate::ternary::bounce(s) as u32));
-        tab.extend(t.opt.iter().flat_map(|o| o.chunks(2).map(|p| p[0] as u32 | (p[1] as u32) << 16)));
+        let mut tab: Vec<u32> = t.chiral.iter().map(|c| two_bit(c[0] as u32) | two_bit(c[1] as u32) << 16).collect();
+        tab.extend((0..NSTATE as u16).map(|s| two_bit(crate::ternary::bounce(s) as u32)));
+        tab.extend(t.opt.iter().flat_map(|o| o.chunks(2).map(|p| two_bit(p[0] as u32) | two_bit(p[1] as u32) << 16)));
 
         let (nbx, nby) = (w / b, h / b);
         let mut blk = vec![0i32; nbx * nby * BW];
@@ -171,7 +190,8 @@ impl Gpu {
         let blkb = mk("blocks", blk.len() * 4);
         let phib = mk("phi", n * NCH * 4);
         for (k, part) in cells.chunks(1 << 20).enumerate() {
-            queue.write_buffer(&state[0], (k << 22) as u64, &bytes(part));
+            let part: Vec<u32> = part.iter().map(|&c| two_bit(c as u32)).collect();
+            queue.write_buffer(&state[0], (k << 22) as u64, &bytes(&part));
         }
         queue.write_buffer(&tabb, 0, &bytes(&tab));
         queue.write_buffer(&blkb, 0, &bytes(&blk));
@@ -198,7 +218,9 @@ impl Gpu {
                 })
             })
             .collect();
+        let health = crate::health::Health::watch(&device);
         let g = Gpu {
+            health,
             w,
             h,
             params,
@@ -206,7 +228,6 @@ impl Gpu {
             adapter: adapter_name,
             nbx,
             nby,
-            th,
             device,
             queue,
             step_pipe,
@@ -234,7 +255,8 @@ impl Gpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&g.requant_pipe);
             pass.set_bind_group(0, &g.groups[0][1], &[]);
-            pass.dispatch_workgroups((w / 64) as u32, (h / th) as u32, 1);
+            let (tx, ty) = g.tiles();
+            pass.dispatch_workgroups(tx, ty, 1);
         }
         g.queue.submit(Some(enc.finish()));
         Ok(g)
@@ -247,6 +269,21 @@ impl Gpu {
         let mut g = Self::new(s.w, s.h, s.params, || (s.cells.clone(), s.nodes.clone(), s.res.clone())).await?;
         g.step = s.step;
         Ok(g)
+    }
+
+    /// Rows per invocation of `step` and `requant`: R = B up to 16 (an
+    /// invocation's sites are one column of one block, so a tile has few
+    /// blocks and few atomic additions per site), with at most 64 blocks per
+    /// tile (R <= B^2 / WGY) and whole blocks in a tile (R >= B / WGY).
+    fn rows(&self) -> usize {
+        let b = self.params.block;
+        b.min(16).min(b * b / WGY).max(b / WGY)
+    }
+
+    /// Workgroups of `step` and `requant`: tiles of 64 columns by WGY R rows
+    /// (the last one partly empty when they do not divide H).
+    fn tiles(&self) -> (u32, u32) {
+        ((self.w / 64) as u32, self.h.div_ceil(WGY * self.rows()) as u32)
     }
 
     /// The uniform words of step `t` (node slot `self.slot`).
@@ -284,7 +321,7 @@ impl Gpu {
             jx_in,
             p.rho0(),
             self.slot as i32,
-            self.th as i32,
+            self.rows().trailing_zeros() as i32,
             0,
         ]
     }
@@ -292,7 +329,7 @@ impl Gpu {
     /// Queue `n` steps (does not wait).
     pub fn run(&mut self, n: usize) {
         let mut left = n;
-        let tiles = ((self.w / 64) as u32, (self.h / self.th) as u32);
+        let tiles = self.tiles();
         while left > 0 {
             let k = left.min(BATCH);
             let mut u = vec![0i32; k * SLOT as usize / 4];
@@ -392,7 +429,7 @@ impl Gpu {
             pass.dispatch_workgroups((self.w / 64) as u32, self.h as u32, 1);
         }
         self.queue.submit(Some(enc.finish()));
-        let cells = self.read_buffer(&self.state[self.cur], (n * 4) as u64).await.into_iter().map(|v| v as u16).collect();
+        let cells = self.read_buffer(&self.state[self.cur], (n * 4) as u64).await.into_iter().map(|v| base3(v as u32) as u16).collect();
         let p = self.read_buffer(&phib, (n * NCH * 4) as u64).await;
         let phi = (0..n).map(|i| std::array::from_fn(|c| p[c * n + i])).collect();
         let b = self.read_buffer(&self.blk, (nb * BW * 4) as u64).await;
@@ -416,7 +453,7 @@ impl Gpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.coarse_pipe);
             pass.set_bind_group(0, &c.groups[self.cur], &[]);
-            pass.dispatch_workgroups(c.nx.div_ceil(64) as u32, c.ny as u32, 1);
+            pass.dispatch_workgroups(c.nx as u32, c.ny as u32, 1);
         }
         self.queue.submit(Some(enc.finish()));
     }
@@ -429,6 +466,64 @@ impl Gpu {
         self.queue.write_buffer(&c.out, 0, &vec![0u8; size as usize]);
         let col = |k: usize| v.iter().skip(k).step_by(4).copied().collect();
         BlockSums { nx: c.nx, ny: c.ny, bw: c.bw, bh: c.bh, jx: col(0), jy: col(1), mass: col(2), fluid: col(3) }
+    }
+
+    /// Sample the current block sums and fold them into the running time
+    /// average on the GPU (queued, no wait, no read-back). Changing the
+    /// block size resets the average.
+    pub fn sample_sums(&mut self, bw: usize, bh: usize) {
+        assert!(self.w.is_multiple_of(bw) && self.h.is_multiple_of(bh));
+        if self.coarse.as_ref().is_none_or(|c| (c.bw, c.bh) != (bw, bh)) {
+            self.coarse = Some(self.make_coarse(bw, bh));
+        }
+        self.write_out_params();
+        let c = self.coarse.as_mut().unwrap();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.clear_buffer(&c.out, 0, None);
+        {
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.coarse_pipe);
+            pass.set_bind_group(0, &c.groups[self.cur], &[]);
+            pass.dispatch_workgroups(c.nx as u32, c.ny as u32, 1);
+        }
+        c.avg.fold(&self.queue, &mut enc);
+        self.queue.submit(Some(enc.finish()));
+    }
+
+    /// Queue a read-back of the running average unless one is in flight.
+    pub fn request_average(&mut self) {
+        if let Some(c) = self.coarse.as_mut() {
+            c.avg.request(&self.device, &self.queue);
+        }
+    }
+
+    /// The read-back running average (4 words per block) and its sample
+    /// count, if it has arrived (does not wait).
+    pub fn average_ready(&mut self) -> Option<(Vec<i32>, u32)> {
+        self.coarse.as_mut()?.avg.ready(&self.device)
+    }
+
+    /// Read-backs of the average whose map failed.
+    pub fn average_failures(&self) -> u32 {
+        self.coarse.as_ref().map_or(0, |c| c.avg.failures)
+    }
+
+    /// Whether a read-back of the average is in flight.
+    pub fn average_reading(&self) -> bool {
+        self.coarse.as_ref().is_some_and(|c| c.avg.reading())
+    }
+
+    /// A receiver completed when the read-back of the average in flight
+    /// lands (None if none is pending).
+    pub fn average_waiter(&self) -> Option<futures_channel::oneshot::Receiver<()>> {
+        self.coarse.as_ref()?.avg.waiter()
+    }
+
+    /// Wait for the read-back of the average in flight.
+    pub async fn wait_average(&mut self) {
+        if let Some(c) = self.coarse.as_mut() {
+            c.avg.wait(&self.device).await;
+        }
     }
 
     fn make_coarse(&self, bw: usize, bh: usize) -> Coarse {
@@ -452,6 +547,7 @@ impl Gpu {
                 ],
             })
         });
-        Coarse { bw, bh, nx, ny, out, groups }
+        let avg = Average::new(&self.device, &out, nx * ny);
+        Coarse { bw, bh, nx, ny, out, groups, avg }
     }
 }

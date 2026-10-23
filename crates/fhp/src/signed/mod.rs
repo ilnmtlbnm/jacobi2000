@@ -26,7 +26,7 @@ pub mod gpu;
 pub mod measure;
 
 use crate::ternary::{counts, Rule, Table, NCH, NSTATE, POW3};
-use crate::{lowbias32, source, step_key, CX2, CY2, NDIR};
+use crate::{lowbias32, step_key, CX2, CY2, DX, DY, NDIR};
 
 /// Diagnostics: keep the reference at rest (density only), and skip the
 /// re-quantization kicks (the reservoir takes everything).
@@ -60,6 +60,10 @@ pub const REFRESH: u32 = 32;
 /// frame's sum of 32 x 32 blocks fits an i32.
 pub const SUM_SHIFT: u32 = 4;
 
+/// Lanes of the per-channel arithmetic: the seven channels padded to eight.
+const LANES: usize = 8;
+const POW3_LANES: [u32; LANES] = [1, 3, 9, 27, 81, 243, 729, 0];
+
 pub fn velocity(i: usize) -> (f64, f64) {
     crate::ternary::velocity(i)
 }
@@ -90,6 +94,21 @@ pub fn div16(num: i32, den: i32) -> i32 {
     q1.wrapping_mul(256).wrapping_add(q2)
 }
 
+/// `div16` of two numerators by one denominator. When nothing in `div16`
+/// wraps (|num| < 2^23, den < 2^23, quotient below 2^31) it is
+/// trunc(num 2^16 / den), one 64-bit division each; otherwise `div16`.
+#[inline(always)]
+pub fn div16_pair(n0: i32, n1: i32, den: i32) -> (i32, i32) {
+    const LIM: i64 = 1 << 23;
+    let d = den as i64;
+    let fits = |n: i32| (n as i64).abs() < LIM.min(d << 15);
+    if !(den > 0 && d < LIM && fits(n0) && fits(n1)) {
+        return (div16(n0, den), div16(n1, den));
+    }
+    let q = |n: i32| (((n as i64) << 16) / d) as i32;
+    (q(n0), q(n1))
+}
+
 /// sign(a b) (|a| |b| >> s), the low 32 bits (as `mul_shr` in the shader).
 #[inline(always)]
 pub fn mul_shr(a: i32, b: i32, s: u32) -> i32 {
@@ -108,8 +127,7 @@ pub fn mul_shr(a: i32, b: i32, s: u32) -> i32 {
 #[inline(always)]
 pub fn feq_fixed(r: i32, jx: i32, jy: i32) -> [i32; NCH] {
     let r = r.max(1);
-    let ux = div16(jx, r);
-    let uy = div16(jy, r);
+    let (ux, uy) = div16_pair(jx, jy, r);
     // 4 rho u^2 (ONE units).
     let p = mul_shr(jx, ux, 16).wrapping_add(3i32.wrapping_mul(mul_shr(jy, uy, 16)));
     std::array::from_fn(|i| {
@@ -209,7 +227,13 @@ impl BlockSums {
 /// evenly spaced, so y is in half rows from the centre row, out of 2B.
 #[inline(always)]
 pub fn interp(nodes: &[[i32; 3]], nbx: usize, nby: usize, b: usize, x: usize, y: usize) -> [i32; 3] {
-    let columns = COLUMNS.load(std::sync::atomic::Ordering::Relaxed);
+    interp_with(COLUMNS.load(std::sync::atomic::Ordering::Relaxed), nodes, nbx, nby, b, x, y)
+}
+
+/// `interp` with the `COLUMNS` flag given. Block indices are at most one
+/// block outside the lattice, so the periodic wrap is one add or subtract.
+#[inline(always)]
+fn interp_with(columns: bool, nodes: &[[i32; 3]], nbx: usize, nby: usize, b: usize, x: usize, y: usize) -> [i32; 3] {
     let bi = b as i32;
     let sy = 2 * bi;
     let ly = sy.trailing_zeros();
@@ -217,13 +241,44 @@ pub fn interp(nodes: &[[i32; 3]], nbx: usize, nby: usize, b: usize, x: usize, y:
     let fy = 2 * y as i32 + 1 - bi;
     let (bx0, by0) = (fx >> lx, fy >> ly);
     let (tx, ty) = (fx - (bx0 << lx), fy - (by0 << ly));
-    let wrap = |v: i32, n: usize| v.rem_euclid(n as i32) as usize;
+    let wrap = |v: i32, n: usize| {
+        let n = n as i32;
+        (if v < 0 { v + n } else if v >= n { v - n } else { v }) as usize
+    };
     let (x0, x1) = (wrap(bx0, nbx), wrap(bx0 + 1, nbx));
     let (y0, y1) = (wrap(by0, nby), wrap(by0 + 1, nby));
-    std::array::from_fn(|c| {
-        let row = |by: usize| ((sx - tx).wrapping_mul(nodes[by * nbx + x0][c]).wrapping_add(tx.wrapping_mul(nodes[by * nbx + x1][c]))) >> lx;
-        ((sy - ty).wrapping_mul(row(y0)).wrapping_add(ty.wrapping_mul(row(y1)))) >> ly
-    })
+    let (n00, n01) = (nodes[y0 * nbx + x0], nodes[y0 * nbx + x1]);
+    let (n10, n11) = (nodes[y1 * nbx + x0], nodes[y1 * nbx + x1]);
+    let mut out = [0i32; 3];
+    for c in 0..3 {
+        let r0 = ((sx - tx).wrapping_mul(n00[c]).wrapping_add(tx.wrapping_mul(n01[c]))) >> lx;
+        let r1 = ((sx - tx).wrapping_mul(n10[c]).wrapping_add(tx.wrapping_mul(n11[c]))) >> lx;
+        out[c] = ((sy - ty).wrapping_mul(r0).wrapping_add(ty.wrapping_mul(r1))) >> ly;
+    }
+    out
+}
+
+/// The first, horizontal pass of `interp_with` for a whole row of sites:
+/// block row `by` of `nodes` interpolated at every column, for rows of
+/// parity `odd` (ignored with `columns`). `interp_with` is then the
+/// vertical blend of two of these, floored the same way.
+fn interp_x(columns: bool, nodes: &[[i32; 3]], nbx: usize, b: usize, odd: bool, by: usize, out: &mut [[i32; 3]]) {
+    let bi = b as i32;
+    let ly = (2 * bi).trailing_zeros();
+    let (sx, lx) = if columns { (2 * bi, ly) } else { (4 * bi, ly + 1) };
+    let nrow = &nodes[by * nbx..][..nbx];
+    let n = nbx as i32;
+    for (x, o) in out.iter_mut().enumerate() {
+        let fx = if columns { 2 * x as i32 + 1 - bi } else { 4 * x as i32 + 2 * odd as i32 + 1 - 2 * bi };
+        let bx0 = fx >> lx;
+        let tx = fx - (bx0 << lx);
+        let x0 = if bx0 < 0 { bx0 + n } else { bx0 } as usize;
+        let x1 = if bx0 + 1 >= n { bx0 + 1 - n } else { bx0 + 1 } as usize;
+        let (a, c) = (nrow[x0], nrow[x1]);
+        for k in 0..3 {
+            o[k] = ((sx - tx).wrapping_mul(a[k]).wrapping_add(tx.wrapping_mul(c[k]))) >> lx;
+        }
+    }
 }
 
 /// The initial deviation codes and block values for the field rho(x, y),
@@ -296,7 +351,6 @@ pub struct Signed {
     /// Base-3 code of delta + 1 per site, OBST for obstacles.
     pub cells: Vec<u16>,
     next: Vec<u16>,
-    src: Vec<[u32; NDIR]>,
     /// Reference F per site and channel (ONE units), a function of `nodes`
     /// cached between re-estimates.
     pub phi: Vec<[i32; NCH]>,
@@ -317,6 +371,26 @@ pub struct Signed {
     pub kicks: u64,
 }
 
+/// The per-step constants of a re-estimate pass.
+#[derive(Clone, Copy)]
+struct Requant {
+    kq: u32,
+    kr: u32,
+    nokick: bool,
+    columns: bool,
+    refresh: bool,
+    rest: [i32; NCH],
+}
+
+/// One task's share of a step: reservoir additions and (on re-estimate
+/// steps) fluid sums per block column, saturations and kicks.
+struct Band {
+    add: Vec<[i32; LANES]>,
+    sum: Vec<[i32; NCH]>,
+    sat: u64,
+    kicks: u64,
+}
+
 impl Signed {
     /// A lattice of deviation codes on a uniform reference at rest,
     /// rho0 = 7 n0 everywhere.
@@ -325,15 +399,6 @@ impl Signed {
         crate::check_shape(w, h).expect("lattice shape");
         assert!(b.is_power_of_two() && w.is_multiple_of(b) && h.is_multiple_of(b), "block must be a power of two dividing the lattice");
         assert_eq!(cells.len(), w * h);
-        let mut src = vec![[0u32; NDIR]; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                for d in 0..NDIR {
-                    let (sx, sy) = source(x, y, d, w, h);
-                    src[y * w + x][d] = (sy * w + sx) as u32;
-                }
-            }
-        }
         let (nbx, nby) = (w / b, h / b);
         let mut fluid = vec![0u32; nbx * nby];
         for (i, c) in cells.iter().enumerate() {
@@ -348,7 +413,6 @@ impl Signed {
             h,
             next: vec![0; w * h],
             cells,
-            src,
             phi: vec![feq_fixed(rest[0], 0, 0); w * h],
             nbx,
             nby,
@@ -387,8 +451,14 @@ impl Signed {
 
     #[inline(always)]
     pub fn block_of(&self, i: usize) -> usize {
-        let b = self.params.block;
-        (i / self.w / b) * self.nbx + (i % self.w) / b
+        let lb = self.params.block.trailing_zeros();
+        ((i / self.w) >> lb) * self.nbx + ((i % self.w) >> lb)
+    }
+
+    /// Per block: the reservoir spread over its fluid sites, truncated (zero
+    /// for blocks without fluid).
+    fn shares(&self) -> Vec<[i32; NCH]> {
+        self.res.iter().zip(&self.fluid).map(|(r, &n)| if n == 0 { [0; NCH] } else { r.map(|v| v.wrapping_div(n as i32)) }).collect()
     }
 
     pub fn rho0(&self) -> f64 {
@@ -425,53 +495,106 @@ impl Signed {
         out
     }
 
-    /// Stream (with the reference correction) and collide one row; returns
-    /// the row's reservoir additions per block column, saturations, kicks.
-    fn row(&self, y: usize, out: &mut [u16]) -> (Vec<[i32; NCH]>, u64, u64) {
-        let b = self.params.block;
-        let mut add = vec![[0i32; NCH]; self.nbx];
-        let (mut sat, mut kicks) = (0u64, 0u64);
+    /// Rows per task of the step and re-estimate passes: a whole block row
+    /// when that leaves at least 32 tasks, else a power-of-two part of one,
+    /// so a band never straddles two block rows.
+    fn band_rows(&self) -> usize {
+        let mut r = self.params.block;
+        while r > 1 && self.h / r < 32 {
+            r /= 2;
+        }
+        r
+    }
+
+    /// Stream (with the reference correction) and collide the rows from
+    /// `y0` into `out`; returns the reservoir additions per block column
+    /// and, with `sums`, the new fluid sums per block column.
+    ///
+    /// Per row: the incoming deviations and reference differences are
+    /// gathered into one plane per direction, the rounding then runs along
+    /// each plane (contiguous lanes, so it vectorizes), and the collision
+    /// last, site by site.
+    #[inline(never)]
+    fn band(&self, y0: usize, out: &mut [u16], sums: bool) -> Band {
+        let w = self.w;
+        let lb = self.params.block.trailing_zeros();
+        let b = 1usize << lb;
+        let mut acc = Band { add: vec![[0i32; LANES]; self.nbx], sum: vec![[0i32; NCH]; if sums { self.nbx } else { 0 }], sat: 0, kicks: 0 };
         let kc = step_key(self.params.seed, self.step, STREAM_COLLIDE);
         let ks = step_key(self.params.seed, self.step, STREAM_ROUND);
         let rule = self.params.rule;
-        let w32 = (self.w / 32) as u32;
-        let mut chir = 0u32;
-        for (x, o) in out.iter_mut().enumerate() {
-            let i = y * self.w + x;
-            let own = self.cells[i];
-            let mut s = (self.delta[(own & STATE) as usize][6] + 1) as u16 * POW3[6];
-            let src = &self.src[i];
-            let a = &mut add[x / b];
-            for d in 0..NDIR {
-                let j = src[d] as usize;
-                let dl = self.delta[(self.cells[j] & STATE) as usize][d] as i32;
-                let r = self.phi[j][d].wrapping_sub(self.phi[i][d]);
-                let v = if r == 0 {
-                    dl
-                } else {
-                    let k = sround(r, lowbias32(ks ^ (i as u32).wrapping_mul(8).wrapping_add(d as u32).wrapping_mul(0x9e37_79b9)));
-                    kicks += (k != 0) as u64;
-                    a[d] = a[d].wrapping_add(r.wrapping_sub(k.wrapping_mul(ONE)));
-                    dl + k
-                };
-                let c = v.clamp(-1, 1);
-                if c != v {
-                    a[d] = a[d].wrapping_add((v - c).wrapping_mul(ONE));
-                    sat += (v - c).unsigned_abs() as u64;
+        let w32 = (w / 32) as u32;
+        let (mut dl, mut r) = (vec![0i32; NDIR * w], vec![0i32; NDIR * w]);
+        let (mut code, mut add) = (vec![0u32; w], vec![0i32; w]);
+        for (dy, orow) in out.chunks_mut(w).enumerate() {
+            let y = y0 + dy;
+            let row = y * w;
+            let prow = &self.phi[row..][..w];
+            for (d, (dlp, rp)) in dl.chunks_mut(w).zip(r.chunks_mut(w)).enumerate() {
+                // Direction d arrives from row sy, column x + dx (periodic).
+                let sy = ((y + self.h) as i32 - DY[d]) as usize % self.h;
+                let dx = DX[y & 1][(d + 3) % NDIR];
+                let (sc, sp) = (&self.cells[sy * w..][..w], &self.phi[sy * w..][..w]);
+                // Columns 1..w-1 read the source row shifted by dx (no wrap),
+                // the two end columns wrap.
+                let lo = (1 + dx) as usize;
+                let inner = dlp[1..w - 1].iter_mut().zip(rp[1..w - 1].iter_mut()).zip(&prow[1..w - 1]).zip(sc[lo..lo + w - 2].iter().zip(&sp[lo..lo + w - 2]));
+                for (((dv, rv), pi), (c, p)) in inner {
+                    *dv = self.delta[(c & STATE) as usize][d] as i32;
+                    *rv = p[d].wrapping_sub(pi[d]);
                 }
-                s += (c + 1) as u16 * POW3[d];
+                for x in [0, w - 1] {
+                    let xs = (x as i32 + dx).rem_euclid(w as i32) as usize;
+                    dlp[x] = self.delta[(sc[xs] & STATE) as usize][d] as i32;
+                    rp[x] = sp[xs][d].wrapping_sub(prow[x][d]);
+                }
             }
-            let rnd = if rule == Rule::Chiral {
-                if x % 32 == 0 {
-                    chir = crate::chunk_rand(kc, y as u32 * w32 + (x / 32) as u32);
+            for (c, own) in code.iter_mut().zip(&self.cells[row..][..w]) {
+                *c = (self.delta[(own & STATE) as usize][6] + 1) as u32 * POW3[6] as u32;
+            }
+            for d in 0..NDIR {
+                let (dlp, rp) = (&dl[d * w..][..w], &r[d * w..][..w]);
+                let (mut nk, mut ns) = (0u32, 0u32);
+                for x in 0..w {
+                    let i = (row + x) as u32;
+                    // sround(0, _) is 0, so r = 0 needs no case of its own.
+                    let k = sround(rp[x], lowbias32(ks ^ i.wrapping_mul(8).wrapping_add(d as u32).wrapping_mul(0x9e37_79b9)));
+                    nk += (k != 0) as u32;
+                    let v = dlp[x] + k;
+                    let c = v.clamp(-1, 1);
+                    ns += (v - c).unsigned_abs();
+                    code[x] += (c + 1) as u32 * POW3[d] as u32;
+                    add[x] = rp[x].wrapping_sub(c.wrapping_sub(dlp[x]).wrapping_mul(ONE));
                 }
-                ((chir >> (x % 32)) & 1) << 31
-            } else {
-                lowbias32(kc ^ (i as u32).wrapping_mul(0x9e37_79b9))
-            };
-            *o = if own & OBST != 0 { OBST | crate::ternary::bounce(s) } else { self.table.collide(s, rnd, rule) };
+                for (a, part) in acc.add.iter_mut().zip(add.chunks(b)) {
+                    a[d] = part.iter().fold(a[d], |s, &v| s.wrapping_add(v));
+                }
+                acc.kicks += nk as u64;
+                acc.sat += ns as u64;
+            }
+            let mut chir = 0u32;
+            for (x, o) in orow.iter_mut().enumerate() {
+                let i = row + x;
+                let own = self.cells[i];
+                let s = code[x] as u16;
+                let rnd = if rule == Rule::Chiral {
+                    if x % 32 == 0 {
+                        chir = crate::chunk_rand(kc, y as u32 * w32 + (x / 32) as u32);
+                    }
+                    ((chir >> (x % 32)) & 1) << 31
+                } else {
+                    lowbias32(kc ^ (i as u32).wrapping_mul(0x9e37_79b9))
+                };
+                *o = if own & OBST != 0 { OBST | crate::ternary::bounce(s) } else { self.table.collide(s, rnd, rule) };
+                if sums && own & OBST == 0 {
+                    let (dn, p, f) = (&self.delta[*o as usize], &self.phi[i], &mut acc.sum[x >> lb]);
+                    for ch in 0..NCH {
+                        f[ch] = f[ch].wrapping_add(p[ch].wrapping_add(dn[ch] as i32 * ONE));
+                    }
+                }
+            }
         }
-        (add, sat, kicks)
+        acc
     }
 
     /// Whether step `t` ends with a re-estimate, and whether it is an
@@ -484,29 +607,41 @@ impl Signed {
 
     pub fn step(&mut self) {
         let mut next = std::mem::take(&mut self.next);
-        let w = self.w;
+        let (re, refresh) = Self::reestimates(&self.params, self.step);
+        let rows = self.band_rows();
+        let chunk = rows * self.w;
         #[cfg(feature = "threads")]
-        let rows: Vec<_> = {
+        let bands: Vec<Band> = {
             use rayon::prelude::*;
-            next.par_chunks_mut(w).enumerate().map(|(y, out)| self.row(y, out)).collect()
+            next.par_chunks_mut(chunk).enumerate().map(|(t, out)| self.band(t * rows, out, re)).collect()
         };
         #[cfg(not(feature = "threads"))]
-        let rows: Vec<_> = next.chunks_mut(w).enumerate().map(|(y, out)| self.row(y, out)).collect();
-        let b = self.params.block;
-        for (y, (add, sat, kicks)) in rows.into_iter().enumerate() {
-            let k0 = (y / b) * self.nbx;
-            for (bx, a) in add.iter().enumerate() {
+        let bands: Vec<Band> = next.chunks_mut(chunk).enumerate().map(|(t, out)| self.band(t * rows, out, re)).collect();
+        let lb = self.params.block.trailing_zeros();
+        let mut content = if re { vec![[0i32; NCH]; self.nbx * self.nby] } else { vec![] };
+        for (t, band) in bands.into_iter().enumerate() {
+            let k0 = ((t * rows) >> lb) * self.nbx;
+            for (bx, a) in band.add.iter().enumerate() {
                 for c in 0..NCH {
                     self.res[k0 + bx][c] = self.res[k0 + bx][c].wrapping_add(a[c]);
                 }
             }
-            self.saturated += sat;
-            self.kicks += kicks;
+            for (bx, f) in band.sum.iter().enumerate() {
+                for c in 0..NCH {
+                    content[k0 + bx][c] = content[k0 + bx][c].wrapping_add(f[c]);
+                }
+            }
+            self.saturated += band.sat;
+            self.kicks += band.kicks;
         }
         self.next = std::mem::replace(&mut self.cells, next);
-        let (re, refresh) = Self::reestimates(&self.params, self.step);
         if re {
-            self.reestimate(refresh);
+            for (a, r) in content.iter_mut().zip(&self.res) {
+                for ch in 0..NCH {
+                    a[ch] = a[ch].wrapping_add(r[ch]);
+                }
+            }
+            self.reestimate_from(content, refresh);
         }
         self.step += 1;
     }
@@ -532,6 +667,7 @@ impl Signed {
     /// Per block and channel: sum over fluid sites of phi + delta.
     fn fluid_sums(&self) -> Vec<[i32; NCH]> {
         let b = self.params.block;
+        let lb = b.trailing_zeros();
         let work = |by: usize| {
             let mut v = vec![[0i32; NCH]; self.nbx];
             for y in by * b..(by + 1) * b {
@@ -541,7 +677,7 @@ impl Signed {
                         continue;
                     }
                     let d = self.deltas(i);
-                    let a = &mut v[x / b];
+                    let a = &mut v[x >> lb];
                     for ch in 0..NCH {
                         a[ch] = a[ch].wrapping_add(self.phi[i][ch].wrapping_add(d[ch] as i32 * ONE));
                     }
@@ -559,14 +695,12 @@ impl Signed {
         rows.concat()
     }
 
-    /// Site i's represented f per channel in ONE units, the reservoir
-    /// spread over its block's fluid sites (truncated).
+    /// Site i's represented f per channel in ONE units, plus `share`, its
+    /// block's reservoir spread over the block's fluid sites (`shares`).
     #[inline(always)]
-    fn site_fixed(&self, i: usize) -> [i32; NCH] {
-        let k = self.block_of(i);
+    fn site_fixed(&self, i: usize, share: &[i32; NCH]) -> [i32; NCH] {
         let d = self.deltas(i);
-        let nf = self.fluid[k] as i32;
-        std::array::from_fn(|ch| self.phi[i][ch].wrapping_add(d[ch] as i32 * ONE).wrapping_add(self.res[k][ch].wrapping_div(nf)))
+        std::array::from_fn(|ch| self.phi[i][ch].wrapping_add(d[ch] as i32 * ONE).wrapping_add(share[ch]))
     }
 
     /// Block sums of the represented mass and momentum over `bw` x `bh`
@@ -619,32 +753,51 @@ impl Signed {
     /// down by `SUM_SHIFT`; the GPU engine's `coarse` gives the same.
     pub fn page_sums(&self, bw: usize, bh: usize) -> crate::coarse::BlockSums {
         let (nx, ny) = (self.w / bw, self.h / bh);
-        let mut s = crate::coarse::BlockSums { nx, ny, bw, bh, jx: vec![0; nx * ny], jy: vec![0; nx * ny], mass: vec![0; nx * ny], fluid: vec![0; nx * ny] };
-        for by in 0..ny {
-            for bx in 0..nx {
-                let (mut m, mut jx, mut jy, mut n) = (0i32, 0i32, 0i32, 0i32);
-                for y in by * bh..(by + 1) * bh {
+        let shares = self.shares();
+        let lb = self.params.block.trailing_zeros();
+        // One band of bh rows per task; wrapping sums, so the order is free.
+        let work = |by: usize| {
+            let mut v = vec![[0i32; 4]; nx];
+            for y in by * bh..(by + 1) * bh {
+                let srow = &shares[(y >> lb) * self.nbx..][..self.nbx];
+                for (bx, a) in v.iter_mut().enumerate() {
                     for x in bx * bw..(bx + 1) * bw {
                         let i = y * self.w + x;
                         if self.cells[i] & OBST != 0 {
                             continue;
                         }
-                        let f = self.site_fixed(i);
+                        let f = self.site_fixed(i, &srow[x >> lb]);
                         for ch in 0..NCH {
-                            m = m.wrapping_add(f[ch]);
+                            a[0] = a[0].wrapping_add(f[ch]);
                             if ch < NDIR {
-                                jx = jx.wrapping_add(CX2[ch].wrapping_mul(f[ch]));
-                                jy = jy.wrapping_add(CY2[ch].wrapping_mul(f[ch]));
+                                a[1] = a[1].wrapping_add(CX2[ch].wrapping_mul(f[ch]));
+                                a[2] = a[2].wrapping_add(CY2[ch].wrapping_mul(f[ch]));
                             }
                         }
-                        n += 1;
+                        a[3] += 1;
                     }
                 }
-                let b = by * nx + bx;
-                (s.jx[b], s.jy[b], s.mass[b], s.fluid[b]) = (jx >> SUM_SHIFT, jy >> SUM_SHIFT, m >> SUM_SHIFT, n);
             }
+            v
+        };
+        #[cfg(feature = "threads")]
+        let rows: Vec<Vec<[i32; 4]>> = {
+            use rayon::prelude::*;
+            (0..ny).into_par_iter().map(work).collect()
+        };
+        #[cfg(not(feature = "threads"))]
+        let rows: Vec<Vec<[i32; 4]>> = (0..ny).map(work).collect();
+        let all = rows.concat();
+        crate::coarse::BlockSums {
+            nx,
+            ny,
+            bw,
+            bh,
+            jx: all.iter().map(|a| a[1] >> SUM_SHIFT).collect(),
+            jy: all.iter().map(|a| a[2] >> SUM_SHIFT).collect(),
+            mass: all.iter().map(|a| a[0] >> SUM_SHIFT).collect(),
+            fluid: all.iter().map(|a| a[3]).collect(),
         }
-        s
     }
 
     fn in_zone(&self, x: usize) -> bool {
@@ -657,8 +810,13 @@ impl Signed {
     /// New block values from block sums, new per-site reference,
     /// re-quantized deviations, and the exact remainder in the reservoir.
     pub fn reestimate(&mut self, refresh: bool) {
-        let b = self.params.block;
         let content = self.block_content();
+        self.reestimate_from(content, refresh);
+    }
+
+    /// `reestimate` with the block contents (`block_content`) given.
+    fn reestimate_from(&mut self, content: Vec<[i32; NCH]>, refresh: bool) {
+        let b = self.params.block;
         let inflow = self.params.boundary.map(|bd| fixed_values(bd.rho, bd.u, 0.0));
         let rhoonly = RHOONLY.load(std::sync::atomic::Ordering::Relaxed);
         for k in 0..self.nbx * self.nby {
@@ -683,73 +841,155 @@ impl Signed {
                 self.nodes[k] = inflow.unwrap();
             }
         }
-        let new = self.interpolated();
         let kq = step_key(self.params.seed, self.step, STREAM_REQUANT);
         let kr = step_key(self.params.seed, self.step, STREAM_REFRESH);
         let nokick = NOKICK.load(std::sync::atomic::Ordering::Relaxed);
+        let columns = COLUMNS.load(std::sync::atomic::Ordering::Relaxed);
+        let rest = feq_fixed(self.params.rho0(), 0, 0);
+        let shares = self.shares();
+        let lb = b.trailing_zeros();
+        let (w, nbx, nby) = (self.w, self.nbx, self.nby);
+        let rows = self.band_rows();
         let mut cells = std::mem::take(&mut self.cells);
-        let w = self.w;
-        let this = &*self;
-        let work = |(y, row): (usize, &mut [u16])| {
-            let (mut sat, mut kicks) = (0u64, 0u64);
-            for (x, cell) in row.iter_mut().enumerate() {
-                if *cell & OBST != 0 {
-                    continue;
-                }
-                let i = y * w + x;
-                let mut code = 0u16;
-                if refresh && this.in_zone(x) {
-                    for ch in 0..NCH {
-                        let r = lowbias32(kr ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9));
-                        code += mulhi(r, 3) as u16 * POW3[ch];
-                    }
-                } else {
-                    let d = this.delta[*cell as usize];
-                    let kb = this.block_of(i);
-                    let nf = this.fluid[kb] as i32;
-                    for ch in 0..NCH {
-                        // The parked content is released into the field.
-                        let dphi = this.phi[i][ch].wrapping_add(this.res[kb][ch].wrapping_div(nf)).wrapping_sub(new[i][ch]);
-                        let k = if dphi == 0 || nokick {
-                            0
-                        } else {
-                            sround(dphi, lowbias32(kq ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9)))
-                        };
-                        kicks += (k != 0) as u64;
-                        let v = d[ch] as i32 + k;
-                        let c = v.clamp(-1, 1);
-                        sat += (v - c).unsigned_abs() as u64;
-                        code += (c + 1) as u16 * POW3[ch];
-                    }
-                }
-                *cell = code;
-            }
-            (sat, kicks)
-        };
+        let mut phi = std::mem::take(&mut self.phi);
+        let q = Requant { kq, kr, nokick, columns, refresh, rest };
+        let work = |(t, (crows, prows)): (usize, (&mut [u16], &mut [[i32; NCH]]))| self.requant_band(q, &shares, t * rows, crows, prows);
+        let chunk = rows * w;
         #[cfg(feature = "threads")]
-        let counts: Vec<(u64, u64)> = {
+        let bands: Vec<(Vec<[i32; LANES]>, u64, u64)> = {
             use rayon::prelude::*;
-            cells.par_chunks_mut(w).enumerate().map(work).collect()
+            cells.par_chunks_mut(chunk).zip(phi.par_chunks_mut(chunk)).enumerate().map(work).collect()
         };
         #[cfg(not(feature = "threads"))]
-        let counts: Vec<(u64, u64)> = cells.chunks_mut(w).enumerate().map(work).collect();
+        let bands: Vec<(Vec<[i32; LANES]>, u64, u64)> = cells.chunks_mut(chunk).zip(phi.chunks_mut(chunk)).enumerate().map(work).collect();
         self.cells = cells;
-        for (s, k) in counts {
+        self.phi = phi;
+        let mut after = vec![[0i32; NCH]; nbx * nby];
+        for (t, (a, s, k)) in bands.into_iter().enumerate() {
+            let k0 = ((t * rows) >> lb) * nbx;
+            for (bx, v) in a.iter().enumerate() {
+                for ch in 0..NCH {
+                    after[k0 + bx][ch] = after[k0 + bx][ch].wrapping_add(v[ch]);
+                }
+            }
             self.saturated += s;
             self.kicks += k;
         }
-        self.phi = new;
         // The reservoir takes each block's exact remainder.
-        let after = self.fluid_sums();
-        for k in 0..self.nbx * self.nby {
+        for k in 0..nbx * nby {
             if self.fluid[k] == 0 {
                 continue;
             }
-            let zone = refresh && self.in_zone((k % self.nbx) * b);
+            let zone = refresh && self.in_zone((k % nbx) * b);
             for ch in 0..NCH {
                 self.res[k][ch] = if zone { 0 } else { content[k][ch].wrapping_sub(after[k][ch]) };
             }
         }
+    }
+
+    /// One band of the re-estimate from row `y0`: the new reference
+    /// replaces the old in place, the deviations are re-quantized, and the
+    /// new fluid sums per block column are returned with the saturations and
+    /// kicks. A function of its own so the threaded and the single-thread
+    /// builds compile the same loop.
+    #[inline(never)]
+    fn requant_band(&self, q: Requant, shares: &[[i32; NCH]], y0: usize, crows: &mut [u16], prows: &mut [[i32; NCH]]) -> (Vec<[i32; LANES]>, u64, u64) {
+        let Requant { kq, kr, nokick, columns, refresh, rest } = q;
+        // All ones, or zero with no kicks: a mask keeps the lane loop free of branches.
+        let kick = if nokick { 0 } else { -1i32 };
+        let b = self.params.block;
+        let lb = b.trailing_zeros();
+        let (w, nbx, nby) = (self.w, self.nbx, self.nby);
+        let (mut sat, mut kicks) = (0u64, 0u64);
+        let mut after = vec![[0i32; LANES]; nbx];
+        let mut fresh = vec![rest; w];
+        let mut vals = vec![[0i32; 3]; w];
+        // Horizontal passes of the interpolation (`interp_x`), two block rows
+        // per row parity, kept while consecutive rows share them.
+        let mut xrows: [Vec<[i32; 3]>; 4] = std::array::from_fn(|_| vec![[0i32; 3]; w]);
+        let mut held = [usize::MAX; 4];
+        let bi = b as i32;
+        let ly = (2 * bi).trailing_zeros();
+        for (dy, (crow, prow)) in crows.chunks_mut(w).zip(prows.chunks_mut(w)).enumerate() {
+            let y = y0 + dy;
+            let srow = &shares[(y >> lb) * nbx..][..nbx];
+            // The row's new reference first, in loops of their own: the
+            // block rows above and below, then their vertical blend.
+            let fy = 2 * y as i32 + 1 - bi;
+            let by0 = fy >> ly;
+            let ty = fy - (by0 << ly);
+            let n = nby as i32;
+            let need = [if by0 < 0 { by0 + n } else { by0 } as usize, if by0 + 1 >= n { by0 + 1 - n } else { by0 + 1 } as usize];
+            let odd = !columns && y & 1 == 1;
+            let pair = if odd { 2 } else { 0 };
+            let mut slot = need.map(|r| (pair..pair + 2).find(|&k| held[k] == r));
+            for k in 0..2 {
+                if slot[k].is_none() {
+                    let s = if slot[1 - k] == Some(pair) { pair + 1 } else { pair };
+                    interp_x(columns, &self.nodes, nbx, b, odd, need[k], &mut xrows[s]);
+                    held[s] = need[k];
+                    slot[k] = Some(s);
+                }
+            }
+            let (r0, r1) = (&xrows[slot[0].unwrap()], &xrows[slot[1].unwrap()]);
+            let sy = 2 * bi;
+            for ((v, a), c) in vals.iter_mut().zip(r0.iter()).zip(r1.iter()) {
+                for k in 0..3 {
+                    v[k] = ((sy - ty).wrapping_mul(a[k]).wrapping_add(ty.wrapping_mul(c[k]))) >> ly;
+                }
+            }
+            for ((f, cell), &[nr, nx, ny]) in fresh.iter_mut().zip(crow.iter()).zip(vals.iter()) {
+                *f = if *cell & OBST != 0 { rest } else { feq_fixed(nr, nx, ny) };
+            }
+            for (x, ((cell, p), &new)) in crow.iter_mut().zip(prow.iter_mut()).zip(fresh.iter()).enumerate() {
+                if *cell & OBST != 0 {
+                    *p = rest;
+                    continue;
+                }
+                let i = y * w + x;
+                let a = &mut after[x >> lb];
+                let mut code = 0u16;
+                if refresh && self.in_zone(x) {
+                    for ch in 0..NCH {
+                        let r = lowbias32(kr ^ (i as u32).wrapping_mul(8).wrapping_add(ch as u32).wrapping_mul(0x9e37_79b9));
+                        let n = mulhi(r, 3);
+                        code += n as u16 * POW3[ch];
+                        a[ch] = a[ch].wrapping_add(new[ch].wrapping_add((n as i32 - 1) * ONE));
+                    }
+                } else {
+                    let d = &self.delta[*cell as usize];
+                    let share = &srow[x >> lb];
+                    // Eight lanes, the seven channels and an idle one (zero
+                    // difference, zero deviation, weight 0), so the
+                    // arithmetic maps onto two 4-lane vectors.
+                    let (mut dp, mut dl, mut nw) = ([0i32; LANES], [0i32; LANES], [0i32; LANES]);
+                    for ch in 0..NCH {
+                        // The parked content is released into the field.
+                        dp[ch] = p[ch].wrapping_add(share[ch]).wrapping_sub(new[ch]);
+                        dl[ch] = d[ch] as i32;
+                        nw[ch] = new[ch];
+                    }
+                    let base = (i as u32).wrapping_mul(8);
+                    let (mut nk, mut ns, mut cs) = (0u32, 0u32, 0u32);
+                    for l in 0..LANES {
+                        // sround(0, _) is 0, so dphi = 0 needs no case of its own.
+                        let k = sround(dp[l], lowbias32(kq ^ base.wrapping_add(l as u32).wrapping_mul(0x9e37_79b9))) & kick;
+                        nk += (k != 0) as u32;
+                        let v = dl[l] + k;
+                        let c = v.clamp(-1, 1);
+                        ns += (v - c).unsigned_abs();
+                        cs += (c + 1) as u32 * POW3_LANES[l];
+                        a[l] = a[l].wrapping_add(nw[l].wrapping_add(c * ONE));
+                    }
+                    kicks += nk as u64;
+                    sat += ns as u64;
+                    code = cs as u16;
+                }
+                *cell = code;
+                *p = new;
+            }
+        }
+        (after, sat, kicks)
     }
 
     /// Total represented content per channel (all sites and reservoirs),

@@ -58,35 +58,106 @@ impl Sim {
         Ok(Sim { inner: Rc::new(RefCell::new(p)) })
     }
 
-    /// Run `n` steps; the last min(n, 50) are sampled every 5 steps into
-    /// the frame's block sums.
+    /// Run `n` steps (see `Page::advance`: the time average is sampled and
+    /// folded every 5 steps, whatever the split into calls; nothing waits).
     pub fn advance(&self, n: u32) {
         self.inner.borrow_mut().advance(n);
     }
 
-    /// Fold the frame's block sums into the time-averaged field. The worker
-    /// awaits this before its next call, so holding the borrow across the
-    /// readback cannot collide with another borrow.
+    /// Ask for the current time-averaged field: on the GPU a read-back is
+    /// queued unless one is in flight (steps go on meanwhile); on the CPU
+    /// the field is always current.
+    #[wasm_bindgen(js_name = requestField)]
+    pub fn request_field(&self) {
+        self.inner.borrow_mut().request_field();
+    }
+
+    /// Whether `field` now holds a newer average (the read-back has landed;
+    /// always true on the CPU). Does not wait.
+    #[wasm_bindgen(js_name = fieldReady)]
+    pub fn field_ready(&self) -> bool {
+        self.inner.borrow_mut().field_ready()
+    }
+
+    /// The first GPU error or device loss ('' if none). In the browser an
+    /// error no longer panics: the engine keeps it here for the page.
+    #[wasm_bindgen(getter, js_name = gpuError)]
+    pub fn gpu_error(&self) -> String {
+        self.inner.borrow().gpu_error().unwrap_or_default()
+    }
+
+    /// Read-backs whose map failed (dropped; a new request starts a new one).
+    #[wasm_bindgen(getter, js_name = readFailures)]
+    pub fn read_failures(&self) -> u32 {
+        self.inner.borrow().read_failures()
+    }
+
+    /// Whether a read-back is in flight.
+    #[wasm_bindgen(getter)]
+    pub fn reading(&self) -> bool {
+        self.inner.borrow().reading()
+    }
+
+    /// Resolves when the read-back in flight lands (at once if none). Holds
+    /// no borrow while pending, so `advance` can be called meanwhile.
     #[cfg(feature = "gpu")]
-    #[allow(clippy::await_holding_refcell_ref)]
-    pub fn sample(&self) -> js_sys::Promise {
-        let inner = self.inner.clone();
+    #[wasm_bindgen(js_name = waitField)]
+    pub fn wait_field(&self) -> js_sys::Promise {
+        let rx = self.inner.borrow().field_waiter();
         wasm_bindgen_futures::future_to_promise(async move {
-            let sums = inner.borrow().take_gpu_sums().await;
-            inner.borrow_mut().fold(sums);
+            if let Some(rx) = rx {
+                let _ = rx.await;
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
 
-    /// Fold the frame's block sums into the time-averaged field.
-    #[cfg(not(feature = "gpu"))]
-    pub fn sample(&self) {
-        self.inner.borrow_mut().fold(None);
+    /// Bring the field up to the current step: wait for any read-back in
+    /// flight, then read back the current average (on the CPU, at once).
+    #[cfg(feature = "gpu")]
+    pub fn sample(&self) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            for request in [false, true] {
+                if request {
+                    inner.borrow_mut().request_field();
+                }
+                loop {
+                    let rx = {
+                        let mut p = inner.borrow_mut();
+                        if p.field_ready() || !p.reading() {
+                            break;
+                        }
+                        p.field_waiter()
+                    };
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                }
+            }
+            Ok(JsValue::UNDEFINED)
+        })
     }
+
+    /// The CPU field is always current.
+    #[cfg(not(feature = "gpu"))]
+    pub fn sample(&self) {}
 
     /// RGBA vorticity image, `imageWidth` x `imageHeight`, top row first.
     pub fn frame(&self) -> Vec<u8> {
         self.inner.borrow().frame()
+    }
+
+    /// Time-averaged vorticity per block over the frame's 4U/D scale, as
+    /// `Float32Array`, `imageWidth` x `imageHeight`, top row first. 1 is the
+    /// colour scale's saturation, the sign is the rotation; not clamped.
+    pub fn field(&self) -> Vec<f32> {
+        self.inner.borrow().field()
+    }
+
+    /// 1 where a block holds the obstacle, as `Uint8Array`, same grid as `field`.
+    pub fn obstacle(&self) -> Vec<u8> {
+        self.inner.borrow().obstacle()
     }
 
     #[wasm_bindgen(getter, js_name = imageWidth)]

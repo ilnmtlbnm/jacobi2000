@@ -28,7 +28,7 @@
 // (signed has its own reference block, H/64, overridden by ?refblock=),
 // and ?side=1 runs FHP-III (top), ternary (middle) and signed (bottom)
 // together.
-const ENGINE_BUILD = '2026-10-06-physics-engine-01';
+const ENGINE_BUILD = '2026-10-23-sample-per-step-06';
 const worker = new Worker(`worker.js?v=${ENGINE_BUILD}`, { type: 'module' });
 const canvases = [0, 1, 2].map((i) => document.getElementById(`view${i}`));
 const ctxs = canvases.map((c) => c.getContext('2d'));

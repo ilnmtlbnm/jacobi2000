@@ -13,11 +13,11 @@ fn check_page(p: &mut Page, w: usize, h: usize, block: usize) {
     let s = p.setup;
     assert!(s.w >= w && s.h >= h && s.w.is_multiple_of(64) && s.h.is_multiple_of(16) && s.h.is_multiple_of(block), "{w}x{h} block {block} -> {}x{}", s.w, s.h);
     assert_eq!((p.field.nx, p.field.ny), (s.w / block, s.h / block));
-    p.advance(12);
-    let sums = pollster::block_on(p.sample()).expect("block sums");
-    assert_eq!(sums.mass.len(), (s.w / block) * (s.h / block));
+    p.advance(50);
+    pollster::block_on(p.sample());
+    assert_eq!(p.field().len(), (s.w / block) * (s.h / block));
     assert_eq!(p.frame().len(), (s.w / block) * (s.h / block) * 4);
-    assert_eq!(p.step(), 12);
+    assert_eq!(p.step(), 50);
     assert!(p.reynolds().is_finite());
 }
 
@@ -108,7 +108,9 @@ fn page_gpu_and_cpu_agree() {
         for n in [10u32, 50, 77] {
             c.advance(n);
             g.advance(n);
-            assert_eq!(pollster::block_on(g.sample()), pollster::block_on(c.sample()), "{model:?} step {}", c.step());
+            pollster::block_on(g.sample());
+            pollster::block_on(c.sample());
+            assert_eq!(g.field(), c.field(), "{model:?} step {}", c.step());
         }
         assert_eq!(g.frame(), c.frame());
     }
@@ -134,19 +136,182 @@ fn signed_street_options_place_the_plate_and_kick_the_wake() {
     assert_eq!(p.reference_block(), 8);
     assert_eq!(p.setup.obstacle, fhp::Obstacle::Plate { x: 256, y: 256, rows: 65, cols: 2 });
     let mut plain = Page::cpu_ref(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8).unwrap();
-    p.advance(12);
-    plain.advance(12);
+    p.advance(50);
+    plain.advance(50);
     pollster::block_on(p.sample());
     pollster::block_on(plain.sample());
     assert_ne!(p.frame(), plain.frame());
     // The default street is unchanged by the options' defaults.
     let mut same = Page::cpu_street(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8, &Street::default()).unwrap();
     let mut plain2 = Page::cpu_ref(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8).unwrap();
-    same.advance(12);
-    plain2.advance(12);
+    same.advance(50);
+    plain2.advance(50);
     pollster::block_on(same.sample());
     pollster::block_on(plain2.sample());
     assert_eq!(same.frame(), plain2.frame());
     let bad = Street { plate: Some((10, 256, 65)), ..Default::default() };
     assert!(Page::cpu_street(Model::Signed, 1536, 512, 0.25, "randomize", 16, 8, &bad).is_err());
+}
+
+/// `field` and `obstacle` are what `frame` colours: obstacle blocks are the
+/// black pixels, the sign of the value is the red/blue side, and a value
+/// beyond 1 saturates to the scale's end colours.
+#[test]
+fn field_and_obstacle_match_the_frame() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let mut p = Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
+        for _ in 0..4 {
+            p.advance(200);
+        }
+        check_field(&p, model);
+    }
+}
+
+/// The page's 33-row plate at (128, 64), as the display blocks it touches.
+fn check_plate_blocks(p: &Page, model: Model) {
+    let o = p.obstacle();
+    let nx = p.field.nx;
+    let cells: Vec<(usize, usize)> = (0..o.len()).filter(|&b| o[b] == 1).map(|b| (b % nx, b / nx)).collect();
+    assert!(!cells.is_empty() && cells.len() <= 4, "{model:?}: {cells:?}");
+    let (bx, rows) = (128 / 16, p.field.ny);
+    for (x, y) in cells {
+        assert!(x.abs_diff(bx) <= 1 && (rows - 1 - y).abs_diff(64 / 16) <= 2, "{model:?}: block ({x}, {y})");
+    }
+}
+
+/// The same on the GPU engine, where the sums accumulate on the device.
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_obstacle_matches_the_plate_over_many_samples() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let Ok(mut g) = pollster::block_on(Page::gpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street)) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        for _ in 0..4 {
+            g.advance(200);
+            pollster::block_on(g.sample());
+        }
+        check_plate_blocks(&g, model);
+        check_field(&g, model);
+    }
+}
+
+fn check_field(p: &Page, model: Model) {
+    check_plate_blocks(p, model);
+    let (f, o, rgba) = (p.field(), p.obstacle(), p.frame());
+    let n = p.field.nx * p.field.ny;
+    assert_eq!((f.len(), o.len(), rgba.len()), (n, n, n * 4));
+    assert!(o.contains(&1) && o.contains(&0), "{model:?}");
+    let (mut sat, mut signs) = (0, 0);
+    for b in 0..n {
+        let px = &rgba[b * 4..b * 4 + 3];
+        assert_eq!(o[b] == 1, px == [0, 0, 0], "block {b}");
+        if o[b] == 1 {
+            continue;
+        }
+        if f[b] >= 1.0 {
+            assert_eq!(px, [178, 24, 43], "block {b}");
+            sat += 1;
+        } else if f[b] <= -1.0 {
+            assert_eq!(px, [33, 102, 172], "block {b}");
+            sat += 1;
+        } else if f[b] > 0.05 {
+            assert!(px[0] > px[2], "red side, block {b}");
+            signs += 1;
+        } else if f[b] < -0.05 {
+            assert!(px[2] > px[0], "blue side, block {b}");
+            signs += 1;
+        }
+    }
+    assert!(sat + signs > 0, "the flow has some vorticity");
+}
+
+/// The time average depends on the steps only: the same field after the
+/// same steps, whether they come in one call, one step per call, or mixed
+/// chunks with a `sample` after each call (as the page's frames do).
+fn chunked(mut p: Page, chunks: &[u32]) -> (Vec<f32>, Vec<u8>) {
+    for &n in chunks {
+        p.advance(n);
+        pollster::block_on(p.sample());
+    }
+    (p.field(), p.frame())
+}
+
+const STEPS: u32 = 230;
+
+fn splits() -> Vec<Vec<u32>> {
+    let mixed = [3u32, 7, 1, 50, 11, 2, 49, 5, 60, 42];
+    assert_eq!(mixed.iter().sum::<u32>(), STEPS);
+    vec![vec![STEPS], vec![1; STEPS as usize], mixed.to_vec()]
+}
+
+#[test]
+fn cpu_average_does_not_depend_on_the_steps_per_call() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let make = || Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
+        let r: Vec<_> = splits().iter().map(|c| chunked(make(), c)).collect();
+        assert!(r[0].0.iter().any(|&v| v != 0.0), "{model:?}: empty field");
+        assert_eq!(r[0], r[1], "{model:?}: one call vs one step per call");
+        assert_eq!(r[0], r[2], "{model:?}: one call vs mixed chunks");
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_average_does_not_depend_on_the_steps_per_call() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let make = || pollster::block_on(Page::gpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street));
+        let Ok(first) = make() else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let cpu = chunked(Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap(), &[STEPS]);
+        let s = splits();
+        let one = chunked(first, &s[0]);
+        assert_eq!(one, cpu, "{model:?}: GPU vs CPU");
+        assert_eq!(chunked(make().unwrap(), &s[1]), one, "{model:?}: one call vs one step per call");
+        assert_eq!(chunked(make().unwrap(), &s[2]), one, "{model:?}: one call vs mixed chunks");
+    }
+}
+
+/// The worker's pattern: steps queued while a read-back of the average is
+/// pending, a new read queued as soon as the last has landed, nothing
+/// awaited except now and then; every read lands, and the field matches the
+/// CPU's at the end.
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_steps_go_on_while_a_read_is_pending() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let Ok(mut g) = pollster::block_on(Page::gpu_street(model, 512, 128, 0.2, "randomize", 8, 0, &street)) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let mut c = Page::cpu_street(model, 512, 128, 0.2, "randomize", 8, 0, &street).unwrap();
+        let (mut landed, mut steps) = (0, 0);
+        for k in 0..300u32 {
+            let n = [5, 10, 35, 1, 50][k as usize % 5];
+            g.advance(n);
+            c.advance(n);
+            steps += n;
+            if !g.reading() {
+                g.request_field();
+            }
+            if k % 7 == 6 {
+                pollster::block_on(g.wait_field());
+            }
+            if g.field_ready() {
+                landed += 1;
+            }
+        }
+        assert!(landed > 20, "{model:?}: only {landed} reads landed in {steps} steps");
+        pollster::block_on(g.sample());
+        pollster::block_on(c.sample());
+        assert_eq!(g.field(), c.field(), "{model:?}");
+    }
 }

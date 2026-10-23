@@ -8,17 +8,16 @@
 
 use crate::bitsliced::Bitsliced;
 use crate::signed::{self, Signed};
-use crate::coarse::{BlockSums, Field};
+use crate::coarse::Field;
 use crate::ternary::engine::{self, Ternary};
 use crate::ternary::{self as tern, Rule};
 use crate::{Obstacle, Setup, SizeLimits};
 
-/// Steps between samples of the block sums inside a frame's window.
+/// The block sums are sampled after every step that is a multiple of
+/// SAMPLE_EVERY, counted from the start of the simulation, and each sample
+/// is folded into the running average (`coarse::fold_block`, weight
+/// `coarse::AVG_A`: the average halves over 10 samples, 50 steps).
 const SAMPLE_EVERY: u32 = 5;
-/// Steps at the end of each `advance` that are averaged into a frame.
-const WINDOW: u32 = 50;
-/// Weight of a new frame in the running average across frames.
-const ALPHA: f32 = 0.5;
 
 /// Ternary density (particles per channel), the operating point.
 pub const TERNARY_DENSITY: f64 = 0.6;
@@ -139,8 +138,8 @@ pub struct Page {
     pub field: Field,
     /// The signed model's reference block (0 for the others).
     pub refblock: usize,
-    /// CPU-side accumulated block sums of the current frame.
-    acc: Option<BlockSums>,
+    /// Samples folded (on the GPU engines, on the device).
+    samples: u32,
     pub adapter: String,
 }
 
@@ -280,7 +279,7 @@ impl Page {
 
     fn new(model: Model, setup: Setup, block: usize, refblock: usize, eng: Eng, adapter: String) -> Self {
         let field = Field::new(setup.w / block, setup.h / block, block, block);
-        Page { eng, model, setup, block, field, refblock, acc: None, adapter }
+        Page { eng, model, setup, block, field, refblock, samples: 0, adapter }
     }
 
     /// The signed model's parameters with reference block `refblock` (0:
@@ -391,23 +390,23 @@ impl Page {
         }
     }
 
-    fn accumulate(&mut self) {
+    /// Sample the block sums and fold them into the running average (on
+    /// the device for the GPU engines).
+    fn take_sample(&mut self) {
+        self.samples += 1;
         let b = self.block;
         let s = match &mut self.eng {
             Eng::Fhp3Cpu(e) => e.block_sums(b, b),
             Eng::TernaryCpu(e) => e.block_sums(b, b),
             Eng::SignedCpu(e) => e.page_sums(b, b),
             #[cfg(feature = "gpu")]
-            Eng::Fhp3Gpu(g) => return g.accumulate_sums(b, b),
+            Eng::Fhp3Gpu(g) => return g.sample_sums(b, b),
             #[cfg(feature = "gpu")]
-            Eng::TernaryGpu(g) => return g.accumulate_sums(b, b),
+            Eng::TernaryGpu(g) => return g.sample_sums(b, b),
             #[cfg(feature = "gpu")]
-            Eng::SignedGpu(g) => return g.accumulate_sums(b, b),
+            Eng::SignedGpu(g) => return g.sample_sums(b, b),
         };
-        match self.acc.as_mut() {
-            Some(a) => a.add(&s),
-            None => self.acc = Some(s),
-        }
+        self.field.fold(&s);
     }
 
     pub fn step(&self) -> u32 {
@@ -424,52 +423,165 @@ impl Page {
         }
     }
 
-    /// Run `n` steps; the last min(n, 50) are sampled every 5 steps into
-    /// the frame's block sums.
+    /// Run `n` steps, sampling the block sums after every step that is a
+    /// multiple of 5 and folding each sample into the running average, so
+    /// the average depends on the steps only. Nothing waits: on the GPU the
+    /// steps, samples and folds are queued, and the average is read back
+    /// only on request (`request_field`).
     pub fn advance(&mut self, n: u32) {
-        let window = n.min(WINDOW);
-        let samples = (window / SAMPLE_EVERY).max(1);
-        let gap = window / samples;
-        self.run(n - samples * gap);
-        for _ in 0..samples {
-            self.run(gap);
-            self.accumulate();
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(SAMPLE_EVERY - self.step() % SAMPLE_EVERY);
+            self.run(k);
+            left -= k;
+            if self.step().is_multiple_of(SAMPLE_EVERY) {
+                self.take_sample();
+            }
         }
     }
 
-    /// The GPU engine's accumulated block sums of the frame (None on the CPU).
-    pub async fn take_gpu_sums(&self) -> Option<BlockSums> {
+    /// Ask for the current running average: on the GPU a read-back is
+    /// queued unless one is in flight; on the CPU the field is current.
+    pub fn request_field(&mut self) {
+        match &mut self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.request_average(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.request_average(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.request_average(),
+            _ => {}
+        }
+    }
+
+    /// Whether the field holds a newer average than before: on the GPU, the
+    /// requested read-back has arrived (taken into the field); on the CPU,
+    /// always. Does not wait.
+    pub fn field_ready(&mut self) -> bool {
+        #[cfg(feature = "gpu")]
+        {
+            let got = match &mut self.eng {
+                Eng::Fhp3Gpu(g) => g.average_ready(),
+                Eng::TernaryGpu(g) => g.average_ready(),
+                Eng::SignedGpu(g) => g.average_ready(),
+                _ => return true,
+            };
+            match got {
+                Some((q, samples)) => {
+                    self.field.set_q(&q, samples);
+                    true
+                }
+                None => false,
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        true
+    }
+
+    /// The first GPU error or device loss, if any (None on the CPU).
+    pub fn gpu_error(&self) -> Option<String> {
         match &self.eng {
             #[cfg(feature = "gpu")]
-            Eng::Fhp3Gpu(g) => Some(g.take_sums().await),
+            Eng::Fhp3Gpu(g) => g.health.error(),
             #[cfg(feature = "gpu")]
-            Eng::TernaryGpu(g) => Some(g.take_sums().await),
+            Eng::TernaryGpu(g) => g.health.error(),
             #[cfg(feature = "gpu")]
-            Eng::SignedGpu(g) => Some(g.take_sums().await),
+            Eng::SignedGpu(g) => g.health.error(),
             _ => None,
         }
     }
 
-    /// Fold the frame's block sums (the GPU's, else the CPU's) into the
-    /// time-averaged field; returns them.
-    pub fn fold(&mut self, gpu: Option<BlockSums>) -> Option<BlockSums> {
-        let sums = gpu.or_else(|| self.acc.take());
-        if let Some(s) = &sums {
-            self.field.add(s, ALPHA);
+    /// Read-backs of the average whose map failed (0 on the CPU).
+    pub fn read_failures(&self) -> u32 {
+        match &self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.average_failures(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.average_failures(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.average_failures(),
+            _ => 0,
         }
-        sums
     }
 
-    /// `take_gpu_sums` then `fold`.
-    pub async fn sample(&mut self) -> Option<BlockSums> {
-        let g = self.take_gpu_sums().await;
-        self.fold(g)
+    /// Whether a read-back of the average is in flight.
+    pub fn reading(&self) -> bool {
+        match &self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.average_reading(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.average_reading(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.average_reading(),
+            _ => false,
+        }
+    }
+
+    /// A receiver completed when the read-back in flight lands (None if
+    /// none is pending, and on the CPU); it holds no borrow of the page.
+    #[cfg(feature = "gpu")]
+    pub fn field_waiter(&self) -> Option<futures_channel::oneshot::Receiver<()>> {
+        match &self.eng {
+            Eng::Fhp3Gpu(g) => g.average_waiter(),
+            Eng::TernaryGpu(g) => g.average_waiter(),
+            Eng::SignedGpu(g) => g.average_waiter(),
+            _ => None,
+        }
+    }
+
+    /// Wait for the read-back in flight (at once if none or on the CPU).
+    pub async fn wait_field(&mut self) {
+        match &mut self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.wait_average().await,
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.wait_average().await,
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.wait_average().await,
+            _ => {}
+        }
+    }
+
+    /// Bring the field up to the current step (waits for the read-back on
+    /// the GPU).
+    pub async fn sample(&mut self) {
+        while self.reading() {
+            self.wait_field().await;
+            self.field_ready();
+        }
+        if self.samples == 0 {
+            return;
+        }
+        // A failed read is dropped; ask again (a few times at most).
+        let failed = self.read_failures();
+        self.request_field();
+        while !self.field_ready() && self.read_failures() < failed + 3 {
+            if !self.reading() {
+                self.request_field();
+            }
+            self.wait_field().await;
+        }
     }
 
     /// RGBA vorticity image, one pixel per block, top row first; the scale
     /// saturates at 4U/D for both models.
     pub fn frame(&self) -> Vec<u8> {
-        self.field.vorticity_rgba(4.0 * self.setup.ux as f32 / self.plate_len() as f32)
+        self.field.vorticity_rgba(self.vorticity_scale())
+    }
+
+    /// The vorticity per block that `frame` colours, divided by its scale
+    /// (1 = full saturation, sign = rotation, not clamped), top row first.
+    pub fn field(&self) -> Vec<f32> {
+        self.field.vorticity_values(self.vorticity_scale())
+    }
+
+    /// 1 per block that `frame` paints as an obstacle, top row first.
+    pub fn obstacle(&self) -> Vec<u8> {
+        self.field.obstacle_mask()
+    }
+
+    fn vorticity_scale(&self) -> f32 {
+        4.0 * self.setup.ux as f32 / self.plate_len() as f32
     }
 
     fn plate_len(&self) -> f64 {

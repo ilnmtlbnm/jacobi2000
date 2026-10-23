@@ -326,3 +326,30 @@ fn half_filled_deviations_relax_to_the_uniform_ternary_measure() {
     let _ = signed::REFRESH;
 }
 
+
+#[test]
+fn paired_division_is_div16() {
+    let mut x = 0x1234_5678u32;
+    let mut next = || {
+        x = fhp::lowbias32(x);
+        x
+    };
+    let edges = [0, 1, -1, 2, -2, 255, 256, -256, (1 << 15) - 1, 1 << 15, (1 << 22) + 3, (1 << 23) - 1, 1 << 23, -(1 << 23), i32::MAX, i32::MIN + 1];
+    let mut cases: Vec<(i32, i32, i32)> = Vec::new();
+    for &a in &edges {
+        for &d in &edges {
+            if d > 0 {
+                cases.push((a, -a, d));
+            }
+        }
+    }
+    for _ in 0..2_000_000 {
+        let den = (next() >> (next() % 31)) as i32 & i32::MAX;
+        let shift = next() % 31;
+        let (a, b) = ((next() as i32) >> shift, (next() as i32) >> shift);
+        cases.push((a, b, den.max(1)));
+    }
+    for (a, b, d) in cases {
+        assert_eq!(signed::div16_pair(a, b, d), (signed::div16(a, d), signed::div16(b, d)), "{a} {b} / {d}");
+    }
+}

@@ -2,6 +2,7 @@
 //! natively, WebGPU in the browser). Bit-identical to the CPU engines.
 
 use crate::bitsliced::PLANES;
+use crate::average::Average;
 use crate::coarse::BlockSums;
 use crate::{step_key, Params, OBST, STREAM_CHIRALITY, STREAM_FORCING};
 
@@ -23,6 +24,8 @@ pub struct Gpu {
     pub step: u32,
     pub adapter: String,
     device: wgpu::Device,
+    /// The first GPU error or device loss (browser only).
+    pub health: crate::health::Health,
     queue: wgpu::Queue,
     step_pipe: wgpu::ComputePipeline,
     coarse_pipe: wgpu::ComputePipeline,
@@ -229,7 +232,8 @@ impl Gpu {
         });
         let seeds = crate::boundary::stream_seeds(params.seed);
         let dispatch_x = wn.div_ceil(64) as u32;
-        Ok(Gpu { w, h, wn, params, step: 0, adapter: adapter_name, device, queue, step_pipe, coarse_pipe, state, obst, uniforms, groups, dispatch_x, boundary, seeds, keys, cur: 0, coarse: None })
+        let health = crate::health::Health::watch(&device);
+        Ok(Gpu { w, h, wn, params, step: 0, adapter: adapter_name, health, device, queue, step_pipe, coarse_pipe, state, obst, uniforms, groups, dispatch_x, boundary, seeds, keys, cur: 0, coarse: None })
     }
 
     /// Queue `n` steps (does not wait).
@@ -364,6 +368,63 @@ impl Gpu {
         self.take_sums().await
     }
 
+    /// Sample the current block sums and fold them into the running time
+    /// average on the GPU (queued, no wait, no read-back). Changing the
+    /// block size resets the average.
+    pub fn sample_sums(&mut self, bw: usize, bh: usize) {
+        assert!(32 % bw == 0 && self.w.is_multiple_of(bw) && self.h.is_multiple_of(bh));
+        if self.coarse.as_ref().is_none_or(|c| (c.bw, c.bh) != (bw, bh)) {
+            self.coarse = Some(self.make_coarse(bw, bh));
+        }
+        let c = self.coarse.as_mut().unwrap();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.clear_buffer(&c.out, 0, None);
+        {
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.coarse_pipe);
+            pass.set_bind_group(0, &c.groups[self.cur], &[]);
+            pass.dispatch_workgroups(c.nx.div_ceil(64) as u32, c.ny as u32, 1);
+        }
+        c.avg.fold(&self.queue, &mut enc);
+        self.queue.submit(Some(enc.finish()));
+    }
+
+    /// Queue a read-back of the running average unless one is in flight.
+    pub fn request_average(&mut self) {
+        if let Some(c) = self.coarse.as_mut() {
+            c.avg.request(&self.device, &self.queue);
+        }
+    }
+
+    /// The read-back running average (4 words per block) and its sample
+    /// count, if it has arrived (does not wait).
+    pub fn average_ready(&mut self) -> Option<(Vec<i32>, u32)> {
+        self.coarse.as_mut()?.avg.ready(&self.device)
+    }
+
+    /// Read-backs of the average whose map failed.
+    pub fn average_failures(&self) -> u32 {
+        self.coarse.as_ref().map_or(0, |c| c.avg.failures)
+    }
+
+    /// Whether a read-back of the average is in flight.
+    pub fn average_reading(&self) -> bool {
+        self.coarse.as_ref().is_some_and(|c| c.avg.reading())
+    }
+
+    /// A receiver completed when the read-back of the average in flight
+    /// lands (None if none is pending).
+    pub fn average_waiter(&self) -> Option<futures_channel::oneshot::Receiver<()>> {
+        self.coarse.as_ref()?.avg.waiter()
+    }
+
+    /// Wait for the read-back of the average in flight.
+    pub async fn wait_average(&mut self) {
+        if let Some(c) = self.coarse.as_mut() {
+            c.avg.wait(&self.device).await;
+        }
+    }
+
     fn make_coarse(&self, bw: usize, bh: usize) -> Coarse {
         let (nx, ny) = (self.w / bw, self.h / bh);
         let u = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -393,7 +454,8 @@ impl Gpu {
                 ],
             })
         });
-        Coarse { bw, bh, nx, ny, out, groups }
+        let avg = Average::new(&self.device, &out, nx * ny);
+        Coarse { bw, bh, nx, ny, out, groups, avg }
     }
 }
 
@@ -410,4 +472,6 @@ struct Coarse {
     ny: usize,
     out: wgpu::Buffer,
     groups: [wgpu::BindGroup; 2],
+    /// The running time average of the samples.
+    avg: Average,
 }
