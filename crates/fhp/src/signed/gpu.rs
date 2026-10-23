@@ -41,6 +41,8 @@ pub struct Gpu {
     nbx: usize,
     nby: usize,
     device: wgpu::Device,
+    /// The first GPU error or device loss (browser only).
+    pub health: crate::health::Health,
     queue: wgpu::Queue,
     step_pipe: wgpu::ComputePipeline,
     requant_pipe: wgpu::ComputePipeline,
@@ -216,7 +218,9 @@ impl Gpu {
                 })
             })
             .collect();
+        let health = crate::health::Health::watch(&device);
         let g = Gpu {
+            health,
             w,
             h,
             params,

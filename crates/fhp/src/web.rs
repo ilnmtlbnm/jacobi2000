@@ -79,6 +79,13 @@ impl Sim {
         self.inner.borrow_mut().field_ready()
     }
 
+    /// The first GPU error or device loss ('' if none). In the browser an
+    /// error no longer panics: the engine keeps it here for the page.
+    #[wasm_bindgen(getter, js_name = gpuError)]
+    pub fn gpu_error(&self) -> String {
+        self.inner.borrow().gpu_error().unwrap_or_default()
+    }
+
     /// Read-backs whose map failed (dropped; a new request starts a new one).
     #[wasm_bindgen(getter, js_name = readFailures)]
     pub fn read_failures(&self) -> u32 {

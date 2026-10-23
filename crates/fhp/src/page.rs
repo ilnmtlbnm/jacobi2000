@@ -478,6 +478,19 @@ impl Page {
         true
     }
 
+    /// The first GPU error or device loss, if any (None on the CPU).
+    pub fn gpu_error(&self) -> Option<String> {
+        match &self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.health.error(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.health.error(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.health.error(),
+            _ => None,
+        }
+    }
+
     /// Read-backs of the average whose map failed (0 on the CPU).
     pub fn read_failures(&self) -> u32 {
         match &self.eng {

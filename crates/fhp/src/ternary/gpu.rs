@@ -30,6 +30,8 @@ pub struct Gpu {
     pub step: u32,
     pub adapter: String,
     device: wgpu::Device,
+    /// The first GPU error or device loss (browser only).
+    pub health: crate::health::Health,
     queue: wgpu::Queue,
     pipe: wgpu::ComputePipeline,
     state: [wgpu::Buffer; 2],
@@ -184,7 +186,8 @@ impl Gpu {
                 cache: None,
             })
         });
-        Ok(Gpu { layout, w, h, wn, seed, step: 0, adapter: adapter_name, device, queue, pipe, state, obst, uniforms, groups, cur: 0, boundary, coarse_pipe, coarse: None })
+        let health = crate::health::Health::watch(&device);
+        Ok(Gpu { layout, w, h, wn, seed, step: 0, adapter: adapter_name, health, device, queue, pipe, state, obst, uniforms, groups, cur: 0, boundary, coarse_pipe, coarse: None })
     }
 
     /// Queue `n` steps (does not wait).

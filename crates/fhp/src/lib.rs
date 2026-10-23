@@ -17,6 +17,8 @@ pub mod bitsliced;
 pub mod boundary;
 #[cfg(feature = "gpu")]
 pub mod average;
+#[cfg(feature = "gpu")]
+pub mod health;
 pub mod coarse;
 pub mod page;
 pub mod collide_gen;
