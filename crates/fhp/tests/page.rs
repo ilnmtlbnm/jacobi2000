@@ -14,8 +14,8 @@ fn check_page(p: &mut Page, w: usize, h: usize, block: usize) {
     assert!(s.w >= w && s.h >= h && s.w.is_multiple_of(64) && s.h.is_multiple_of(16) && s.h.is_multiple_of(block), "{w}x{h} block {block} -> {}x{}", s.w, s.h);
     assert_eq!((p.field.nx, p.field.ny), (s.w / block, s.h / block));
     p.advance(50);
-    let sums = pollster::block_on(p.sample()).expect("block sums");
-    assert_eq!(sums.mass.len(), (s.w / block) * (s.h / block));
+    pollster::block_on(p.sample());
+    assert_eq!(p.field().len(), (s.w / block) * (s.h / block));
     assert_eq!(p.frame().len(), (s.w / block) * (s.h / block) * 4);
     assert_eq!(p.step(), 50);
     assert!(p.reynolds().is_finite());
@@ -108,7 +108,9 @@ fn page_gpu_and_cpu_agree() {
         for n in [10u32, 50, 77] {
             c.advance(n);
             g.advance(n);
-            assert_eq!(pollster::block_on(g.sample()), pollster::block_on(c.sample()), "{model:?} step {}", c.step());
+            pollster::block_on(g.sample());
+            pollster::block_on(c.sample());
+            assert_eq!(g.field(), c.field(), "{model:?} step {}", c.step());
         }
         assert_eq!(g.frame(), c.frame());
     }
@@ -161,7 +163,6 @@ fn field_and_obstacle_match_the_frame() {
         let mut p = Page::cpu_street(model, 512, 128, 0.2, "randomize", 16, 0, &street).unwrap();
         for _ in 0..4 {
             p.advance(200);
-            p.fold(vec![]);
         }
         check_field(&p, model);
     }

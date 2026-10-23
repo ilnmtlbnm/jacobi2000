@@ -59,33 +59,76 @@ impl Sim {
     }
 
     /// Run `n` steps (see `Page::advance`: the time average is sampled and
-    /// folded every 5 steps, whatever the split into calls).
+    /// folded every 5 steps, whatever the split into calls; nothing waits).
     pub fn advance(&self, n: u32) {
         self.inner.borrow_mut().advance(n);
     }
 
-    /// Read back the GPU samples, fold them into the time-averaged field
-    /// and run the steps still pending. The worker awaits this before its
-    /// next call, so holding the borrow across the readback cannot collide
-    /// with another borrow.
+    /// Ask for the current time-averaged field: on the GPU a read-back is
+    /// queued unless one is in flight (steps go on meanwhile); on the CPU
+    /// the field is always current.
+    #[wasm_bindgen(js_name = requestField)]
+    pub fn request_field(&self) {
+        self.inner.borrow_mut().request_field();
+    }
+
+    /// Whether `field` now holds a newer average (the read-back has landed;
+    /// always true on the CPU). Does not wait.
+    #[wasm_bindgen(js_name = fieldReady)]
+    pub fn field_ready(&self) -> bool {
+        self.inner.borrow_mut().field_ready()
+    }
+
+    /// Whether a read-back is in flight.
+    #[wasm_bindgen(getter)]
+    pub fn reading(&self) -> bool {
+        self.inner.borrow().reading()
+    }
+
+    /// Resolves when the read-back in flight lands (at once if none). Holds
+    /// no borrow while pending, so `advance` can be called meanwhile.
     #[cfg(feature = "gpu")]
-    #[allow(clippy::await_holding_refcell_ref)]
-    pub fn sample(&self) -> js_sys::Promise {
-        let inner = self.inner.clone();
+    #[wasm_bindgen(js_name = waitField)]
+    pub fn wait_field(&self) -> js_sys::Promise {
+        let rx = self.inner.borrow().field_waiter();
         wasm_bindgen_futures::future_to_promise(async move {
-            while inner.borrow().needs_sums() {
-                let samples = inner.borrow_mut().take_gpu_samples().await;
-                inner.borrow_mut().fold(samples);
+            if let Some(rx) = rx {
+                let _ = rx.await;
             }
             Ok(JsValue::UNDEFINED)
         })
     }
 
-    /// CPU samples are folded as they are taken; nothing is left to do.
-    #[cfg(not(feature = "gpu"))]
-    pub fn sample(&self) {
-        self.inner.borrow_mut().fold(vec![]);
+    /// Bring the field up to the current step: wait for any read-back in
+    /// flight, then read back the current average (on the CPU, at once).
+    #[cfg(feature = "gpu")]
+    pub fn sample(&self) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            for request in [false, true] {
+                if request {
+                    inner.borrow_mut().request_field();
+                }
+                loop {
+                    let rx = {
+                        let mut p = inner.borrow_mut();
+                        if p.field_ready() || !p.reading() {
+                            break;
+                        }
+                        p.field_waiter()
+                    };
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                }
+            }
+            Ok(JsValue::UNDEFINED)
+        })
     }
+
+    /// The CPU field is always current.
+    #[cfg(not(feature = "gpu"))]
+    pub fn sample(&self) {}
 
     /// RGBA vorticity image, `imageWidth` x `imageHeight`, top row first.
     pub fn frame(&self) -> Vec<u8> {

@@ -8,23 +8,16 @@
 
 use crate::bitsliced::Bitsliced;
 use crate::signed::{self, Signed};
-use crate::coarse::{BlockSums, Field};
+use crate::coarse::Field;
 use crate::ternary::engine::{self, Ternary};
 use crate::ternary::{self as tern, Rule};
 use crate::{Obstacle, Setup, SizeLimits};
 
 /// The block sums are sampled after every step that is a multiple of
 /// SAMPLE_EVERY, counted from the start of the simulation, and each sample
-/// is folded into the running average.
+/// is folded into the running average (`coarse::fold_block`, weight
+/// `coarse::AVG_A`: the average halves over 10 samples, 50 steps).
 const SAMPLE_EVERY: u32 = 5;
-/// Steps over which the running average decays by half (a weight of
-/// 1 - 0.5^(SAMPLE_EVERY / HALF_LIFE) per sample).
-const HALF_LIFE: f64 = 50.0;
-
-/// Weight of a new sample in the running average.
-fn alpha() -> f32 {
-    (1.0 - 0.5f64.powf(SAMPLE_EVERY as f64 / HALF_LIFE)) as f32
-}
 
 /// Ternary density (particles per channel), the operating point.
 pub const TERNARY_DENSITY: f64 = 0.6;
@@ -145,13 +138,8 @@ pub struct Page {
     pub field: Field,
     /// The signed model's reference block (0 for the others).
     pub refblock: usize,
-    /// Steps asked for by `advance` and not run yet: a GPU engine stops
-    /// when its sample ring is full, until `sample` reads it back.
-    pending: u32,
-    /// Samples held on the GPU, not yet read back.
-    held: usize,
-    /// The last sample folded since the last `sample`.
-    last: Option<BlockSums>,
+    /// Samples folded (on the GPU engines, on the device).
+    samples: u32,
     pub adapter: String,
 }
 
@@ -291,7 +279,7 @@ impl Page {
 
     fn new(model: Model, setup: Setup, block: usize, refblock: usize, eng: Eng, adapter: String) -> Self {
         let field = Field::new(setup.w / block, setup.h / block, block, block);
-        Page { eng, model, setup, block, field, refblock, pending: 0, held: 0, last: None, adapter }
+        Page { eng, model, setup, block, field, refblock, samples: 0, adapter }
     }
 
     /// The signed model's parameters with reference block `refblock` (0:
@@ -402,9 +390,10 @@ impl Page {
         }
     }
 
-    /// Sample the block sums: folded on the spot on the CPU, queued into
-    /// the engine's sample ring on the GPU.
+    /// Sample the block sums and fold them into the running average (on
+    /// the device for the GPU engines).
     fn take_sample(&mut self) {
+        self.samples += 1;
         let b = self.block;
         let s = match &mut self.eng {
             Eng::Fhp3Cpu(e) => e.block_sums(b, b),
@@ -417,11 +406,7 @@ impl Page {
             #[cfg(feature = "gpu")]
             Eng::SignedGpu(g) => return g.sample_sums(b, b),
         };
-        self.fold_sample(s);
-    }
-
-    fn is_gpu(&self) -> bool {
-        !matches!(self.eng, Eng::Fhp3Cpu(_) | Eng::TernaryCpu(_) | Eng::SignedCpu(_))
+        self.field.fold(&s);
     }
 
     pub fn step(&self) -> u32 {
@@ -438,81 +423,111 @@ impl Page {
         }
     }
 
-    /// Run `n` steps. The block sums are sampled after every step that is
-    /// a multiple of 5 and each sample is folded into the time average, so
-    /// the average depends on the steps only, not on how they are split
-    /// across calls. The GPU engines keep up to `SAMPLE_SLOTS` samples on
-    /// the device; `sample` reads them back and folds them in order (a full
-    /// ring stops the run until then).
+    /// Run `n` steps, sampling the block sums after every step that is a
+    /// multiple of 5 and folding each sample into the running average, so
+    /// the average depends on the steps only. Nothing waits: on the GPU the
+    /// steps, samples and folds are queued, and the average is read back
+    /// only on request (`request_field`).
     pub fn advance(&mut self, n: u32) {
-        self.pending += n;
-        self.drive();
-    }
-
-    /// Run pending steps, sampling on the way, until they are done or the
-    /// GPU sample ring is full.
-    fn drive(&mut self) {
-        while self.pending > 0 && self.held < crate::coarse::SAMPLE_SLOTS {
-            let to_sample = SAMPLE_EVERY - self.step() % SAMPLE_EVERY;
-            let k = self.pending.min(to_sample);
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(SAMPLE_EVERY - self.step() % SAMPLE_EVERY);
             self.run(k);
-            self.pending -= k;
+            left -= k;
             if self.step().is_multiple_of(SAMPLE_EVERY) {
                 self.take_sample();
-                if self.is_gpu() {
-                    self.held += 1;
-                }
             }
         }
     }
 
-    /// Whether GPU samples are waiting to be read back.
-    pub fn needs_sums(&self) -> bool {
-        self.held > 0
-    }
-
-    /// The GPU samples taken since the last read, oldest first (none on the
-    /// CPU).
-    pub async fn take_gpu_samples(&mut self) -> Vec<BlockSums> {
+    /// Ask for the current running average: on the GPU a read-back is
+    /// queued unless one is in flight; on the CPU the field is current.
+    pub fn request_field(&mut self) {
         match &mut self.eng {
             #[cfg(feature = "gpu")]
-            Eng::Fhp3Gpu(g) => g.take_samples().await,
+            Eng::Fhp3Gpu(g) => g.request_average(),
             #[cfg(feature = "gpu")]
-            Eng::TernaryGpu(g) => g.take_samples().await,
+            Eng::TernaryGpu(g) => g.request_average(),
             #[cfg(feature = "gpu")]
-            Eng::SignedGpu(g) => g.take_samples().await,
-            _ => vec![],
+            Eng::SignedGpu(g) => g.request_average(),
+            _ => {}
         }
     }
 
-    fn fold_sample(&mut self, s: BlockSums) {
-        self.field.add(&s, alpha());
-        let full = (s.bw * s.bh) as i32;
-        for (solid, &f) in self.field.solid.iter_mut().zip(&s.fluid) {
-            *solid = f < full;
+    /// Whether the field holds a newer average than before: on the GPU, the
+    /// requested read-back has arrived (taken into the field); on the CPU,
+    /// always. Does not wait.
+    pub fn field_ready(&mut self) -> bool {
+        let got = match &mut self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.average_ready(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.average_ready(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.average_ready(),
+            _ => return true,
+        };
+        match got {
+            Some((q, samples)) => {
+                self.field.set_q(&q, samples);
+                true
+            }
+            None => false,
         }
-        self.last = Some(s);
     }
 
-    /// Fold GPU samples (from `take_gpu_samples`) in order, then run the
-    /// pending steps.
-    pub fn fold(&mut self, samples: Vec<BlockSums>) {
-        self.held = 0;
-        for s in samples {
-            self.fold_sample(s);
+    /// Whether a read-back of the average is in flight.
+    pub fn reading(&self) -> bool {
+        match &self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.average_reading(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.average_reading(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.average_reading(),
+            _ => false,
         }
-        self.drive();
     }
 
-    /// Read back and fold the GPU samples, running every pending step (one
-    /// read-back unless more than `SAMPLE_SLOTS` samples were due); returns
-    /// the last sample folded since the last call.
-    pub async fn sample(&mut self) -> Option<BlockSums> {
-        while self.needs_sums() {
-            let s = self.take_gpu_samples().await;
-            self.fold(s);
+    /// A receiver completed when the read-back in flight lands (None if
+    /// none is pending, and on the CPU); it holds no borrow of the page.
+    #[cfg(feature = "gpu")]
+    pub fn field_waiter(&self) -> Option<futures_channel::oneshot::Receiver<()>> {
+        match &self.eng {
+            Eng::Fhp3Gpu(g) => g.average_waiter(),
+            Eng::TernaryGpu(g) => g.average_waiter(),
+            Eng::SignedGpu(g) => g.average_waiter(),
+            _ => None,
         }
-        self.last.take()
+    }
+
+    /// Wait for the read-back in flight (at once if none or on the CPU).
+    pub async fn wait_field(&mut self) {
+        match &mut self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.wait_average().await,
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.wait_average().await,
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.wait_average().await,
+            _ => {}
+        }
+    }
+
+    /// Bring the field up to the current step (waits for the read-back on
+    /// the GPU).
+    pub async fn sample(&mut self) {
+        while self.reading() {
+            self.wait_field().await;
+            self.field_ready();
+        }
+        if self.samples == 0 {
+            return;
+        }
+        self.request_field();
+        while !self.field_ready() {
+            self.wait_field().await;
+        }
     }
 
     /// RGBA vorticity image, one pixel per block, top row first; the scale
