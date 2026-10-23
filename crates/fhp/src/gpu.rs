@@ -399,6 +399,11 @@ impl Gpu {
         self.coarse.as_mut()?.avg.ready(&self.device)
     }
 
+    /// Read-backs of the average whose map failed.
+    pub fn average_failures(&self) -> u32 {
+        self.coarse.as_ref().map_or(0, |c| c.avg.failures)
+    }
+
     /// Whether a read-back of the average is in flight.
     pub fn average_reading(&self) -> bool {
         self.coarse.as_ref().is_some_and(|c| c.avg.reading())

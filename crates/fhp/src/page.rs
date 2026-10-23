@@ -478,6 +478,19 @@ impl Page {
         true
     }
 
+    /// Read-backs of the average whose map failed (0 on the CPU).
+    pub fn read_failures(&self) -> u32 {
+        match &self.eng {
+            #[cfg(feature = "gpu")]
+            Eng::Fhp3Gpu(g) => g.average_failures(),
+            #[cfg(feature = "gpu")]
+            Eng::TernaryGpu(g) => g.average_failures(),
+            #[cfg(feature = "gpu")]
+            Eng::SignedGpu(g) => g.average_failures(),
+            _ => 0,
+        }
+    }
+
     /// Whether a read-back of the average is in flight.
     pub fn reading(&self) -> bool {
         match &self.eng {
@@ -526,8 +539,13 @@ impl Page {
         if self.samples == 0 {
             return;
         }
+        // A failed read is dropped; ask again (a few times at most).
+        let failed = self.read_failures();
         self.request_field();
-        while !self.field_ready() {
+        while !self.field_ready() && self.read_failures() < failed + 3 {
+            if !self.reading() {
+                self.request_field();
+            }
             self.wait_field().await;
         }
     }

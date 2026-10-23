@@ -278,3 +278,40 @@ fn gpu_average_does_not_depend_on_the_steps_per_call() {
         assert_eq!(chunked(make().unwrap(), &s[2]), one, "{model:?}: one call vs mixed chunks");
     }
 }
+
+/// The worker's pattern: steps queued while a read-back of the average is
+/// pending, a new read queued as soon as the last has landed, nothing
+/// awaited except now and then; every read lands, and the field matches the
+/// CPU's at the end.
+#[cfg(feature = "gpu")]
+#[test]
+fn gpu_steps_go_on_while_a_read_is_pending() {
+    for model in MODELS {
+        let street = fhp::page::Street { plate: Some((128, 64, 33)), ..Default::default() };
+        let Ok(mut g) = pollster::block_on(Page::gpu_street(model, 512, 128, 0.2, "randomize", 8, 0, &street)) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let mut c = Page::cpu_street(model, 512, 128, 0.2, "randomize", 8, 0, &street).unwrap();
+        let (mut landed, mut steps) = (0, 0);
+        for k in 0..300u32 {
+            let n = [5, 10, 35, 1, 50][k as usize % 5];
+            g.advance(n);
+            c.advance(n);
+            steps += n;
+            if !g.reading() {
+                g.request_field();
+            }
+            if k % 7 == 6 {
+                pollster::block_on(g.wait_field());
+            }
+            if g.field_ready() {
+                landed += 1;
+            }
+        }
+        assert!(landed > 20, "{model:?}: only {landed} reads landed in {steps} steps");
+        pollster::block_on(g.sample());
+        pollster::block_on(c.sample());
+        assert_eq!(g.field(), c.field(), "{model:?}");
+    }
+}

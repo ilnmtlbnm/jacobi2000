@@ -32,6 +32,8 @@ pub struct Average {
     group: wgpu::BindGroup,
     samples: u32,
     read: Option<Read>,
+    /// Read-backs whose map failed (dropped; the average is unaffected).
+    pub failures: u32,
 }
 
 impl Average {
@@ -51,7 +53,7 @@ impl Average {
                 wgpu::BindGroupEntry { binding: 2, resource: q.as_entire_binding() },
             ],
         });
-        Average { n, q, params, pipe, group, samples: 0, read: None }
+        Average { n, q, params, pipe, group, samples: 0, read: None, failures: 0 }
     }
 
     /// Record the fold of the sums into `enc` (submitted by the caller);
@@ -101,7 +103,8 @@ impl Average {
     }
 
     /// The read-back average and its sample count, if it has arrived (does
-    /// not wait).
+    /// not wait). A read whose map failed is dropped and counted in
+    /// `failures`; the next request starts a new one.
     pub fn ready(&mut self, device: &wgpu::Device) -> Option<(Vec<i32>, u32)> {
         #[cfg(not(target_arch = "wasm32"))]
         let _ = device.poll(wgpu::PollType::Poll);
@@ -109,7 +112,11 @@ impl Average {
         let _ = device;
         match self.read.as_ref()?.state.load(Ordering::Acquire) {
             PENDING => return None,
-            FAILED => panic!("buffer map failed"),
+            FAILED => {
+                self.read = None;
+                self.failures += 1;
+                return None;
+            }
             _ => {}
         }
         let r = self.read.take().unwrap();

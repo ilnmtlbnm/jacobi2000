@@ -79,6 +79,12 @@ impl Sim {
         self.inner.borrow_mut().field_ready()
     }
 
+    /// Read-backs whose map failed (dropped; a new request starts a new one).
+    #[wasm_bindgen(getter, js_name = readFailures)]
+    pub fn read_failures(&self) -> u32 {
+        self.inner.borrow().read_failures()
+    }
+
     /// Whether a read-back is in flight.
     #[wasm_bindgen(getter)]
     pub fn reading(&self) -> bool {
