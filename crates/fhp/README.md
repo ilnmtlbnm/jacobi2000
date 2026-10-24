@@ -45,6 +45,8 @@ PLAYWRIGHT=<.../playwright/index.mjs> node scripts/fhp_headless.mjs http://127.0
 
 `src/signed/` stores each channel as a deviation in {-1, 0, +1} around a per-block reference equilibrium. The reference, the equilibrium, the rounding and the reservoirs are fixed point (i32 in units of 2^-12 particles), so the CPU engine and the GPU engine (`signed/gpu.rs`, `shaders/signed.wgsl`) are bit-identical and mass and momentum are conserved exactly in those units (`tests/signed.rs`, `tests/signed_gpu.rs`). The GPU engine has rules `optimal` and `chiral`, the open boundary, the plate and block sums.
 
+[REPORT.md](REPORT.md) is the technical report on this model: the physics (representation, reference equilibrium, streaming correction, reservoirs and the conservation invariant, collision, boundaries, the time average behind the picture), the measurements against FHP-III and ternary FHP, what is new, the limitations, and a walk through the code.
+
 ## Sources
 
 - U. Frisch, B. Hasslacher, Y. Pomeau, "Lattice-gas automata for the Navier-Stokes equation," Phys. Rev. Lett. 56, 1505 (1986). https://doi.org/10.1103/PhysRevLett.56.1505
