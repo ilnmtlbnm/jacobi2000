@@ -87,7 +87,7 @@ cargo run -p engine-cli --release --bin rollout -- \
 
 ## The FHP lattice gas
 
-`crates/fhp` is the FHP-III lattice gas (Frisch, Hasslacher and Pomeau), with ternary and signed ternary variants, as a per-site reference and bit-sliced CPU and WGSL engines that agree bit for bit. Flow past a plate forms a von Karman vortex street (below: the signed ternary variant on WebGPU, a 4096 x 1024 lattice after 13,000 steps, Reynolds number about 200, coloured by vorticity). The dev page at `crates/fhp/www` runs it in the browser; `crates/fhp/README.md` has the model, the collision circuit, the commands and the sources.
+`crates/fhp` is the FHP-III lattice gas (Frisch, Hasslacher and Pomeau), with ternary and signed ternary variants, as a per-site reference and bit-sliced CPU and WGSL engines that agree bit for bit. Flow past a plate forms a von Karman vortex street (below: the signed ternary variant on WebGPU, a 4096 x 1024 lattice after 13,000 steps, Reynolds number about 200, coloured by vorticity). The dev page at `crates/fhp/www` runs it in the browser; `crates/fhp/README.md` has the model, the collision circuit, the commands and the sources, and [`crates/fhp/REPORT.md`](crates/fhp/REPORT.md) is the technical report on the signed ternary model.
 
 ![The wake behind a plate in the signed ternary lattice gas: a pair of vortices of opposite sign behind the plate, with the start of a street trailing off to the right](docs/images/fhp-street.png)
 
