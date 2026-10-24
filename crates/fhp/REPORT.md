@@ -285,7 +285,9 @@ Million site-updates per second on periodic lattices without obstacle, with the 
 | M2, GPU in headless Chromium (WebGPU) | $231$ | $448$ |
 | RTX 3080, GPU (Vulkan, native) | $4490$ | $11000$ |
 
-For comparison, on the M2 GPU the ternary table engine runs at about $2500$ and the bit-sliced FHP-III engine at about $14400$ million site-updates per second at $4096 \times 1024$. The signed model is the slowest of the three by a wide margin: a step moves seven 32-bit reference values per site and rounds per channel, and a re-estimate adds a block reduction and an integer equilibrium per site. In the browser on the M2, the CPU paths ran at $29$ (8 wasm threads, $4096 \times 1024$) and $18$ (one thread, $1024 \times 256$) million site-updates per second, which is why the CPU fallback of the flow page runs a smaller lattice.
+For comparison, on the M2 GPU the ternary table engine runs at about $2500$ and the bit-sliced FHP-III engine at about $14400$ million site-updates per second at $4096 \times 1024$. The signed model is the slowest of the three by a wide margin: a step moves seven 32-bit reference values per site and rounds per channel, and a re-estimate adds a block reduction and an integer equilibrium per site. In the browser on the M2, the CPU paths ran at $29$ (8 wasm threads, $4096 \times 1024$) and $18$ (one thread, $1024 \times 256$) million site-updates per second, so a visitor without WebGPU waits several minutes for the street to form.
+
+On the flow page itself (the $2048 \times 768$ street, WebGPU in Chrome, with the current kernels and the time average running), the status line reads about $500$ million site-updates per second on an M2 laptop, about $1000$ on an M5 laptop and about $5000$ on an RTX 3080. These are readings of the page, not controlled benchmarks.
 
 ## 5. What is new
 
